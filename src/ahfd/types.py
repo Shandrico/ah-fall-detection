@@ -10,6 +10,7 @@ in.
 
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass
 
 import numpy as np
@@ -28,6 +29,37 @@ class Intrinsics:
     fy: float
     cx: float
     cy: float
+
+    @classmethod
+    def from_hfov(
+        cls, width: int, height: int, hfov_deg: float, vfov_deg: float | None = None
+    ) -> "Intrinsics":
+        """Approximate intrinsics from a datasheet field of view.
+
+        A stopgap for cameras we have not calibrated -- a laptop webcam, or a
+        D435i before its factory intrinsics are read off the device. Good
+        enough to develop the geometry against; not good enough for the metric
+        numbers that go in a report, because lens distortion is ignored
+        entirely and a datasheet FOV is a nominal figure.
+
+        Prefer real intrinsics wherever they exist: `rs.video_stream_profile`
+        supplies them for the RealSense.
+        """
+        fx = (width / 2.0) / math.tan(math.radians(hfov_deg) / 2.0)
+        # Square pixels unless a vertical FOV says otherwise.
+        fy = (
+            fx
+            if vfov_deg is None
+            else (height / 2.0) / math.tan(math.radians(vfov_deg) / 2.0)
+        )
+        return cls(
+            width=width,
+            height=height,
+            fx=fx,
+            fy=fy,
+            cx=width / 2.0,
+            cy=height / 2.0,
+        )
 
 
 @dataclass(frozen=True, eq=False)
