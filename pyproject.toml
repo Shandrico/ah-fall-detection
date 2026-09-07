@@ -1,0 +1,36 @@
+[project]
+name = "ahfd"
+version = "0.1.0"
+description = "Privacy-preserving vision-based patient fall detection for hospital wards"
+requires-python = ">=3.10,<3.11"
+dependencies = [
+    "numpy>=1.24",
+    "opencv-python>=4.8",
+    "onnxruntime>=1.16",
+    "rtmlib>=0.0.13",
+    "typer>=0.9",
+    "pydantic>=2.0",
+    "pydantic-settings>=2.0",
+    "pyyaml>=6.0",
+]
+
+[project.optional-dependencies]
+realsense = ["pyrealsense2>=2.54"]
+# Intel iGPU / Arc acceleration on Windows. ~3.3x faster than CPU, and needs
+# no CUDA toolkit. See configs/laptop_gpu.yaml.
+openvino = ["openvino>=2024.0"]
+dev = ["pytest>=7.4"]
+
+[project.scripts]
+ahfd = "ahfd.cli:app"
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src"]

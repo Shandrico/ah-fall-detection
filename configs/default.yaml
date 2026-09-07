@@ -1,0 +1,47 @@
+# Default configuration. Every threshold lives here, never hard-coded in source,
+# so a ward can be re-tuned without a code change.
+
+source: "webcam://0"
+
+pose:
+  # Which PoseEstimator implementation to use. The model is a config line so the
+  # pose bake-off (rtmo / yolo / rtmpose) is a swap, not a rewrite.
+  backend: "rtmo"
+  model_size: "s"        # s / m / l -- s is the CPU-friendly default
+  # Fixed by the published ONNX graph -- changing it needs a model re-export,
+  # not a config edit. The code refuses any other value rather than failing
+  # deep inside onnxruntime.
+  model_input_size: [640, 640]
+
+  # Measured: onnxruntime + cpu is ~210 ms/frame (about 5 fps) on a laptop CPU.
+  # Fine for development, too slow for a live demo. Faster options:
+  #   onnxruntime + cuda   NVIDIA GPU -- and the same path the Jetson uses,
+  #                        so dev and deploy share one runtime
+  #   openvino    + gpu    Intel iGPU / Arc
+  #   openvino    + npu    Intel Core Ultra NPU
+  # Each needs its own extra package installed.
+  runtime: "onnxruntime" # "onnxruntime" | "openvino" | "opencv"
+  device: "cpu"          # see the table above
+  min_score: 0.3         # per-person detection confidence floor
+  min_keypoint_score: 0.3
+
+smoothing:
+  # One-Euro filter per keypoint. Raw keypoint jitter of a few pixels becomes
+  # phantom vertical velocity downstream, so this is load-bearing, not cosmetic.
+  enabled: true
+  min_cutoff: 1.0
+  beta: 0.007
+  d_cutoff: 1.0
+
+view:
+  # "skeleton" renders joints on black -- this is the privacy demo: what you see
+  # is all the system retains. "none" runs headless.
+  mode: "skeleton"
+  show_bbox: false
+  show_ids: true
+  show_fps: true
+
+privacy:
+  # Raw frame capture is for consented staged-fall sessions only. All three of
+  # this flag, AHFD_ALLOW_RAW=1, and --i-understand-raw-capture must agree.
+  allow_raw_capture: false

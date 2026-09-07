@@ -1,0 +1,48 @@
+# ---------------------------------------------------------------------------
+# Media must never be committed. RGB frames are processed in memory and
+# discarded; anything image-shaped in git is a privacy incident, not a mistake.
+# ---------------------------------------------------------------------------
+*.bag
+*.mp4
+*.avi
+*.mkv
+*.mov
+*.png
+*.jpg
+*.jpeg
+*.tiff
+*.npy
+*.npz
+
+# Model weights (downloaded on demand, too large to track)
+*.onnx
+*.engine
+*.pt
+*.pth
+models/
+
+# Recorded data (keypoints only, but still not source)
+data/tracks/
+data/events/
+debug_captures/
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+build/
+dist/
+
+# Environments
+.venv/
+venv/
+env/
+
+# OS / editor
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/

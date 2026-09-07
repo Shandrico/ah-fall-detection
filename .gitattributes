@@ -1,0 +1,60 @@
+# Line endings are decided here, not by each machine's git config.
+#
+# This repo is checked out on Windows (development) and on the Jetson's Linux
+# (deployment). Leaving it to core.autocrlf makes the stored result depend on
+# whoever cloned it, which is how a repo ends up with mixed endings and noisy
+# diffs that touch every line of a file nobody edited.
+#
+# LF everywhere, in the repository and in the working tree. Shell scripts in
+# particular MUST be LF: a CRLF shebang fails on Linux with the deeply
+# unhelpful "bad interpreter: /bin/bash^M" -- worth avoiding before anyone
+# writes the librealsense build script for the Jetson.
+
+* text=auto eol=lf
+
+# Explicit for what we actually ship.
+*.py           text eol=lf
+*.pyi          text eol=lf
+*.yaml         text eol=lf
+*.yml          text eol=lf
+*.toml         text eol=lf
+*.cfg          text eol=lf
+*.md           text eol=lf
+*.txt          text eol=lf
+*.json         text eol=lf
+*.sh           text eol=lf
+*.service      text eol=lf
+*.rules        text eol=lf
+.gitignore     text eol=lf
+.gitattributes text eol=lf
+
+# Windows-only scripts keep CRLF, or cmd.exe misparses them.
+*.bat text eol=crlf
+*.cmd text eol=crlf
+*.ps1 text eol=crlf
+
+# Never normalise or diff these. Declaring them binary is a second line of
+# defence behind .gitignore: if a model or a frame dump ever slips through,
+# git will not also mangle it.
+*.onnx   binary
+*.engine binary
+*.pt     binary
+*.pth    binary
+*.bag    binary
+*.npy    binary
+*.npz    binary
+*.png    binary
+*.jpg    binary
+*.jpeg   binary
+*.tiff   binary
+*.mp4    binary
+*.avi    binary
+*.mkv    binary
+*.mov    binary
+*.pdf    binary
+*.xlsx   binary
+*.docx   binary
+*.SLDPRT binary
+*.SLDASM binary
+*.step   binary
+*.stl    binary

@@ -1,0 +1,41 @@
+# Windows development profile: RTMO on the Intel iGPU via OpenVINO.
+#
+# Measured on a Core Ultra 9 386H (RTMO-s, 640x640, one person in frame):
+#   onnxruntime / cpu    56.2 ms   17.8 fps
+#   openvino    / cpu    59.3 ms   16.9 fps
+#   openvino    / gpu    16.8 ms   59.7 fps   <-- this profile
+#
+# Needs `pip install openvino` (about 72 MB). No CUDA toolkit, no driver
+# install -- it uses the Intel graphics driver already present.
+#
+# Not usable: openvino / npu. The published RTMO ONNX has a dynamic batch
+# dimension the NPU plugin cannot bound, and it aborts the whole process
+# rather than failing the session. It would need a static-batch re-export.
+#
+# On the Jetson use onnxruntime + cuda instead.
+
+source: "webcam://0"
+
+pose:
+  backend: "rtmo"
+  model_size: "s"
+  model_input_size: [640, 640]
+  runtime: "openvino"
+  device: "gpu"
+  min_score: 0.3
+  min_keypoint_score: 0.3
+
+smoothing:
+  enabled: true
+  min_cutoff: 1.0
+  beta: 0.007
+  d_cutoff: 1.0
+
+view:
+  mode: "skeleton"
+  show_bbox: false
+  show_ids: true
+  show_fps: true
+
+privacy:
+  allow_raw_capture: false
