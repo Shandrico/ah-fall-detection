@@ -57,8 +57,10 @@ def make_handler(state: DashboardState):
         def do_POST(self) -> None:  # noqa: N802
             path = self.path.split("?", 1)[0]
             if path.startswith("/api/ack/"):
-                event_id = path[len("/api/ack/"):]
-                state.acknowledge(event_id)
+                state.acknowledge(path[len("/api/ack/"):])
+                self._send(200, "application/json", b'{"ok":true}')
+            elif path.startswith("/api/unack/"):
+                state.unacknowledge(path[len("/api/unack/"):])
                 self._send(200, "application/json", b'{"ok":true}')
             else:
                 self._send(404, "text/plain", b"not found")

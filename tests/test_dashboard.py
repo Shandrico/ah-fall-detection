@@ -19,6 +19,10 @@ import pytest
 from ahfd.dashboard import DashboardServer, DashboardState
 
 
+def track(tid, state, **extra):
+    return {"track_id": tid, "state": state, **extra}
+
+
 class TestDashboardState:
     def test_starts_empty(self):
         s = DashboardState()
@@ -27,43 +31,69 @@ class TestDashboardState:
         snap = s.snapshot()
         assert snap["tracks"] == []
         assert snap["events"] == []
-        assert snap["open_alerts"] == 0
+        assert snap["open_alerts"] == []
+        assert snap["open_count"] == 0
+        assert snap["people"] == 0
 
     def test_publish_frame_increments_seq(self):
         s = DashboardState()
-        s.publish_frame(b"jpeg1", {1: "UPRIGHT"}, fps=30.0)
+        s.publish_frame(b"jpeg1", [track(1, "UPRIGHT")], fps=30.0)
         j, seq1 = s.latest_frame()
         assert j == b"jpeg1"
-        s.publish_frame(b"jpeg2", {1: "UPRIGHT"}, fps=29.0)
+        s.publish_frame(b"jpeg2", [track(1, "UPRIGHT")], fps=29.0)
         _, seq2 = s.latest_frame()
         assert seq2 > seq1
 
-    def test_tracks_appear_in_snapshot(self):
+    def test_tracks_and_people_appear_in_snapshot(self):
         s = DashboardState()
-        s.publish_frame(b"x", {2: "ON_GROUND", 5: "UPRIGHT"}, fps=15.0)
-        states = {t["track_id"]: t["state"] for t in s.snapshot()["tracks"]}
+        s.publish_frame(
+            b"x", [track(2, "ON_GROUND", height_m=0.2), track(5, "UPRIGHT")], fps=15.0
+        )
+        snap = s.snapshot()
+        assert snap["people"] == 2
+        states = {t["track_id"]: t["state"] for t in snap["tracks"]}
         assert states == {2: "ON_GROUND", 5: "UPRIGHT"}
 
     def test_events_newest_first(self):
         s = DashboardState()
         s.publish_event({"event_id": "a", "type": "BED_EXIT", "severity": 1})
         s.publish_event({"event_id": "b", "type": "FALL_CONFIRMED", "severity": 4})
-        events = s.snapshot()["events"]
-        assert events[0]["event_id"] == "b"
+        assert s.snapshot()["events"][0]["event_id"] == "b"
 
-    def test_open_alerts_counts_unacked_high_severity(self):
+    def test_counts_accumulate_beyond_the_log_cap(self):
+        """Session totals must survive the recent-events log scrolling past."""
+        s = DashboardState(max_events=3)
+        for i in range(10):
+            s.publish_event({"event_id": f"f{i}", "type": "FALL_CONFIRMED", "severity": 4})
+        s.publish_event({"event_id": "b", "type": "BED_EXIT", "severity": 1})
+        snap = s.snapshot()
+        assert snap["counts"]["fall_confirmed"] == 10  # counter, not the capped log
+        assert snap["counts"]["bed_exit"] == 1
+        assert len(snap["events"]) == 3
+
+    def test_open_alerts_lists_only_unacked_alerting(self):
         s = DashboardState()
         s.publish_event({"event_id": "a", "type": "FALL_CONFIRMED", "severity": 4})
         s.publish_event({"event_id": "b", "type": "BED_EXIT", "severity": 1})
-        assert s.snapshot()["open_alerts"] == 1  # only the severity-4 one
+        snap = s.snapshot()
+        assert snap["open_count"] == 1  # BED_EXIT is not an alerting type
+        assert snap["open_alerts"][0]["event_id"] == "a"
 
     def test_acknowledge_clears_open_alert(self):
         s = DashboardState()
         s.publish_event({"event_id": "a", "type": "FALL_CONFIRMED", "severity": 4})
-        assert s.snapshot()["open_alerts"] == 1
+        assert s.snapshot()["open_count"] == 1
         s.acknowledge("a")
-        assert s.snapshot()["open_alerts"] == 0
+        assert s.snapshot()["open_count"] == 0
         assert s.snapshot()["events"][0]["acknowledged"] is True
+
+    def test_unacknowledge_reopens(self):
+        s = DashboardState()
+        s.publish_event({"event_id": "a", "type": "PERSON_DOWN", "severity": 3})
+        s.acknowledge("a")
+        assert s.snapshot()["open_count"] == 0
+        s.unacknowledge("a")
+        assert s.snapshot()["open_count"] == 1
 
     def test_event_cap(self):
         s = DashboardState(max_events=5)
@@ -99,11 +129,12 @@ class TestServer:
 
     def test_state_endpoint_is_json(self, server):
         state, base = server
-        state.publish_frame(b"x", {1: "UPRIGHT"}, fps=20.0)
+        state.publish_frame(b"x", [track(1, "UPRIGHT")], fps=20.0)
         status, body = _get(base + "/api/state")
         assert status == 200
         data = json.loads(body)
         assert data["fps"] == 20.0
+        assert data["people"] == 1
         assert data["tracks"] == [{"track_id": 1, "state": "UPRIGHT"}]
 
     def test_ack_endpoint(self, server):
@@ -112,7 +143,7 @@ class TestServer:
         req = urllib.request.Request(base + "/api/ack/e1", method="POST")
         with urllib.request.urlopen(req, timeout=2.0) as r:
             assert r.status == 200
-        assert state.snapshot()["open_alerts"] == 0
+        assert state.snapshot()["open_count"] == 0
 
     def test_unknown_path_is_404(self, server):
         _state, base = server
@@ -132,7 +163,7 @@ class TestServer:
         # read -- read() blocks until it has the requested count, and the stream
         # never EOFs, so the read must stay within a single published frame.
         fake_jpeg = b"\xff\xd8" + b"j" * 4000 + b"\xff\xd9"
-        state.publish_frame(fake_jpeg, {1: "UPRIGHT"}, fps=15.0)
+        state.publish_frame(fake_jpeg, [track(1, "UPRIGHT")], fps=15.0)
 
         with urllib.request.urlopen(base + "/stream.mjpg", timeout=2.0) as r:
             assert "multipart/x-mixed-replace" in r.headers["Content-Type"]

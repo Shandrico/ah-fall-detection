@@ -28,12 +28,20 @@ visible: what you see on screen is everything the system keeps.
 - `ahfd run` — skeleton on black (default, privacy-safe).
 - `ahfd run --view overlay` — skeleton on the live video, for debugging pose
   quality. Displays RGB but never stores it.
-- `ahfd dashboard` — a nurse-facing web page (per-person state, alert log with
-  acknowledge, live view). Standard-library server, one pipeline thread, frames
-  encoded once and shared — built this way on purpose to avoid the thread-leak
-  that overheated an earlier FastAPI version. **Skeleton-only by default**;
-  `--rgb` (or `dashboard.show_rgb`) shows video, which reverses the ward
-  privacy stance and needs AH/DPO sign-off. Binds to localhost only by default.
+- `ahfd dashboard` — a nurse-facing web page: metrics row (fps, people in view,
+  open alerts, confirmed falls, bed exits, uptime), a live view with fullscreen,
+  a triage queue of open alerts with acknowledge, per-person state chips, a
+  severity-filtered event log with evidence, and an alert sound. Standard-library
+  server, one pipeline thread, frames encoded once and shared — built this way on
+  purpose to avoid the thread-leak that overheated an earlier FastAPI version.
+  **Skeleton-only by default**; `--rgb` (or `dashboard.show_rgb`) shows video,
+  which reverses the ward privacy stance and needs AH/DPO sign-off. Binds to
+  localhost only by default.
+
+  It serves a web page — it opens **no window**. Run it, then open the printed
+  `http://127.0.0.1:8000` in a browser. For a sharp 720p RGB view:
+  `ahfd dashboard --config configs/dashboard_dev.yaml` (capture resolution and
+  JPEG quality are set there; a bare webcam otherwise defaults to a soft 640×480).
 
 ## Status
 

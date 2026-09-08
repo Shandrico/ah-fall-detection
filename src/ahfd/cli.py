@@ -561,6 +561,84 @@ def dashboard(
         runner.stop()
 
 
+@app.command()
+def record(
+    out: Path = typer.Argument(..., help="Output .mp4 path for the raw recording."),
+    source: str = typer.Option("webcam://0", help="Source URI to record."),
+    seconds: float = typer.Option(0.0, help="Auto-stop after N seconds. 0 = until you press q."),
+    consent: bool = typer.Option(
+        False,
+        "--i-understand-raw-capture",
+        help="Required. Confirms this session is consented raw capture.",
+    ),
+) -> None:
+    """Record raw video for a consented staged-fall session.
+
+    This is the ONE tool that writes video to disk, and it is only for staged
+    sessions with volunteers who have consented -- never patients, never a live
+    ward. It records on start and stops on 'q' or after --seconds; a red banner
+    is burned into every frame so the recording is never invisible.
+
+    The intended flow is: record here, run `ahfd extract` on the file to get
+    keypoints, then DELETE the video and keep only the tracks.jsonl. The footage
+    is scaffolding for tuning, not something to retain.
+
+    Requires the explicit --i-understand-raw-capture flag: invoking this command
+    with that flag is the deliberate, informed intent the privacy gate exists to
+    check. (The stricter triple-switch gate stays on `run`/`dashboard`, where raw
+    capture would be an accident rather than the whole point.)
+    """
+    import os
+
+    import cv2
+
+    from ahfd.capture import open_source
+    from ahfd.debug import RawRecorder
+    from ahfd.privacy import ENV_VAR
+
+    if not consent:
+        raise typer.BadParameter(
+            "raw recording is off unless you pass --i-understand-raw-capture. "
+            "This tool writes video to disk; use it only for consented staged "
+            "sessions with volunteers, never patients or a live ward."
+        )
+
+    # The explicit flag IS the consent, so satisfy the gate here rather than
+    # making the user also juggle an env var for a tool whose only job is to
+    # record. The banner and the deliberate flag keep it non-accidental.
+    os.environ[ENV_VAR] = "1"
+
+    src = open_source(source)
+    typer.echo(
+        "RECORDING (raw video) from " + source + " -> " + str(out)
+        + "  " + str(src.meta.width) + "x" + str(src.meta.height)
+    )
+    typer.echo("press q in the window to stop. Extract keypoints, then delete this file.")
+
+    recorder = RawRecorder(
+        out, src.meta.width, src.meta.height, src.meta.fps,
+        config_flag=True, cli_flag=True,
+    )
+    window = "ahfd RECORDING -- raw video"
+    try:
+        for frame in src:
+            if frame.bgr is None:
+                continue
+            recorder.write(frame.bgr)
+            cv2.imshow(window, frame.bgr)
+            if (cv2.waitKey(1) & 0xFF) == ord("q"):
+                break
+            if seconds and frame.t >= seconds:
+                break
+    finally:
+        src.close()
+        recorder.close()
+        cv2.destroyAllWindows()
+
+    typer.echo("saved " + str(recorder.count) + " frames to " + str(out))
+    typer.echo("next: ahfd extract file://" + str(out) + " data/tracks/<clip>.jsonl  (then delete the .mp4)")
+
+
 @app.command(name="eval")
 def eval_cmd(
     annotations: Path = typer.Argument(

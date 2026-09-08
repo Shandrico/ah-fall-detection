@@ -96,17 +96,28 @@ class AlertConfig(BaseModel):
     min_severity: int = 0
 
 
+class CaptureConfig(BaseModel):
+    # Requested capture resolution. None keeps the camera/source default.
+    # Higher resolution gives a sharper dashboard and better distant-person
+    # keypoints -- but if detection is on, a calibration for this exact
+    # resolution is required (intrinsics are per-resolution).
+    width: int | None = None
+    height: int | None = None
+
+
 class DashboardConfig(BaseModel):
     host: str = "127.0.0.1"  # localhost only by default -- not exposed to the network
     port: int = 8000
     # RGB reverses the skeleton-only ward stance, so it is opt-in. Default is
     # the privacy-safe skeleton view.
     show_rgb: bool = False
+    jpeg_quality: int = 90  # 0-100; higher is sharper and larger per frame
 
 
 class Config(BaseModel):
     source: str = "webcam://0"
     calibration: str | None = None  # path to a per-camera calib YAML
+    capture: CaptureConfig = Field(default_factory=CaptureConfig)
     pose: PoseConfig = Field(default_factory=PoseConfig)
     smoothing: SmoothingConfig = Field(default_factory=SmoothingConfig)
     detect: DetectConfig = Field(default_factory=DetectConfig)

@@ -1,0 +1,42 @@
+# Dashboard demo profile: a clean, sharp monitoring view on a laptop.
+#
+#   ahfd dashboard --config configs/dashboard_dev.yaml
+#   then open http://127.0.0.1:8000
+#
+# Detection is OFF here on purpose. That lets the webcam run at 1280x720 for a
+# crisp picture without needing a calibration at that exact resolution (metric
+# thresholds require intrinsics matched to the capture size). Use this to show
+# the monitoring UI and pose quality.
+#
+# To demo the fall *detection* instead, use configs/detect_dev.yaml, which runs
+# 640x480 with the matching laptop calibration. A ward deployment would have a
+# real calibration at the camera's true resolution and could do both at once.
+
+source: "webcam://0"
+
+capture:
+  width: 1280
+  height: 720
+
+pose:
+  backend: "rtmo"
+  model_size: "s"
+  runtime: "openvino"   # Intel iGPU; falls back to CPU if openvino is absent
+  device: "gpu"
+  min_score: 0.3
+  min_keypoint_score: 0.3
+
+smoothing:
+  enabled: true
+
+detect:
+  enabled: false
+
+dashboard:
+  host: "127.0.0.1"
+  port: 8000
+  show_rgb: true        # this is a monitoring demo; RGB is the point
+  jpeg_quality: 92
+
+privacy:
+  allow_raw_capture: false

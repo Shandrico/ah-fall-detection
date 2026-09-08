@@ -24,11 +24,23 @@ class VideoSource:
     are real and pretending otherwise would understate fall velocities.
     """
 
-    def __init__(self, target: int | str, uri: str | None = None):
+    def __init__(
+        self,
+        target: int | str,
+        uri: str | None = None,
+        width: int | None = None,
+        height: int | None = None,
+    ):
         self._live = isinstance(target, int)
         self._cap = cv2.VideoCapture(target)
         if not self._cap.isOpened():
             raise RuntimeError("could not open video source: " + repr(target))
+
+        # Request a resolution if asked. The camera may not honour it exactly,
+        # so the reported size below is read back rather than assumed.
+        if self._live and width and height:
+            self._cap.set(cv2.CAP_PROP_FRAME_WIDTH, width)
+            self._cap.set(cv2.CAP_PROP_FRAME_HEIGHT, height)
 
         width = int(self._cap.get(cv2.CAP_PROP_FRAME_WIDTH))
         height = int(self._cap.get(cv2.CAP_PROP_FRAME_HEIGHT))

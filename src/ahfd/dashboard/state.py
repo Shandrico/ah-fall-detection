@@ -9,10 +9,10 @@ implementation, where the dashboard drove a Jetson to 99 C. Two rules:
 2. **No per-viewer work in the store.** Reads copy a small snapshot under a
    short-held lock and return. Nothing here loops, sleeps, or blocks.
 
-The failure that cooked the reference build was per-request encoding plus a
-stream generator that never noticed the browser had gone, so reconnects piled
-up threads. Keeping all the real work in the single producer thread removes
-both.
+Session totals are kept as running counters that only increment, separate from
+the bounded recent-events log. The log is capped so memory is bounded over a
+long shift; the counters are not, so "falls today" stays correct even after the
+log has scrolled past them.
 """
 
 from __future__ import annotations
@@ -22,32 +22,45 @@ import time
 from collections import deque
 from typing import Any
 
+# Which event types are a standing alert a nurse must clear, versus
+# informational. Drives the triage queue and the "open alerts" count.
+ALERTING_TYPES = frozenset({"FALL_CONFIRMED", "PERSON_DOWN"})
+
 
 class DashboardState:
-    """The latest annotated frame plus recent detection state."""
+    """The latest annotated frame plus recent and cumulative detection state."""
 
-    def __init__(self, max_events: int = 100):
+    def __init__(self, max_events: int = 200):
         self._lock = threading.Lock()
         self._jpeg: bytes | None = None
         self._seq = 0
-        self._tracks: dict[int, str] = {}
+        self._tracks: list[dict[str, Any]] = []
+        self._people = 0
         self._events: deque[dict[str, Any]] = deque(maxlen=max_events)
         self._acked: set[str] = set()
+        self._counts: dict[str, int] = {}  # cumulative per event type
         self._fps = 0.0
         self._started = time.time()
+        self._last_alert_ts = 0.0  # wall-clock of the most recent alerting event
 
     # ---- producer side (pipeline thread) -------------------------------
 
-    def publish_frame(self, jpeg: bytes, tracks: dict[int, str], fps: float) -> None:
+    def publish_frame(
+        self, jpeg: bytes, tracks: list[dict[str, Any]], fps: float
+    ) -> None:
         with self._lock:
             self._jpeg = jpeg
             self._seq += 1
-            self._tracks = dict(tracks)
+            self._tracks = list(tracks)
+            self._people = len(tracks)
             self._fps = fps
 
     def publish_event(self, event: dict[str, Any]) -> None:
         with self._lock:
             self._events.append(event)
+            self._counts[event["type"]] = self._counts.get(event["type"], 0) + 1
+            if event.get("type") in ALERTING_TYPES:
+                self._last_alert_ts = time.time()
 
     # ---- consumer side (web server threads) ----------------------------
 
@@ -60,24 +73,41 @@ class DashboardState:
         with self._lock:
             events = list(self._events)
             acked = set(self._acked)
+            counts = dict(self._counts)
+            open_alerts = [
+                {**e, "acknowledged": e.get("event_id") in acked}
+                for e in reversed(events)
+                if e.get("type") in ALERTING_TYPES and e.get("event_id") not in acked
+            ]
             return {
                 "fps": round(self._fps, 1),
                 "uptime_s": round(time.time() - self._started, 1),
-                "tracks": [
-                    {"track_id": tid, "state": state}
-                    for tid, state in sorted(self._tracks.items())
-                ],
+                "people": self._people,
+                "tracks": self._tracks,
+                "counts": {
+                    "fall_confirmed": counts.get("FALL_CONFIRMED", 0),
+                    "person_down": counts.get("PERSON_DOWN", 0),
+                    "fall_suspected": counts.get("FALL_SUSPECTED", 0),
+                    "bed_exit": counts.get("BED_EXIT", 0),
+                    "near_miss": counts.get("NEAR_MISS", 0),
+                },
+                "open_alerts": open_alerts,
+                "open_count": len(open_alerts),
+                "seconds_since_alert": (
+                    round(time.time() - self._last_alert_ts, 1)
+                    if self._last_alert_ts
+                    else None
+                ),
                 "events": [
                     {**e, "acknowledged": e.get("event_id") in acked}
                     for e in reversed(events)
                 ],
-                "open_alerts": sum(
-                    1
-                    for e in events
-                    if e.get("severity", 0) >= 3 and e.get("event_id") not in acked
-                ),
             }
 
     def acknowledge(self, event_id: str) -> None:
         with self._lock:
             self._acked.add(event_id)
+
+    def unacknowledge(self, event_id: str) -> None:
+        with self._lock:
+            self._acked.discard(event_id)

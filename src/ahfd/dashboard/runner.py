@@ -30,7 +30,7 @@ class PipelineRunner:
         self.show_rgb = show_rgb
         self._stop = threading.Event()
         self._thread: threading.Thread | None = None
-        self._jpeg_quality = 80
+        self._jpeg_quality = cfg.dashboard.jpeg_quality
 
     def start(self) -> None:
         self._thread = threading.Thread(target=self._run, daemon=True)
@@ -48,7 +48,9 @@ class PipelineRunner:
         from ahfd.viz import render_overlay, render_skeleton
 
         cfg = self.cfg
-        src = open_source(self.source_uri)
+        src = open_source(
+            self.source_uri, width=cfg.capture.width, height=cfg.capture.height
+        )
         estimator = build_estimator(cfg.pose)
         tracker = SimpleTracker(min_keypoint_score=cfg.pose.min_keypoint_score)
         smoother = (
@@ -91,11 +93,27 @@ class PipelineRunner:
                     )
 
                 alert = None
+                # Per-track feature snapshot for the dashboard (state + a metric
+                # or two the nurse can read). Built even when detection is off,
+                # so the "people in view" panel always populates.
+                track_info: dict[int, dict] = {}
                 if machine is not None and extractor is not None:
                     extractor.retain_only(tracker.live_ids)
                     machine.retain_only(tracker.live_ids)
                     for person in pose.people:
+                        if person.track_id is None:
+                            continue
                         features = extractor.extract(person, pose.t)
+                        info = {
+                            "track_id": person.track_id,
+                            "state": machine.state_of(person.track_id),
+                        }
+                        if features is not None:
+                            if features.h_torso is not None:
+                                info["height_m"] = round(features.h_torso, 2)
+                            if features.zones:
+                                info["zone"] = features.zones[0]
+                        track_info[person.track_id] = info
                         if features is None:
                             continue
                         event = machine.update(features)
@@ -107,22 +125,22 @@ class PipelineRunner:
                                     "severity": event.severity,
                                     "track_id": event.track_id,
                                     "t_alert": round(event.t_alert, 1),
+                                    "clock": time.strftime("%H:%M:%S"),
                                     "zone": event.zone,
                                     "evidence": event.evidence,
                                 }
                             )
                             if event.type in ("FALL_CONFIRMED", "PERSON_DOWN"):
                                 alert = event.describe()
+                else:
+                    for person in pose.people:
+                        if person.track_id is not None:
+                            track_info[person.track_id] = {
+                                "track_id": person.track_id,
+                                "state": "TRACKED",
+                            }
 
-                states = {
-                    p.track_id: machine.state_of(p.track_id)
-                    for p in pose.people
-                    if p.track_id is not None
-                } if machine is not None else {
-                    p.track_id: "TRACKED"
-                    for p in pose.people
-                    if p.track_id is not None
-                }
+                states = {tid: info["state"] for tid, info in track_info.items()}
 
                 dt = time.perf_counter() - t0
                 inst = 1.0 / dt if dt > 0 else 0.0
@@ -144,6 +162,8 @@ class PipelineRunner:
                     ".jpg", canvas, [int(cv2.IMWRITE_JPEG_QUALITY), self._jpeg_quality]
                 )
                 if ok:
-                    self.state.publish_frame(buf.tobytes(), states, fps_ema or 0.0)
+                    self.state.publish_frame(
+                        buf.tobytes(), list(track_info.values()), fps_ema or 0.0
+                    )
         finally:
             src.close()

@@ -13,12 +13,18 @@ from __future__ import annotations
 from ahfd.capture.base import FrameSource
 
 
-def open_source(uri: str) -> FrameSource:
-    """Open a frame source from a URI."""
+def open_source(
+    uri: str, width: int | None = None, height: int | None = None
+) -> FrameSource:
+    """Open a frame source from a URI.
+
+    `width`/`height` request a capture resolution and apply only to live
+    webcam sources; recordings and datasets have a fixed native size.
+    """
     from ahfd.capture.video import VideoSource
 
     if uri.startswith("webcam://"):
-        return VideoSource(int(uri[len("webcam://") :]), uri=uri)
+        return VideoSource(int(uri[len("webcam://") :]), uri=uri, width=width, height=height)
 
     if uri.startswith("file://"):
         return VideoSource(uri[len("file://") :], uri=uri)
