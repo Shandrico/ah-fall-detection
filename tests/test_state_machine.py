@@ -59,6 +59,7 @@ def feats(
         h_head=None if h_torso is None else h_torso + 0.45,
         h_max=None if h_torso is None else h_torso + 0.5,
         h_min=0.05,
+        h_ankle_min=0.05,
         floor_spread=floor_spread,
         v_z=v_z,
         motion=motion,

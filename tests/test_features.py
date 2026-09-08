@@ -128,6 +128,15 @@ class TestUprightMeasurement:
         assert f is not None
         assert f.range_m == pytest.approx(math.hypot(6.0, 2.6), abs=0.2)
 
+    @pytest.mark.parametrize("distance", [3.0, 5.0, 7.4])
+    def test_standing_ankle_reads_near_the_floor(self, distance):
+        """The calibration sanity signal: a standing person's ankles sit ~0.05 m.
+        This is what the live HUD surfaces and drift_check watches."""
+        f = extractor().extract(standing(0.0, distance), t=0.0)
+        assert f is not None
+        assert f.h_ankle_min is not None
+        assert abs(f.h_ankle_min - 0.08) < 0.05  # BODY ankles are at 0.08 m
+
 
 class TestFloorSpreadDiscriminates:
     """The core claim, and the reason heights alone are not enough."""

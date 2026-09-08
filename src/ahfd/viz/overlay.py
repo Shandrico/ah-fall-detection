@@ -36,18 +36,21 @@ def render_overlay(
     pose: PoseFrame,
     min_keypoint_score: float = 0.3,
     states: dict[int, str] | None = None,
+    metrics: dict[int, dict] | None = None,
     alert: str | None = None,
     fps: float | None = None,
 ) -> np.ndarray:
     """Return a copy of the frame's BGR with skeletons and status drawn on it."""
-    from ahfd.viz.skeleton_render import draw_people
+    from ahfd.viz.skeleton_render import draw_metrics, draw_people
 
     if frame.bgr is None:
         # No colour (e.g. a depth-only source): fall back to the black canvas so
         # the caller still gets something to show rather than a crash.
         from ahfd.viz.skeleton_render import render_skeleton
 
-        return render_skeleton(pose, min_keypoint_score, states=states, fps=fps)
+        return render_skeleton(
+            pose, min_keypoint_score, states=states, metrics=metrics, fps=fps
+        )
 
     canvas = frame.bgr.copy()
     draw_people(
@@ -58,6 +61,8 @@ def render_overlay(
         show_bbox=False,
         states=states,
     )
+    if metrics:
+        draw_metrics(canvas, pose, metrics, min_keypoint_score)
 
     if fps is not None:
         cv2.putText(

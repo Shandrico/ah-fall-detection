@@ -89,6 +89,7 @@ class Features:
     h_head: float | None
     h_max: float | None  # highest joint
     h_min: float | None
+    h_ankle_min: float | None  # lowest ankle; ~0.05 m for a standing person
 
     floor_spread: float  # metres; large when upright, ~body length when down
     v_z: float  # metres/second, negative is downward
@@ -324,6 +325,7 @@ class FeatureExtractor:
                 h_head=None,
                 h_max=None,
                 h_min=None,
+                h_ankle_min=None,
                 floor_spread=math.inf,
                 v_z=0.0,
                 motion=0.0,
@@ -341,6 +343,19 @@ class FeatureExtractor:
             )
             if h is not None:
                 all_heights.append(h)
+
+        # Ankle height specifically: the calibration sanity signal. A standing
+        # person's ankles read ~0.05 m; if that drifts, the mount has moved.
+        ankle_heights = []
+        for i in ANKLES:
+            if valid[i]:
+                h = self.ground.joint_height(
+                    float(person.keypoints[i, 0]),
+                    float(person.keypoints[i, 1]),
+                    contact,
+                )
+                if h is not None:
+                    ankle_heights.append(h)
 
         if torso is not None:
             history.heights.append((t, torso))
@@ -372,6 +387,7 @@ class FeatureExtractor:
             h_head=head,
             h_max=max(all_heights) if all_heights else None,
             h_min=min(all_heights) if all_heights else None,
+            h_ankle_min=min(ankle_heights) if ankle_heights else None,
             floor_spread=floor_spread,
             v_z=self._slope(history.heights),
             motion=self._motion(history, t),

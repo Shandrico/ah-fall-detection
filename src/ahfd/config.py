@@ -38,6 +38,7 @@ class ViewConfig(BaseModel):
     show_bbox: bool = False
     show_ids: bool = True
     show_fps: bool = True
+    show_metrics: bool = True  # per-person metric readout + calibration check
 
 
 class PrivacyConfig(BaseModel):

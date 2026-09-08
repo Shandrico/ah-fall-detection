@@ -92,6 +92,72 @@ def draw_people(
             )
 
 
+def draw_metrics(
+    canvas: np.ndarray,
+    pose: PoseFrame,
+    metrics: dict[int, dict],
+    min_keypoint_score: float = 0.3,
+) -> None:
+    """Draw the per-person metric readout, and a corner calibration check.
+
+    This is the development/tuning view: it shows the actual numbers the
+    decision runs on -- height in metres, floor-spread, vertical velocity --
+    so a bad calibration or a mis-tracked pose is visible rather than hidden
+    behind a plausible-looking skeleton.
+
+    The corner line is the calibration sanity signal: a standing person's
+    ankles should read ~0.05 m, so if that drifts the mount has moved and every
+    metric is quietly wrong.
+    """
+    from ahfd.pose.skeleton import track_color
+
+    for person in pose.people:
+        m = metrics.get(person.track_id) if person.track_id is not None else None
+        if m is None:
+            continue
+        box = person.bbox(min_keypoint_score)
+        if box is None:
+            continue
+
+        def fmt(key, unit=""):
+            v = m.get(key)
+            return "-" if v is None else (format(v, ".2f") + unit)
+
+        lines = [
+            "h " + fmt("h_torso", "m") + "  spread " + fmt("floor_spread", "m"),
+            "vz " + fmt("v_z") + "  ankle " + fmt("h_ankle_min", "m"),
+        ]
+        if m.get("bed_risk"):
+            lines.append("bed risk " + str(m["bed_risk"]))
+
+        color = track_color(person.track_id)
+        x = int(box[2]) + 6  # to the right of the person
+        y0 = max(24, int(box[1]))
+        for i, line in enumerate(lines):
+            cv2.putText(
+                canvas, line, (x, y0 + i * 15),
+                cv2.FONT_HERSHEY_SIMPLEX, 0.42, color, 1, cv2.LINE_AA,
+            )
+
+    # Calibration sanity: min ankle height across tracked people.
+    ankles = [
+        m["h_ankle_min"]
+        for m in metrics.values()
+        if m.get("h_ankle_min") is not None
+    ]
+    if ankles:
+        from ahfd.geometry.calibration import drift_check
+
+        lowest = min(ankles)
+        ok = drift_check([lowest])
+        text = "ankle " + format(lowest, ".2f") + "m " + ("ok" if ok else "CALIB?")
+        cv2.putText(
+            canvas, text, (8, canvas.shape[0] - 28),
+            cv2.FONT_HERSHEY_SIMPLEX, 0.45,
+            (150, 220, 150) if ok else (60, 60, 230), 1, cv2.LINE_AA,
+        )
+
+
 def render_skeleton(
     pose: PoseFrame,
     min_keypoint_score: float = 0.3,
@@ -99,6 +165,7 @@ def render_skeleton(
     show_bbox: bool = False,
     fps: float | None = None,
     states: dict[int, str] | None = None,
+    metrics: dict[int, dict] | None = None,
     joint_radius: int = 3,
     bone_thickness: int = 2,
 ) -> np.ndarray:
@@ -118,6 +185,8 @@ def render_skeleton(
         joint_radius=joint_radius,
         bone_thickness=bone_thickness,
     )
+    if metrics:
+        draw_metrics(canvas, pose, metrics, min_keypoint_score)
     _draw_hud(canvas, pose, fps)
     return canvas
 

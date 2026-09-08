@@ -88,12 +88,13 @@ uv pip install openvino          # optional: ~3.3x faster on an Intel iGPU
 
 ahfd info                        # versions + whether a RealSense is present
 ahfd run                         # webcam -> skeleton on black; q to quit
-ahfd run --view overlay          # skeleton drawn on the live video (debug)
+ahfd run --view overlay          # skeleton on live video + live metric readout
+ahfd calibrate cal.yaml --source rs:// --height 2.6   # calibrate a real camera
 ahfd run --config configs/detect_dev.yaml   # full pipeline, detection on
 ahfd dashboard --config configs/detect_dev.yaml   # nurse web dashboard
 ahfd bench                       # pose backend bake-off (RTMO vs RTMPose)
 ahfd eval <annotations/> <events/>   # recall, false alarms/hour, latency
-pytest                           # 336 tests, no camera needed
+pytest                           # 364 tests, no camera needed
 ```
 
 The first `run` downloads pose weights (cached afterwards).
