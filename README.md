@@ -28,12 +28,18 @@ visible: what you see on screen is everything the system keeps.
 Detecting falls end to end on a plain webcam — no depth camera required:
 
 ```
-capture → pose (RTMO) → tracking → One-Euro smoothing
+capture → pose → tracking → One-Euro smoothing
         → ground-plane geometry → metric features → fall state machine → alerts
+                                                                → evaluation
 ```
 
-Not built yet: evaluation harness, RealSense/`.bag` sources, the RTMPose top-down
-backend for long range, and the pose bake-off.
+Camera sources: webcam and video today, plus live RealSense (`rs://`) and
+deterministic `.bag` replay — the RealSense paths are written but only runnable
+once the D435i connects. Two pose backends (RTMO, RTMPose) behind one interface,
+with a bake-off harness. Event-level evaluation with false-alarms-per-hour.
+
+Remaining: real accuracy numbers (needs staged clips), depth refinements, and
+the `seq://` dataset-image source.
 
 ## Quick start
 
@@ -45,10 +51,25 @@ uv pip install openvino          # optional: ~3.3x faster on an Intel iGPU
 ahfd info                        # versions + whether a RealSense is present
 ahfd run                         # webcam -> skeleton on black; q to quit
 ahfd run --config configs/detect_dev.yaml   # full pipeline, detection on
-pytest                           # 233 tests, no camera needed
+ahfd bench                       # pose backend bake-off (RTMO vs RTMPose)
+ahfd eval <annotations/> <events/>   # recall, false alarms/hour, latency
+pytest                           # 279 tests, no camera needed
 ```
 
-The first `run` downloads RTMO weights (cached afterwards).
+The first `run` downloads pose weights (cached afterwards).
+
+## Two pose backends
+
+| Backend | How | Speed (iGPU, ~5 people) | Best for |
+|---|---|---|---|
+| RTMO | one-stage, whole frame → 640×640 | 22 ms / 45 fps | near range, dev, the demo |
+| RTMPose | top-down: detect, then pose per crop | 129 ms / 8 fps | the far bed (8.4 m) |
+
+RTMO shrinks the whole 1080p frame to 640×640, which turns a 280-pixel person at
+8.4 m into ~94 px and loses the joint precision the geometry needs. RTMPose crops
+each person and runs pose at native scale, at the cost of scaling with headcount.
+Both emit COCO-17, so the choice is a config line and `ahfd bench` compares them
+on identical frames.
 
 ## How the detection works
 

@@ -46,6 +46,18 @@ def build_estimator(cfg) -> PoseEstimator:
             min_score=cfg.min_score,
         )
 
+    if backend == "rtmpose":
+        from ahfd.pose.rtmpose import RTMPoseEstimator
+
+        return RTMPoseEstimator(
+            mode=cfg.mode,
+            device=cfg.device,
+            runtime=cfg.runtime,
+            min_score=cfg.min_score,
+        )
+
     raise ValueError(
-        "unknown pose backend: " + repr(cfg.backend) + " (available: rtmo)"
+        "unknown pose backend: "
+        + repr(cfg.backend)
+        + " (available: rtmo, rtmpose)"
     )

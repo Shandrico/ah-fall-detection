@@ -17,7 +17,8 @@ DEFAULT_CONFIG_PATH = Path(__file__).resolve().parents[2] / "configs" / "default
 
 class PoseConfig(BaseModel):
     backend: str = "rtmo"
-    model_size: str = "s"
+    model_size: str = "s"  # RTMO: s/m/l
+    mode: str = "performance"  # RTMPose top-down: performance/balanced/lightweight
     model_input_size: tuple[int, int] = (640, 640)
     device: str = "cpu"
     runtime: str = "onnxruntime"

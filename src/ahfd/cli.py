@@ -195,6 +195,88 @@ def run(
         typer.echo("events emitted " + str(events_seen))
 
 
+@app.command()
+def bench(
+    source: str = typer.Option("webcam://0", help="Frames to benchmark on."),
+    frames: int = typer.Option(40, help="How many frames to capture and time."),
+    backends: str = typer.Option(
+        "rtmo,rtmpose", help="Comma-separated backends to compare."
+    ),
+    device: str = typer.Option("cpu", help="cpu | gpu | cuda"),
+    runtime: str = typer.Option("onnxruntime", help="onnxruntime | openvino"),
+) -> None:
+    """Pose backend bake-off: time each backend on the same captured frames.
+
+    Every backend sees an identical set of frames, so the comparison is fair.
+    This answers the report's 'which pose model' question with numbers from
+    this machine rather than from a datasheet.
+    """
+    from ahfd.capture import open_source
+    from ahfd.config import PoseConfig
+    from ahfd.pose import benchmark, build_estimator
+
+    # Capture once, reuse for every backend.
+    src = open_source(source)
+    captured = []
+    for frame in src:
+        captured.append(frame)
+        if len(captured) >= frames:
+            break
+    src.close()
+    typer.echo("captured " + str(len(captured)) + " frames from " + source)
+    typer.echo("")
+
+    for name in [b.strip() for b in backends.split(",") if b.strip()]:
+        try:
+            cfg = PoseConfig(backend=name, device=device, runtime=runtime)
+            estimator = build_estimator(cfg)
+            result = benchmark(estimator, captured)
+            typer.echo(result.line())
+        except Exception as exc:  # noqa: BLE001 - report and continue
+            typer.echo(name.ljust(20) + "FAILED: " + str(exc)[:100])
+
+
+@app.command(name="eval")
+def eval_cmd(
+    annotations: Path = typer.Argument(
+        ..., help="Directory of <clip>.json ground-truth files."
+    ),
+    events: Path = typer.Argument(
+        ..., help="Directory of <clip>.jsonl event logs."
+    ),
+    out: Path = typer.Option(None, help="Write the Markdown report here."),
+    pre_s: float = typer.Option(2.0, help="Match window before impact."),
+    post_s: float = typer.Option(30.0, help="Match window after impact."),
+) -> None:
+    """Score event logs against ground truth: recall, false alarms/hour, latency.
+
+    Pairs each <clip>.json in the annotations directory with <clip>.jsonl in
+    the events directory. A clip with annotations but no event log is scored as
+    if the system emitted nothing -- a missed fall is not silently dropped.
+    """
+    from ahfd.eval import GroundTruth, evaluate, load_events, render_markdown
+
+    pairs = []
+    for ann_path in sorted(annotations.glob("*.json")):
+        truth = GroundTruth.load(ann_path)
+        event_path = events / (ann_path.stem + ".jsonl")
+        clip_events = load_events(event_path) if event_path.exists() else []
+        pairs.append((truth, clip_events))
+
+    if not pairs:
+        raise typer.BadParameter("no <clip>.json annotations found in " + str(annotations))
+
+    report = evaluate(pairs, pre_s=pre_s, post_s=post_s)
+    markdown = render_markdown(report)
+
+    if out:
+        out.parent.mkdir(parents=True, exist_ok=True)
+        out.write_text(markdown, encoding="utf-8")
+        typer.echo("wrote " + str(out))
+    else:
+        typer.echo(markdown)
+
+
 def _check_calibration_resolution(calib, meta) -> None:
     """Refuse a calibration whose resolution does not match the stream.
 
