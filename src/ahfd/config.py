@@ -61,7 +61,7 @@ class DetectConfig(BaseModel):
     bed_band: tuple[float, float] = (-0.25, 0.45)
 
     down_spread: tuple[float, float] = (0.9, 3.0)
-    down_h_torso: float = 0.60
+    down_h_torso: float = 0.90
 
     vz_trigger: float = -0.90
     vz_frames: int = 3

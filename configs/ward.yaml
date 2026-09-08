@@ -1,0 +1,94 @@
+# Ward configuration — every detection hyperparameter, in one place.
+#
+# These are the DECISION knobs. Unlike calibration (camera height, tilt, zones,
+# which you measure and re-measure whenever the camera moves), NOTHING here
+# depends on where the camera hangs. Because calibration turns pixels into
+# metres, "0.90 m/s" means the same physical thing at any mount position, angle,
+# or distance. So you set these once per ward and leave them; move the camera
+# and none of them change.
+#
+# Every value below is a STARTING POINT, not a tuned answer. Tune them against
+# labelled clips with `ahfd sweep` (see docs/CLIPS.md and the tuning notes in
+# docs/TUNING.md) — not by guessing. Units: metres, seconds, metres/second.
+#
+#   ahfd run       --config configs/ward.yaml --calibration calib/<camera>.yaml
+#   ahfd replay <tracks> --config configs/ward.yaml --calibration calib/<camera>.yaml
+
+source: "rs://"
+calibration: null          # or set a path here; --calibration overrides it
+
+# ---------------------------------------------------------------- pose
+pose:
+  backend: "rtmo"          # rtmo (fast, one-stage) | rtmpose (top-down, better at range)
+  model_size: "s"          # rtmo: s / m / l   (bigger = more accurate, slower)
+  mode: "performance"      # rtmpose only: performance / balanced / lightweight
+  runtime: "onnxruntime"   # onnxruntime | openvino ; cuda/tensorrt on the Jetson
+  device: "cpu"            # cpu | gpu | cuda
+  min_score: 0.30          # a whole person below this confidence is ignored
+  min_keypoint_score: 0.30 # a single joint below this is treated as missing
+
+# ---------------------------------------------------------------- smoothing
+# One-Euro filter on each keypoint. Raises: less jitter but more lag. This is
+# load-bearing — unsmoothed keypoints manufacture phantom velocity and false falls.
+smoothing:
+  enabled: true
+  min_cutoff: 1.0          # lower = smoother when still (more lag)
+  beta: 0.007              # higher = tracks fast motion better (less smoothing)
+  d_cutoff: 1.0
+
+# ---------------------------------------------------------------- detection
+detect:
+  enabled: true
+
+  # --- posture bands: where standing/sitting/in-bed/on-floor divide -------
+  upright_h: 0.70          # torso above this (and not down) -> UPRIGHT
+  sitting_h: [0.40, 0.70]  # torso in this band -> SITTING
+  bed_band: [-0.25, 0.45]  # torso within this of the bed's top_m -> IN_BED
+  down_spread: [0.9, 3.0]  # floor-spread band that means "lying on the floor"
+  down_h_torso: 0.90       # torso must be below this to count as down (loose guard;
+                           #   floor_spread is the real test — see docs/TUNING.md)
+
+  # --- fall trigger: what starts a fall -----------------------------------
+  vz_trigger: -0.90        # downward torso speed (m/s) that trips the trigger
+  vz_frames: 3             # ...sustained this many frames (rejects 1-frame spikes)
+  drop_trigger: 0.45       # OR a torso height drop this big...
+  drop_window_s: 0.8       # ...within this window
+  min_track_age_s: 1.0     # a track must be this old before it may fire (ID-switch guard)
+  rest_deadline_s: 2.5     # after a trigger, the body must reach the floor within this
+
+  # --- confirmation: the alarm-fatigue control ----------------------------
+  suspect_s: 1.5           # on-screen "suspected" flag this long after landing
+  confirm_s: 8.0           # PAGE A NURSE only after staying down this long
+  confirm_motion_max: 0.15 # ...and moving less than this (m/s) — still, not fidgeting
+  recover_h: 0.70          # got back above this before confirm -> NEAR_MISS, no alarm
+
+  # --- slow slump: falls with no impact spike ------------------------------
+  slow_down_s: 20.0        # down + still this long, no trigger seen -> PERSON_DOWN
+
+  # --- bed exit: the prediction path --------------------------------------
+  bed_exit_s: 3.0          # sitting on a bed edge this long -> BED_EXIT
+                           # (its urgency comes from the bed's risk_level in the
+                           #  calibration: high -> alert, low -> dashboard status)
+
+  # --- quality gate: refuse to decide on bad pose -------------------------
+  min_valid_kp: 8          # need at least this many confident joints
+  min_mean_conf: 0.40      # ...at this mean confidence, or the track is excluded
+
+  # --- hygiene ------------------------------------------------------------
+  cooldown_s: 60.0         # at most one alert per track per this many seconds
+
+# ---------------------------------------------------------------- alerts
+alert:
+  console: true
+  jsonl_path: "data/events/ward.jsonl"   # event log for `ahfd eval`; null to disable
+  min_severity: 0          # 0 all, 1 notices, 2 warnings, 3 alerts, 4 confirmed falls
+
+# ---------------------------------------------------------------- view
+view:
+  mode: "skeleton"         # skeleton (privacy-safe) | overlay (RGB) | none (headless)
+  show_ids: true
+  show_fps: true
+  show_metrics: true       # per-person height/spread/velocity readout + calib check
+
+privacy:
+  allow_raw_capture: false

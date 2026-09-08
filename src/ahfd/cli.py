@@ -867,26 +867,33 @@ def calibrate(
         frame.shape[1], frame.shape[0], hfov_deg=hfov, vfov_deg=vfov
     )
 
+    # Report the IMU-derived tilt if a gravity vector is available, as a
+    # cross-check regardless of which source we actually use.
+    imu_pitch = imu_roll = None
     if frame.gravity is not None:
-        # IMU path -- validate it round-trips to a sane downtilt.
         from ahfd.geometry.ground import GroundPlane
 
-        gp = GroundPlane.from_gravity(intrinsics, height, np.asarray(frame.gravity))
-        _write_calibration_yaml(out, cam_id, intrinsics, height, gravity=frame.gravity)
+        gp_imu = GroundPlane.from_gravity(intrinsics, height, np.asarray(frame.gravity))
+        imu_pitch, imu_roll = gp_imu.pitch_deg, gp_imu.roll_deg
         typer.echo(
-            "calibrated from IMU: pitch " + format(gp.pitch_deg, ".1f")
-            + " deg, roll " + format(gp.roll_deg, ".1f") + " deg"
+            "IMU reads: pitch " + format(imu_pitch, ".1f")
+            + " deg, roll " + format(imu_roll, ".1f") + " deg"
         )
-    else:
-        if pitch is None:
-            raise typer.BadParameter(
-                "this source has no IMU, so --pitch is required (downtilt in "
-                "degrees). A webcam looking slightly down might be ~15."
-            )
+
+    if pitch is not None:
+        # A supplied angle is a deliberate measurement and wins over the IMU.
         _write_calibration_yaml(
             out, cam_id, intrinsics, height, pitch_deg=pitch, roll_deg=roll
         )
-        typer.echo("calibrated from --pitch " + format(pitch, ".1f") + " deg")
+        typer.echo("using your --pitch " + format(pitch, ".1f") + " deg (measurement overrides IMU)")
+    elif frame.gravity is not None:
+        _write_calibration_yaml(out, cam_id, intrinsics, height, gravity=frame.gravity)
+        typer.echo("using the IMU tilt (pass --pitch to override with your own measurement)")
+    else:
+        raise typer.BadParameter(
+            "no --pitch given and this source has no IMU. Provide --pitch "
+            "(downtilt in degrees); a camera looking slightly down might be ~20."
+        )
 
     typer.echo(
         "wrote " + str(out) + "  (" + str(intrinsics.width) + "x"
