@@ -40,6 +40,22 @@ from typing import Literal
 from ahfd.detect.events import Event
 from ahfd.features.extractor import Features
 
+# How urgent a bed exit is, by the bed's fall-risk level. This is the answer to
+# alarm fatigue: the identical action produces a quiet dashboard status for a
+# patient cleared to self-exit and a real alert for a high-risk one.
+#   0 informational (dashboard status, no alarm)   1 low-priority notice
+#   2 warning                                       3 alert (page a nurse)
+# "unknown" defaults to a warning -- cautious, because not-yet-assessed is not
+# the same as safe. A ward would set the level from the admission fall-risk
+# assessment (Morse / Hendrich), per bed.
+BED_EXIT_SEVERITY_BY_RISK: dict[str, int] = {
+    "none": 0,     # cleared to mobilise independently -> awareness only
+    "low": 1,
+    "medium": 2,
+    "high": 3,     # should not exit unassisted -> alert
+    "unknown": 2,
+}
+
 State = Literal[
     "UNKNOWN",
     "UPRIGHT",
@@ -432,13 +448,16 @@ class FallStateMachine:
                 and now - ts.sitting_since >= th.bed_exit_s
             ):
                 ts.bed_exit_emitted = True
+                risk = f.bed_risk or "unknown"
                 return Event(
                     type="BED_EXIT",
                     track_id=f.track_id,
                     t_trigger=ts.sitting_since,
                     t_alert=now,
                     zone=zone,
+                    severity_override=BED_EXIT_SEVERITY_BY_RISK.get(risk, 2),
                     evidence={
+                        "bed_risk": risk,
                         "h_torso": round(f.h_torso, 2),
                         "seated_s": round(now - ts.sitting_since, 1),
                     },

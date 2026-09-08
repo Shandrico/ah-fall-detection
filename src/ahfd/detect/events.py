@@ -40,9 +40,16 @@ class Event:
     t_alert: float  # when this event was emitted
     zone: str | None = None
     evidence: dict[str, Any] = field(default_factory=dict)
+    # Some events grade their own urgency rather than taking it from the type.
+    # A bed exit is the case that matters: the same action is a quiet status for
+    # a low-risk patient and a real alert for a high-risk one, so its severity
+    # is set per event from the bed's risk level, not fixed by "BED_EXIT".
+    severity_override: int | None = None
 
     @property
     def severity(self) -> int:
+        if self.severity_override is not None:
+            return self.severity_override
         return SEVERITY.get(self.type, 0)
 
     @property

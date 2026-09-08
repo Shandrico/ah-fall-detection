@@ -99,6 +99,7 @@ class Features:
     zones: tuple[str, ...] = ()
     supported_by_bed: str | None = None  # name of the bed holding them up
     bed_top_m: float | None = None
+    bed_risk: str | None = None  # risk level of the associated bed, if any
     in_excluded_zone: bool = False
 
     @property
@@ -356,6 +357,12 @@ class FeatureExtractor:
         if bed is not None and bed.name not in [z.name for z in zones_here]:
             zones_here = list(zones_here) + [bed]
 
+        # The bed this person is associated with, for the graded bed-exit
+        # response: the one supporting them if any, else the bed zone their
+        # contact point sits in (a person perched on the edge). Its risk level
+        # is what turns a bed exit into a status or an alert.
+        assoc_bed = bed or self.zones.first_of_kind(contact, "bed")
+
         return Features(
             track_id=person.track_id,
             t=t,
@@ -373,6 +380,7 @@ class FeatureExtractor:
             zones=tuple(z.name for z in zones_here),
             supported_by_bed=bed.name if bed else None,
             bed_top_m=bed.top_m if bed else None,
+            bed_risk=assoc_bed.risk_level if assoc_bed else None,
             in_excluded_zone=self.zones.is_excluded(contact),
         )
 

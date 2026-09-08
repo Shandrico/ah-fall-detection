@@ -226,8 +226,39 @@ calib/           per-camera calibration (measured, one per mount position)
 configs/         thresholds and runtime profiles (per ward, not per camera)
 ```
 
+## Bed-exit prediction and graded risk
+
+The project's focus is narrowing from "detect any fall" to **predicting unsafe
+bed exits** — the largest *preventable* class of ward falls — because a fall's
+impact is a fraction of a second (too fast for a nurse to reach), while a bed
+exit unfolds over tens of seconds and is visible in advance.
+
+The problem this raises: alerting on *every* bed exit is useless, because many
+patients are cleared to mobilise on their own. The answer is a **graded response
+keyed to per-bed fall risk**, not a binary alarm:
+
+| Bed risk | Bed-exit response |
+|---|---|
+| none (cleared to self-mobilise) | dashboard status, no alarm |
+| low | low-priority notice |
+| medium / unknown | warning |
+| high (should not exit unassisted) | alert — page a nurse |
+
+Risk attaches to the **bed** (a zone attribute, `risk_level` in the calibration),
+not to the patient — so it is identity-free, and it comes from the fall-risk
+assessment nurses already do on admission (Morse / Hendrich), set once per
+admission. This is what keeps alarm volume tolerable and sidesteps the privacy
+concern of per-patient profiling. See `BED_EXIT_SEVERITY_BY_RISK` in
+[detect/state_machine.py](src/ahfd/detect/state_machine.py).
+
+Where the ward has a **bed pressure sensor** (binary on/off-bed), it is the
+authoritative bed-exit trigger and the vision layer classifies the *safety* of
+the exit and detects falls the sensor cannot see — a fusion planned once the
+sensor interface is known.
+
 ## Scope
 
-**In:** fall detection core — capture, detect, alert stub.
-**Out:** vitals and teleconsultation. They appear in the AH brief, but a later team
-would attach them at the `alert/` sinks.
+**In:** fall detection + bed-exit prediction — capture, detect, graded alert.
+**Out:** vitals and (separately scoped) teleconsultation. Note AH also wants
+**virtual nursing** — clinicians viewing patients live — which makes the RGB
+dashboard a first-class, consented use rather than a privacy compromise.

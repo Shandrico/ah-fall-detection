@@ -46,6 +46,7 @@ def feats(
     zones: tuple[str, ...] = (),
     supported_by_bed: str | None = None,
     bed_top_m: float | None = None,
+    bed_risk: str | None = None,
     contact: tuple[float, float] | None = (0.0, 5.0),
     excluded: bool = False,
 ) -> Features:
@@ -66,6 +67,7 @@ def feats(
         zones=zones,
         supported_by_bed=supported_by_bed,
         bed_top_m=bed_top_m,
+        bed_risk=bed_risk,
         in_excluded_zone=excluded,
     )
 
@@ -410,6 +412,42 @@ class TestBedExit:
         frames = hold(0.0, 2.0)
         frames += hold(2.0, 20.0, h_torso=0.55, zones=("floor",), motion=0.05)
         assert "BED_EXIT" not in types_of(run(m, frames))
+
+    def _bed_exit_event(self, bed_risk):
+        m = FallStateMachine()
+        frames = hold(0.0, 2.0)
+        frames += hold(
+            2.0, 8.0, h_torso=0.55, zones=("bed_2",), bed_risk=bed_risk, motion=0.05
+        )
+        events = [e for e in run(m, frames) if e.type == "BED_EXIT"]
+        assert len(events) == 1
+        return events[0]
+
+    def test_high_risk_bed_exit_is_an_alert(self):
+        """The graded response: a patient who should not self-exit -> alert."""
+        e = self._bed_exit_event("high")
+        assert e.severity == 3
+        assert e.evidence["bed_risk"] == "high"
+
+    def test_low_risk_bed_exit_is_awareness_not_alarm(self):
+        """A patient cleared to mobilise -> low priority, no alarm. This is the
+        alarm-fatigue fix: same action, gentler response."""
+        assert self._bed_exit_event("low").severity == 1
+
+    def test_none_risk_bed_exit_is_informational(self):
+        assert self._bed_exit_event("none").severity == 0
+
+    def test_unknown_risk_defaults_to_a_cautious_warning(self):
+        """Not-yet-assessed is not the same as safe."""
+        assert self._bed_exit_event("unknown").severity == 2
+        # A bed with no risk set at all lands on the same cautious default.
+        assert self._bed_exit_event(None).severity == 2
+
+    def test_same_action_different_urgency(self):
+        """The whole point, stated as one assertion: identical bed exit,
+        severity driven entirely by the bed's risk level."""
+        sev = {r: self._bed_exit_event(r).severity for r in ("none", "low", "high")}
+        assert sev["none"] < sev["low"] < sev["high"]
 
 
 class TestMultipleTracks:

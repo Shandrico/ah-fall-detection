@@ -82,6 +82,18 @@ class TestZone:
     def test_floor_zone_needs_no_height(self):
         Zone(name="walkway", kind="floor", polygon=SQUARE)  # must not raise
 
+    def test_risk_level_defaults_to_unknown(self):
+        z = Zone(name="bed_1", kind="bed", polygon=SQUARE, top_m=0.6)
+        assert z.risk_level == "unknown"
+
+    def test_risk_level_accepts_valid_values(self):
+        for level in ("none", "low", "medium", "high", "unknown"):
+            Zone(name="b", kind="bed", polygon=SQUARE, top_m=0.6, risk_level=level)
+
+    def test_risk_level_rejects_garbage(self):
+        with pytest.raises(ValueError, match="risk_level"):
+            Zone(name="b", kind="bed", polygon=SQUARE, top_m=0.6, risk_level="extreme")
+
     def test_contains(self):
         zone = Zone(name="bed_1", kind="bed", polygon=SQUARE, top_m=0.6)
         assert zone.contains((1.0, 1.0)) is True
@@ -134,6 +146,7 @@ class TestZoneMap:
                     "name": "bed_3",
                     "kind": "bed",
                     "top_m": 0.65,
+                    "risk_level": "high",
                     "polygon": [[0, 0], [2, 0], [2, 1], [0, 1]],
                 },
                 {
@@ -146,3 +159,7 @@ class TestZoneMap:
         assert len(zones.zones) == 2
         bed = zones.first_of_kind((1.0, 0.5), "bed")
         assert bed is not None and bed.top_m == 0.65
+        assert bed.risk_level == "high"
+        # A zone with no risk_level in config defaults to unknown, not an error.
+        corridor = zones.first_of_kind((3.0, 2.0), "floor")
+        assert corridor is not None and corridor.risk_level == "unknown"

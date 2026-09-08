@@ -23,6 +23,15 @@ from typing import Literal
 
 ZoneKind = Literal["bed", "chair", "floor", "exclude"]
 
+# Per-bed fall-risk level. This is the answer to alarm fatigue: the same bed
+# exit is a quiet dashboard status for a low-risk patient and a real alert for a
+# high-risk one, so risk attaches to the bed (a zone attribute), not to the
+# person -- which also keeps it identity-free. It comes from the fall-risk
+# assessment nurses already do on admission (Morse / Hendrich), set once per
+# admission, not per frame.
+RiskLevel = Literal["none", "low", "medium", "high", "unknown"]
+VALID_RISK = ("none", "low", "medium", "high", "unknown")
+
 Point = tuple[float, float]
 
 
@@ -62,6 +71,7 @@ class Zone:
     kind: ZoneKind
     polygon: list[Point]
     top_m: float | None = None  # bed/chair surface height above floor
+    risk_level: str = "unknown"  # per-bed fall risk; see RiskLevel
 
     def __post_init__(self) -> None:
         if len(self.polygon) < 3:
@@ -74,6 +84,11 @@ class Zone:
                 "zone " + repr(self.name) + " of kind " + self.kind
                 + " needs top_m (surface height above floor in metres); "
                 "without it, lying in bed cannot be told from lying on the floor"
+            )
+        if self.risk_level not in VALID_RISK:
+            raise ValueError(
+                "zone " + repr(self.name) + " risk_level must be one of "
+                + repr(VALID_RISK) + ", got " + repr(self.risk_level)
             )
 
     def contains(self, xy: Point) -> bool:
@@ -119,6 +134,7 @@ class ZoneMap:
                     top_m=(
                         float(entry["top_m"]) if entry.get("top_m") is not None else None
                     ),
+                    risk_level=str(entry.get("risk_level", "unknown")),
                 )
             )
         return cls(zones=zones)

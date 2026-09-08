@@ -42,16 +42,19 @@ zones:
   - name: bed_1
     kind: bed
     top_m: 0.55        # MEASURE THIS PER BED -- ward beds adjust 0.4-0.8 m
+    risk_level: high   # from the admission fall-risk assessment; drives bed-exit urgency
     polygon: [[-3.85, 6.15], [-2.44, 5.45], [-1.79, 6.75], [-3.20, 7.45]]
 
   - name: bed_2
     kind: bed
     top_m: 0.55
+    risk_level: medium
     polygon: [[-1.05, 6.15], [0.36, 5.45], [1.01, 6.75], [-0.40, 7.45]]
 
   - name: bed_3
     kind: bed
     top_m: 0.55
+    risk_level: low
     polygon: [[1.75, 6.15], [3.16, 5.45], [3.81, 6.75], [2.40, 7.45]]
 
   # The floor immediately around each bed is where a fall out of bed lands,
