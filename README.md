@@ -23,6 +23,18 @@ That claim is enforced rather than promised:
 The default view renders **skeleton on black**. That is the privacy argument made
 visible: what you see on screen is everything the system keeps.
 
+### Views and the dashboard
+
+- `ahfd run` — skeleton on black (default, privacy-safe).
+- `ahfd run --view overlay` — skeleton on the live video, for debugging pose
+  quality. Displays RGB but never stores it.
+- `ahfd dashboard` — a nurse-facing web page (per-person state, alert log with
+  acknowledge, live view). Standard-library server, one pipeline thread, frames
+  encoded once and shared — built this way on purpose to avoid the thread-leak
+  that overheated an earlier FastAPI version. **Skeleton-only by default**;
+  `--rgb` (or `dashboard.show_rgb`) shows video, which reverses the ward
+  privacy stance and needs AH/DPO sign-off. Binds to localhost only by default.
+
 ## Status
 
 Detecting falls end to end on a plain webcam — no depth camera required:
@@ -68,10 +80,12 @@ uv pip install openvino          # optional: ~3.3x faster on an Intel iGPU
 
 ahfd info                        # versions + whether a RealSense is present
 ahfd run                         # webcam -> skeleton on black; q to quit
+ahfd run --view overlay          # skeleton drawn on the live video (debug)
 ahfd run --config configs/detect_dev.yaml   # full pipeline, detection on
+ahfd dashboard --config configs/detect_dev.yaml   # nurse web dashboard
 ahfd bench                       # pose backend bake-off (RTMO vs RTMPose)
 ahfd eval <annotations/> <events/>   # recall, false alarms/hour, latency
-pytest                           # 279 tests, no camera needed
+pytest                           # 336 tests, no camera needed
 ```
 
 The first `run` downloads pose weights (cached afterwards).

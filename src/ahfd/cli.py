@@ -77,7 +77,7 @@ def run(
     from ahfd.capture import open_source
     from ahfd.pose import KeypointSmoother, build_estimator
     from ahfd.track import SimpleTracker
-    from ahfd.viz import render_skeleton
+    from ahfd.viz import render_overlay, render_skeleton
 
     cfg = load_config(config)
     uri = source or cfg.source
@@ -138,13 +138,20 @@ def run(
     else:
         typer.echo("detect:  off -- pose and tracking only")
 
-    if view_mode == "skeleton":
+    windowed = view_mode in ("skeleton", "overlay")
+    if windowed:
         typer.echo("press q in the window to quit")
+    if view_mode == "overlay":
+        typer.echo(
+            "NOTE: overlay shows live RGB. It is not persisted, but it is not "
+            "the skeleton-only privacy view -- use it for debugging, not the ward."
+        )
 
-    window = "ahfd -- skeleton only"
+    window = "ahfd -- " + ("overlay (RGB)" if view_mode == "overlay" else "skeleton only")
     fps_ema: float | None = None
     n = 0
     events_seen = 0
+    last_alert: str | None = None
 
     try:
         for frame in src:
@@ -175,19 +182,38 @@ def run(
                     if event is not None:
                         sink.emit(event)
                         events_seen += 1
+                        if event.type in ("FALL_CONFIRMED", "PERSON_DOWN"):
+                            last_alert = event.describe()
 
             dt = time.perf_counter() - t0
             inst = 1.0 / dt if dt > 0 else 0.0
             fps_ema = inst if fps_ema is None else 0.9 * fps_ema + 0.1 * inst
 
-            if view_mode == "skeleton":
-                canvas = render_skeleton(
-                    pose,
-                    min_keypoint_score=cfg.pose.min_keypoint_score,
-                    show_ids=cfg.view.show_ids,
-                    show_bbox=cfg.view.show_bbox,
-                    fps=fps_ema if cfg.view.show_fps else None,
+            if windowed:
+                states = (
+                    {p.track_id: machine.state_of(p.track_id) for p in pose.people if p.track_id is not None}
+                    if machine is not None
+                    else None
                 )
+                fps_show = fps_ema if cfg.view.show_fps else None
+                if view_mode == "overlay":
+                    canvas = render_overlay(
+                        frame,
+                        pose,
+                        min_keypoint_score=cfg.pose.min_keypoint_score,
+                        states=states,
+                        alert=last_alert,
+                        fps=fps_show,
+                    )
+                else:
+                    canvas = render_skeleton(
+                        pose,
+                        min_keypoint_score=cfg.pose.min_keypoint_score,
+                        show_ids=cfg.view.show_ids,
+                        show_bbox=cfg.view.show_bbox,
+                        states=states,
+                        fps=fps_show,
+                    )
                 cv2.imshow(window, canvas)
                 if (cv2.waitKey(1) & 0xFF) == ord("q"):
                     break
@@ -199,7 +225,7 @@ def run(
         src.close()
         if sink is not None:
             sink.close()
-        if view_mode == "skeleton":
+        if windowed:
             cv2.destroyAllWindows()
 
     typer.echo("processed " + str(n) + " frames")
@@ -483,6 +509,58 @@ def bench(
             typer.echo(name.ljust(20) + "FAILED: " + str(exc)[:100])
 
 
+@app.command()
+def dashboard(
+    source: str = typer.Option(None, help="Source URI. Defaults to the config's source."),
+    config: Path = typer.Option(None, help="Path to a YAML config."),
+    calibration: Path = typer.Option(None, help="Per-camera calibration (for detection)."),
+    host: str = typer.Option(None, help="Bind address. Default 127.0.0.1 (localhost)."),
+    port: int = typer.Option(None, help="Port. Default 8000."),
+    rgb: bool = typer.Option(
+        False,
+        "--rgb",
+        help="Show live RGB video instead of skeleton-only. Reverses the ward "
+        "privacy stance -- needs AH/DPO sign-off before real use.",
+    ),
+) -> None:
+    """Serve the nurse dashboard: live view, per-person state, alert log.
+
+    One pipeline thread produces frames; the web server only forwards them, so
+    extra viewers cost nothing and there is no per-request encoding. Skeleton-
+    only by default; --rgb (or dashboard.show_rgb in config) shows video.
+    """
+    from ahfd.dashboard import DashboardServer, DashboardState, PipelineRunner
+
+    cfg = load_config(config)
+    uri = source or cfg.source
+    calib_path = calibration or cfg.calibration
+    bind_host = host or cfg.dashboard.host
+    bind_port = port or cfg.dashboard.port
+    show_rgb = rgb or cfg.dashboard.show_rgb
+
+    if show_rgb:
+        typer.echo(
+            "WARNING: RGB view is ON. Live video is shown (not stored). This "
+            "reverses the skeleton-only privacy stance -- confirm AH/DPO approval."
+        )
+
+    state = DashboardState()
+    runner = PipelineRunner(uri, cfg, calib_path, state, show_rgb=show_rgb)
+    server = DashboardServer(state, host=bind_host, port=bind_port)
+
+    typer.echo("source:  " + uri + ("  [RGB]" if show_rgb else "  [skeleton only]"))
+    typer.echo("serving: http://" + bind_host + ":" + str(bind_port) + "  (Ctrl+C to stop)")
+
+    runner.start()
+    try:
+        server.serve_forever()
+    except KeyboardInterrupt:
+        typer.echo("\nstopping...")
+    finally:
+        server.shutdown()
+        runner.stop()
+
+
 @app.command(name="eval")
 def eval_cmd(
     annotations: Path = typer.Argument(
@@ -563,17 +641,31 @@ def info() -> None:
     identical whether the cause is the cable, the port or the driver.
     """
     import sys
+    from importlib.metadata import PackageNotFoundError
+    from importlib.metadata import version as pkg_version
 
     typer.echo("python      " + sys.version.split()[0])
 
-    for module in ("numpy", "cv2", "onnxruntime", "rtmlib"):
+    # (import name, distribution name). Some packages -- rtmlib is one -- do not
+    # expose __version__ on the module, so the version is read from the
+    # installed package metadata instead, which every package has.
+    packages = [
+        ("numpy", "numpy"),
+        ("cv2", "opencv-python"),
+        ("onnxruntime", "onnxruntime"),
+        ("rtmlib", "rtmlib"),
+    ]
+    for import_name, dist_name in packages:
         try:
-            m = __import__(module)
-            typer.echo(
-                module.ljust(11) + " " + str(getattr(m, "__version__", "(no version)"))
-            )
+            __import__(import_name)
         except ImportError:
-            typer.echo(module.ljust(11) + " NOT INSTALLED")
+            typer.echo(import_name.ljust(11) + " NOT INSTALLED")
+            continue
+        try:
+            ver = pkg_version(dist_name)
+        except PackageNotFoundError:
+            ver = "(installed)"
+        typer.echo(import_name.ljust(11) + " " + ver)
 
     try:
         import pyrealsense2 as rs

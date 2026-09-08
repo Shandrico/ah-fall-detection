@@ -96,6 +96,14 @@ class AlertConfig(BaseModel):
     min_severity: int = 0
 
 
+class DashboardConfig(BaseModel):
+    host: str = "127.0.0.1"  # localhost only by default -- not exposed to the network
+    port: int = 8000
+    # RGB reverses the skeleton-only ward stance, so it is opt-in. Default is
+    # the privacy-safe skeleton view.
+    show_rgb: bool = False
+
+
 class Config(BaseModel):
     source: str = "webcam://0"
     calibration: str | None = None  # path to a per-camera calib YAML
@@ -104,6 +112,7 @@ class Config(BaseModel):
     detect: DetectConfig = Field(default_factory=DetectConfig)
     alert: AlertConfig = Field(default_factory=AlertConfig)
     view: ViewConfig = Field(default_factory=ViewConfig)
+    dashboard: DashboardConfig = Field(default_factory=DashboardConfig)
     privacy: PrivacyConfig = Field(default_factory=PrivacyConfig)
 
 

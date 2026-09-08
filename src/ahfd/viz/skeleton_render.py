@@ -19,22 +19,23 @@ from ahfd.pose.skeleton import EDGES, track_color
 from ahfd.types import PoseFrame
 
 
-def render_skeleton(
+def draw_people(
+    canvas: np.ndarray,
     pose: PoseFrame,
     min_keypoint_score: float = 0.3,
     show_ids: bool = True,
     show_bbox: bool = False,
-    fps: float | None = None,
+    states: dict[int, str] | None = None,
     joint_radius: int = 3,
     bone_thickness: int = 2,
-) -> np.ndarray:
-    """Draw a PoseFrame onto a fresh black canvas.
+) -> None:
+    """Draw skeletons onto an existing canvas, in place.
 
-    Takes a PoseFrame, not a Frame: this function cannot draw over video even
-    if someone later wants it to, because it never receives any.
+    Shared by the black-background view and the on-video overlay, so both draw
+    identically. `states`, if given, labels each track with its fall-machine
+    state (UPRIGHT / IN_BED / ON_GROUND ...), which is what makes the overlay
+    readable to a person watching.
     """
-    canvas = np.zeros((pose.height, pose.width, 3), dtype=np.uint8)
-
     for person in pose.people:
         color = track_color(person.track_id)
         valid = person.valid_mask(min_keypoint_score)
@@ -76,9 +77,12 @@ def render_skeleton(
             )
 
         if show_ids and person.track_id is not None:
+            label = "id " + str(person.track_id)
+            if states and person.track_id in states:
+                label += "  " + states[person.track_id]
             cv2.putText(
                 canvas,
-                "id " + str(person.track_id),
+                label,
                 (int(box[0]), max(12, int(box[1]) - 6)),
                 cv2.FONT_HERSHEY_SIMPLEX,
                 0.5,
@@ -87,6 +91,33 @@ def render_skeleton(
                 cv2.LINE_AA,
             )
 
+
+def render_skeleton(
+    pose: PoseFrame,
+    min_keypoint_score: float = 0.3,
+    show_ids: bool = True,
+    show_bbox: bool = False,
+    fps: float | None = None,
+    states: dict[int, str] | None = None,
+    joint_radius: int = 3,
+    bone_thickness: int = 2,
+) -> np.ndarray:
+    """Draw a PoseFrame onto a fresh black canvas.
+
+    Takes a PoseFrame, not a Frame: this function cannot draw over video even
+    if someone later wants it to, because it never receives any.
+    """
+    canvas = np.zeros((pose.height, pose.width, 3), dtype=np.uint8)
+    draw_people(
+        canvas,
+        pose,
+        min_keypoint_score=min_keypoint_score,
+        show_ids=show_ids,
+        show_bbox=show_bbox,
+        states=states,
+        joint_radius=joint_radius,
+        bone_thickness=bone_thickness,
+    )
     _draw_hud(canvas, pose, fps)
     return canvas
 
