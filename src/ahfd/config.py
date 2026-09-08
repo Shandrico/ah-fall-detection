@@ -43,10 +43,65 @@ class PrivacyConfig(BaseModel):
     allow_raw_capture: bool = False
 
 
+class DetectConfig(BaseModel):
+    """Fall thresholds, in metres, seconds and metres per second.
+
+    These live here rather than in the per-camera calibration on purpose:
+    because they are metric, they describe a *ward*, not a camera, so one set
+    covers every camera in the room. Keeping them out of the calibration file
+    is what stops them being quietly re-tuned per camera.
+    """
+
+    enabled: bool = False
+
+    upright_h: float = 0.70
+    sitting_h: tuple[float, float] = (0.40, 0.70)
+    bed_band: tuple[float, float] = (-0.25, 0.45)
+
+    down_spread: tuple[float, float] = (0.9, 3.0)
+    down_h_torso: float = 0.60
+
+    vz_trigger: float = -0.90
+    vz_frames: int = 3
+    drop_trigger: float = 0.45
+    drop_window_s: float = 0.8
+    min_track_age_s: float = 1.0
+    rest_deadline_s: float = 2.5
+
+    suspect_s: float = 1.5
+    confirm_s: float = 8.0
+    confirm_motion_max: float = 0.15
+    recover_h: float = 0.70
+
+    slow_down_s: float = 20.0
+    bed_exit_s: float = 3.0
+
+    min_valid_kp: int = 8
+    min_mean_conf: float = 0.40
+    cooldown_s: float = 60.0
+
+    def to_thresholds(self):
+        """Build the detector's threshold object, dropping `enabled`."""
+        from ahfd.detect import FallThresholds
+
+        values = self.model_dump()
+        values.pop("enabled", None)
+        return FallThresholds(**values)
+
+
+class AlertConfig(BaseModel):
+    console: bool = True
+    jsonl_path: str | None = None
+    min_severity: int = 0
+
+
 class Config(BaseModel):
     source: str = "webcam://0"
+    calibration: str | None = None  # path to a per-camera calib YAML
     pose: PoseConfig = Field(default_factory=PoseConfig)
     smoothing: SmoothingConfig = Field(default_factory=SmoothingConfig)
+    detect: DetectConfig = Field(default_factory=DetectConfig)
+    alert: AlertConfig = Field(default_factory=AlertConfig)
     view: ViewConfig = Field(default_factory=ViewConfig)
     privacy: PrivacyConfig = Field(default_factory=PrivacyConfig)
 

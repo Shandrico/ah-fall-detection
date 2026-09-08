@@ -164,6 +164,28 @@ class GroundPlane:
 
     # -------------------------------------------------------------- mapping
 
+    def pixel_to_plane(
+        self, u: float, v: float, plane_z: float = 0.0
+    ) -> tuple[float, float] | None:
+        """Where the pixel's ray crosses the horizontal plane at height `plane_z`.
+
+        The floor is the common case, but not the only one. A patient lying in
+        bed is supported ~0.6 m up, and projecting them onto the *floor* puts
+        them roughly 1.5 m beyond the bed at 6 m range -- far enough to fall
+        outside the bed polygon entirely, which would defeat the zone that
+        exists precisely to recognise them. Testing a bed at its own surface
+        height fixes that.
+
+        Returns None for a ray that never descends to the plane.
+        """
+        d = self.ray(u, v)
+        if d[2] >= -1e-9:  # not heading downward
+            return None
+        t = (plane_z - self.height_m) / d[2]
+        if t <= 0.0:  # plane is behind the camera, or above it
+            return None
+        return (float(t * d[0]), float(t * d[1]))
+
     def pixel_to_floor(self, u: float, v: float) -> tuple[float, float] | None:
         """Where the pixel's ray meets the floor, in metres.
 
@@ -171,11 +193,7 @@ class GroundPlane:
         never descends to the floor. Callers must handle that: it is not an
         error, it is what a ceiling or a far wall looks like.
         """
-        d = self.ray(u, v)
-        if d[2] >= -1e-9:  # not heading downward
-            return None
-        t = self.height_m / -d[2]
-        return (float(t * d[0]), float(t * d[1]))
+        return self.pixel_to_plane(u, v, 0.0)
 
     def joint_height(
         self, u: float, v: float, contact_xy: tuple[float, float]

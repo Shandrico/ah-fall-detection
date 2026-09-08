@@ -23,6 +23,9 @@ def run(
         None, help="Source URI, e.g. webcam://0 or file://clip.mp4"
     ),
     config: Path = typer.Option(None, help="Path to a YAML config."),
+    calibration: Path = typer.Option(
+        None, help="Per-camera calibration YAML. Required for fall detection."
+    ),
     view: str = typer.Option(None, help="'skeleton' or 'none' for headless."),
     max_frames: int = typer.Option(
         0, help="Stop after N frames. 0 runs until you quit."
@@ -31,7 +34,11 @@ def run(
     """Run the pipeline: capture, pose, track, smooth, render."""
     import cv2
 
+    from ahfd.alert import ConsoleSink, JsonlSink, MultiSink
     from ahfd.capture import open_source
+    from ahfd.detect import FallStateMachine
+    from ahfd.features import FeatureExtractor
+    from ahfd.geometry.calibration import load_calibration
     from ahfd.pose import KeypointSmoother, build_estimator
     from ahfd.track import SimpleTracker
     from ahfd.viz import render_skeleton
@@ -40,7 +47,20 @@ def run(
     uri = source or cfg.source
     view_mode = view or cfg.view.mode
 
-    typer.echo("source:  " + uri)
+    # Open the source before loading the model: a busy webcam or a missing
+    # file should fail immediately, not after a 35 MB download.
+    src = open_source(uri)
+    typer.echo(
+        "source:  "
+        + uri
+        + "  "
+        + str(src.meta.width)
+        + "x"
+        + str(src.meta.height)
+        + " @ "
+        + format(src.meta.fps, ".0f")
+        + " fps"
+    )
     typer.echo("loading pose model (the first run downloads weights)...")
 
     estimator = build_estimator(cfg.pose)
@@ -57,22 +77,60 @@ def run(
 
     typer.echo("model:   " + estimator.name)
 
-    src = open_source(uri)
-    typer.echo(
-        "stream:  "
-        + str(src.meta.width)
-        + "x"
-        + str(src.meta.height)
-        + " @ "
-        + format(src.meta.fps, ".0f")
-        + " fps"
-    )
+    # --- detection, only if a camera calibration exists ------------------
+    # Fall detection is refused without calibration rather than guessed at.
+    # Every threshold is a height in metres, and without the camera's height
+    # and tilt there is no way to compute one -- a default would produce
+    # confident, meaningless alerts, which is worse than none.
+    extractor = None
+    machine = None
+    sink = None
+
+    calib_path = calibration or cfg.calibration
+    if cfg.detect.enabled:
+        if not calib_path:
+            raise typer.BadParameter(
+                "detect.enabled is set but no calibration was given. Fall "
+                "thresholds are metric, so the camera height and tilt are "
+                "required -- pass --calibration or set 'calibration:' in the "
+                "config. See calib/example_ward6.yaml."
+            )
+        calib = load_calibration(calib_path)
+        _check_calibration_resolution(calib, src.meta)
+        extractor = FeatureExtractor(
+            calib.ground,
+            zones=calib.zones,
+            min_keypoint_score=cfg.pose.min_keypoint_score,
+        )
+        machine = FallStateMachine(cfg.detect.to_thresholds())
+
+        sinks: list = []
+        if cfg.alert.console:
+            sinks.append(ConsoleSink(min_severity=cfg.alert.min_severity))
+        if cfg.alert.jsonl_path:
+            sinks.append(JsonlSink(cfg.alert.jsonl_path))
+        sink = MultiSink(*sinks)
+
+        typer.echo(
+            "calib:   "
+            + calib.camera_id
+            + "  height "
+            + format(calib.height_m, ".2f")
+            + " m  pitch "
+            + format(calib.ground.pitch_deg, ".1f")
+            + " deg  zones "
+            + str(len(calib.zones.zones))
+        )
+    else:
+        typer.echo("detect:  off -- pose and tracking only")
+
     if view_mode == "skeleton":
         typer.echo("press q in the window to quit")
 
     window = "ahfd -- skeleton only"
     fps_ema: float | None = None
     n = 0
+    events_seen = 0
 
     try:
         for frame in src:
@@ -91,6 +149,18 @@ def run(
                         for p in pose.people
                     )
                 )
+
+            if machine is not None and extractor is not None and sink is not None:
+                extractor.retain_only(tracker.live_ids)
+                machine.retain_only(tracker.live_ids)
+                for person in pose.people:
+                    features = extractor.extract(person, pose.t)
+                    if features is None:
+                        continue
+                    event = machine.update(features)
+                    if event is not None:
+                        sink.emit(event)
+                        events_seen += 1
 
             dt = time.perf_counter() - t0
             inst = 1.0 / dt if dt > 0 else 0.0
@@ -113,12 +183,46 @@ def run(
                 break
     finally:
         src.close()
+        if sink is not None:
+            sink.close()
         if view_mode == "skeleton":
             cv2.destroyAllWindows()
 
     typer.echo("processed " + str(n) + " frames")
     if fps_ema is not None:
         typer.echo("mean pipeline rate " + format(fps_ema, ".1f") + " fps")
+    if machine is not None:
+        typer.echo("events emitted " + str(events_seen))
+
+
+def _check_calibration_resolution(calib, meta) -> None:
+    """Refuse a calibration whose resolution does not match the stream.
+
+    Intrinsics are in pixels, so they only describe the resolution they were
+    measured at. Feed 1080p intrinsics to a 640x480 stream and every ray is
+    computed from the wrong focal length and principal point -- which yields
+    metric heights that are confidently, invisibly wrong. The skeleton still
+    looks perfect on screen, so nothing about the display hints at a problem;
+    only the numbers are broken. Worth an error rather than a warning.
+    """
+    k = calib.ground.intrinsics
+    if (k.width, k.height) != (meta.width, meta.height):
+        raise typer.BadParameter(
+            "calibration "
+            + repr(calib.camera_id)
+            + " is for "
+            + str(k.width)
+            + "x"
+            + str(k.height)
+            + " but the source is "
+            + str(meta.width)
+            + "x"
+            + str(meta.height)
+            + ". Intrinsics are resolution-specific, so this would give "
+            "plausible-looking but wrong metric heights. Either run the "
+            "source at the calibrated resolution, or write a calibration for "
+            "this one."
+        )
 
 
 @app.command()

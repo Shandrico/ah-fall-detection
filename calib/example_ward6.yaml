@@ -1,0 +1,72 @@
+# Example calibration: one camera covering three beds in a 6-bed Class C ward.
+#
+# Geometry taken from the Alexandra Hospital Class C floor plan:
+#   room 8400 mm wall to wall, central corridor 2328 mm
+#   each bed bay therefore (8400 - 2328) / 2 = 3036 mm deep
+#   three beds per side spread over 8400 mm, so ~2800 mm apart
+#   beds set at roughly 45 degrees in a herringbone layout
+#
+# The camera sits on one long wall looking across the corridor at the three
+# beds opposite, at 2.6 m with about 20 degrees of downtilt. That puts the
+# middle bed at ~6.9 m and the outer beds at ~7.4 m.
+#
+# NOTE ON COVERAGE: at 6.9 m, covering the 9620 mm the beds span needs about
+# 69.9 degrees of horizontal field of view. A D435i's colour stream gives
+# 69.4 degrees -- it does not fit, with no margin for mounting tolerance.
+# A wider camera is required for this one-camera-per-three-beds layout.
+# The figures below are kept as the D435i case so the shortfall is explicit
+# rather than assumed away.
+
+camera_id: ward6_left
+
+camera:
+  width: 1920
+  height: 1080
+  # Must run 1080p: at 480p a person at 8.4 m is only ~125 px tall, which is
+  # too small for reliable ankle and hip keypoints.
+  hfov_deg: 69.4
+  vfov_deg: 42.5
+
+  height_m: 2.60
+  pitch_deg: 20.0
+  roll_deg: 0.0
+
+  # Prefer the IMU when running on a D435i -- replace pitch/roll above with a
+  # measured gravity vector in camera coordinates, and tilt stops being a
+  # hand-entered constant that goes stale when the clamp mount sags:
+  # gravity: [0.0, 0.9397, 0.3420]
+
+# Floor coordinates: X runs along the camera wall, Y away from the camera,
+# both in metres, origin directly below the lens.
+zones:
+  - name: bed_1
+    kind: bed
+    top_m: 0.55        # MEASURE THIS PER BED -- ward beds adjust 0.4-0.8 m
+    polygon: [[-3.85, 6.15], [-2.44, 5.45], [-1.79, 6.75], [-3.20, 7.45]]
+
+  - name: bed_2
+    kind: bed
+    top_m: 0.55
+    polygon: [[-1.05, 6.15], [0.36, 5.45], [1.01, 6.75], [-0.40, 7.45]]
+
+  - name: bed_3
+    kind: bed
+    top_m: 0.55
+    polygon: [[1.75, 6.15], [3.16, 5.45], [3.81, 6.75], [2.40, 7.45]]
+
+  # The floor immediately around each bed is where a fall out of bed lands,
+  # so it is walkable floor rather than an exclusion. Bed zones gate the
+  # steady state only; they must never suppress the transition.
+  - name: corridor
+    kind: floor
+    polygon: [[-4.2, 3.0], [4.2, 3.0], [4.2, 5.45], [-4.2, 5.45]]
+
+  # Somewhere the system should not reason about people at all.
+  - name: doorway
+    kind: exclude
+    polygon: [[3.2, 8.0], [4.6, 8.0], [4.6, 9.6], [3.2, 9.6]]
+
+notes: >
+  Placeholder polygons derived from plan dimensions, not surveyed on site.
+  Re-author with the zone tool once the camera is physically mounted, and
+  measure each bed's surface height rather than trusting the 0.55 m default.

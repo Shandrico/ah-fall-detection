@@ -25,28 +25,85 @@ visible: what you see on screen is everything the system keeps.
 
 ## Status
 
-Working end to end on a plain webcam — no depth camera required:
+Detecting falls end to end on a plain webcam — no depth camera required:
 
 ```
-capture → pose (RTMO) → tracking → One-Euro smoothing → skeleton render
+capture → pose (RTMO) → tracking → One-Euro smoothing
+        → ground-plane geometry → metric features → fall state machine → alerts
 ```
 
-Not built yet: depth/floor calibration, bed zones, the fall state machine, alerting,
-and the evaluation harness. See the plan for sequencing.
+Not built yet: evaluation harness, RealSense/`.bag` sources, the RTMPose top-down
+backend for long range, and the pose bake-off.
 
 ## Quick start
 
 ```bash
 uv venv --python 3.10 .venv
-.venv/Scripts/python.exe -m pip install -e .   # or: uv pip install -e .
+uv pip install -e .
+uv pip install openvino          # optional: ~3.3x faster on an Intel iGPU
 
 ahfd info                        # versions + whether a RealSense is present
 ahfd run                         # webcam -> skeleton on black; q to quit
-ahfd run --source file://clip.mp4
-pytest                           # 68 tests, no camera needed
+ahfd run --config configs/detect_dev.yaml   # full pipeline, detection on
+pytest                           # 233 tests, no camera needed
 ```
 
 The first `run` downloads RTMO weights (cached afterwards).
+
+## How the detection works
+
+**A fall is a sequence, not a frame.** Treating it as a frame — "vertical speed
+exceeded a threshold, therefore alert" — is the standard way these systems become
+unusable, because a nurse sitting down quickly, a keypoint flicker or a tracker ID
+swap each produce one bad frame.
+
+| Phase | Test |
+|---|---|
+| **trigger** | torso drops fast, or drops far, quickly |
+| **rest** | body is genuinely on the floor, not on a bed |
+| **confirm** | stays down and still for ~8 s |
+
+Only the third pages anybody. Something appears on screen at 1.5 s so the system
+looks responsive, but the alert waits — buying a large false-alarm reduction for a
+latency cost that doesn't matter clinically.
+
+A second path catches what impact detection cannot: a frail patient sliding slowly
+to the floor produces no velocity spike at all, so a track that simply *is* down,
+outside a bed and still for long enough raises `PERSON_DOWN` regardless of how it
+got there.
+
+**Everything is in metres, which is the point.** One threshold set covers every
+camera in a ward. The test suite verifies the same fall is detected at 4.0, 6.0 and
+7.4 m with identical thresholds — something pixel-based thresholds cannot do, since
+the same fall at the far bed produces a fraction of the pixel velocity.
+
+### Two findings worth knowing
+
+**`floor_spread` separates upright from fallen, and does it backwards from
+intuition.** Project every joint onto the floor as if it lay there. A fallen person
+really is on the floor, so their projections span about a body length. A standing
+person's head ray, continued to the floor, lands *metres* past their feet. Measured
+on projected bodies: a prone body gives 1.64 m at both 4 m and 6 m — identical —
+while an upright one gives 5.19 m at 4 m and 7.54 m at 6 m.
+
+**Height alone is not range-independent.** The vertical-line height estimate is
+biased for a horizontal body, and the bias grows as people get closer: the same
+prone body reads 0.47 m at 6 m but 0.62 m at 4 m. So heights are used for *change*
+(the drop), and `floor_spread` decides posture.
+
+## Calibration vs tuning
+
+Different things, different frequency — and the metric design is what separates them.
+
+| | Calibration | Tuning |
+|---|---|---|
+| What | Camera height, tilt, intrinsics, bed zones | The thresholds |
+| Per what | **Every camera, every mount position** | **Once per ward** |
+| File | `calib/*.yaml` | `configs/*.yaml` |
+
+Calibration is mandatory and refused rather than guessed: without the camera's
+height and tilt there is no way to compute a height in metres, and a default would
+produce confident, meaningless alerts.
 
 ## Design decisions
 
@@ -98,8 +155,14 @@ src/ahfd/
   capture/       Frame + FrameSource; webcam and video today, rs:// and bag:// to come
   pose/          PoseEstimator protocol, RTMO backend, COCO-17 skeleton, One-Euro smoothing
   track/         greedy IoU tracker (placeholder for ByteTrack)
+  geometry/      ground plane, floor zones, per-camera calibration
+  features/      metric features: heights, vertical velocity, floor spread
+  detect/        the fall state machine and its events
+  alert/         console and JSONL sinks
   viz/           skeleton-on-black renderer
   cli.py         ahfd run / ahfd info
+calib/           per-camera calibration (measured, one per mount position)
+configs/         thresholds and runtime profiles (per ward, not per camera)
 ```
 
 ## Scope

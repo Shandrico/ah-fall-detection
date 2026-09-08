@@ -1,0 +1,53 @@
+# End-to-end development profile: full pipeline with fall detection on,
+# running on a laptop webcam and the Intel iGPU.
+#
+#   ahfd run --config configs/detect_dev.yaml
+#
+# The geometry comes from calib/laptop_webcam.yaml, which is plumbing-grade
+# only -- see the warnings in that file. Thresholds below are the untuned
+# defaults; they will not be right until they have been swept against
+# labelled clips.
+
+source: "webcam://0"
+calibration: "calib/laptop_webcam.yaml"
+
+pose:
+  backend: "rtmo"
+  model_size: "s"
+  model_input_size: [640, 640]
+  runtime: "openvino"   # falls back to onnxruntime/cpu if openvino is absent
+  device: "gpu"
+  min_score: 0.3
+  min_keypoint_score: 0.3
+
+smoothing:
+  enabled: true
+  min_cutoff: 1.0
+  beta: 0.007
+  d_cutoff: 1.0
+
+detect:
+  enabled: true
+  # Lower than the ward defaults, because a desk-height webcam sees a much
+  # smaller vertical range than a camera at 2.6 m -- a seated person's torso
+  # is barely below a standing one. Another reason not to tune here.
+  upright_h: 0.55
+  sitting_h: [0.25, 0.55]
+  vz_trigger: -0.60
+  drop_trigger: 0.30
+  confirm_s: 4.0
+  suspect_s: 1.0
+  slow_down_s: 10.0
+
+alert:
+  console: true
+  jsonl_path: "data/events/dev.jsonl"
+  min_severity: 0
+
+view:
+  mode: "skeleton"
+  show_ids: true
+  show_fps: true
+
+privacy:
+  allow_raw_capture: false

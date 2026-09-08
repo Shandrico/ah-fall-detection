@@ -1,0 +1,32 @@
+# Development calibration for a laptop webcam. NOT a real deployment.
+#
+# A built-in webcam sits at desk height looking roughly level, which is close
+# to the worst possible geometry for this method: a nearly level camera puts
+# the horizon near the middle of the frame, so the floor is compressed into
+# few rows and floor positions become very sensitive to keypoint noise.
+#
+# It exists so the whole chain -- capture, pose, tracking, geometry, features,
+# state machine, alerts -- can be exercised end to end with no depth camera.
+# The metres it produces are not trustworthy. Use it to check the plumbing,
+# never to tune a threshold.
+#
+# Measure your own height_m and pitch_deg if you want numbers that mean
+# anything: prop the laptop up, tilt the lid forward, and measure.
+
+camera_id: laptop_dev
+
+camera:
+  width: 640
+  height: 480
+  # Typical laptop webcam. Real intrinsics would come from a checkerboard
+  # calibration; this is a nominal figure and ignores lens distortion.
+  hfov_deg: 60.0
+
+  height_m: 1.00
+  pitch_deg: 15.0
+
+zones: []
+
+notes: >
+  Development plumbing only. Nearly level camera, guessed intrinsics, no
+  zones. Any metric height from this is indicative at best.
