@@ -33,13 +33,31 @@ capture → pose → tracking → One-Euro smoothing
                                                                 → evaluation
 ```
 
-Camera sources: webcam and video today, plus live RealSense (`rs://`) and
-deterministic `.bag` replay — the RealSense paths are written but only runnable
-once the D435i connects. Two pose backends (RTMO, RTMPose) behind one interface,
-with a bake-off harness. Event-level evaluation with false-alarms-per-hour.
+Camera sources: webcam, video, image sequences (`seq://`, for public datasets),
+plus live RealSense (`rs://`) and deterministic `.bag` replay — the RealSense
+paths are written but only runnable once the D435i connects. Two pose backends
+(RTMO, RTMPose) behind one interface, with a bake-off harness. A keypoint-only
+`tracks.jsonl` extract/replay path for fast, deterministic threshold tuning, and
+event-level evaluation with false-alarms-per-hour.
 
-Remaining: real accuracy numbers (needs staged clips), depth refinements, and
-the `seq://` dataset-image source.
+Remaining: real accuracy numbers (needs staged clips — see [docs/CLIPS.md](docs/CLIPS.md))
+and depth-based calibration refinements.
+
+## Recording and tuning against clips
+
+The data-driven workflow — record, extract keypoints once, then tune and score
+on the fast keypoint replay — is in **[docs/CLIPS.md](docs/CLIPS.md)**:
+
+```bash
+ahfd extract file://fall_01.mp4 data/tracks/fall_01.jsonl   # pose, once
+ahfd replay data/tracks/fall_01.jsonl --calibration calib/ward6.yaml --view skeleton
+ahfd sweep detect.vz_trigger --range -1.5:-0.5:0.1 \
+    --tracks data/tracks/ --annotations data/annotations/ --calibration calib/ward6.yaml
+ahfd eval data/annotations/ data/events/ --out eval/report.md
+```
+
+`tracks.jsonl` is keypoints only — no imagery — so it is fast to replay, safe to
+keep, and the basis of the committed golden regression test.
 
 ## Quick start
 

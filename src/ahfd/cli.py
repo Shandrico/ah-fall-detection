@@ -1,8 +1,12 @@
 """Command line entry points.
 
-    ahfd run                            webcam -> pose -> skeleton on black
-    ahfd run --source file://clip.mp4   the same pipeline over a recording
-    ahfd info                           environment and hardware report
+    ahfd run       webcam -> pose -> skeleton, and detection if calibrated
+    ahfd extract   a clip -> tracks.jsonl (keypoints only). Run pose once.
+    ahfd replay    tracks.jsonl -> detection, fast and deterministic
+    ahfd sweep     tune one threshold against labelled tracks
+    ahfd eval      score event logs against ground truth
+    ahfd bench     pose backend bake-off
+    ahfd info      environment and hardware report
 """
 
 from __future__ import annotations
@@ -15,6 +19,42 @@ import typer
 from ahfd.config import load_config
 
 app = typer.Typer(add_completion=False, help="Privacy-preserving fall detection.")
+
+
+def _build_detection(cfg, calib_path, meta):
+    """Wire up feature extractor + state machine + sinks from a calibration.
+
+    Shared by `run` and `replay` so the detection path is defined once. Returns
+    (extractor, machine, sink) or raises typer.BadParameter if the calibration
+    is missing or its resolution does not match the stream. Kept out of the
+    per-command bodies because getting the resolution guard wrong produces
+    plausible-but-wrong metres, and it must be identical everywhere.
+    """
+    from ahfd.alert import ConsoleSink, JsonlSink, MultiSink
+    from ahfd.detect import FallStateMachine
+    from ahfd.features import FeatureExtractor
+    from ahfd.geometry.calibration import load_calibration
+
+    if not calib_path:
+        raise typer.BadParameter(
+            "fall detection needs a calibration: thresholds are metric, so the "
+            "camera height and tilt are required. Pass --calibration or set "
+            "'calibration:' in the config. See calib/example_ward6.yaml."
+        )
+    calib = load_calibration(calib_path)
+    _check_calibration_resolution(calib, meta)
+
+    extractor = FeatureExtractor(
+        calib.ground, zones=calib.zones, min_keypoint_score=cfg.pose.min_keypoint_score
+    )
+    machine = FallStateMachine(cfg.detect.to_thresholds())
+
+    sinks: list = []
+    if cfg.alert.console:
+        sinks.append(ConsoleSink(min_severity=cfg.alert.min_severity))
+    if cfg.alert.jsonl_path:
+        sinks.append(JsonlSink(cfg.alert.jsonl_path))
+    return extractor, machine, MultiSink(*sinks), calib
 
 
 @app.command()
@@ -34,11 +74,7 @@ def run(
     """Run the pipeline: capture, pose, track, smooth, render."""
     import cv2
 
-    from ahfd.alert import ConsoleSink, JsonlSink, MultiSink
     from ahfd.capture import open_source
-    from ahfd.detect import FallStateMachine
-    from ahfd.features import FeatureExtractor
-    from ahfd.geometry.calibration import load_calibration
     from ahfd.pose import KeypointSmoother, build_estimator
     from ahfd.track import SimpleTracker
     from ahfd.viz import render_skeleton
@@ -88,29 +124,7 @@ def run(
 
     calib_path = calibration or cfg.calibration
     if cfg.detect.enabled:
-        if not calib_path:
-            raise typer.BadParameter(
-                "detect.enabled is set but no calibration was given. Fall "
-                "thresholds are metric, so the camera height and tilt are "
-                "required -- pass --calibration or set 'calibration:' in the "
-                "config. See calib/example_ward6.yaml."
-            )
-        calib = load_calibration(calib_path)
-        _check_calibration_resolution(calib, src.meta)
-        extractor = FeatureExtractor(
-            calib.ground,
-            zones=calib.zones,
-            min_keypoint_score=cfg.pose.min_keypoint_score,
-        )
-        machine = FallStateMachine(cfg.detect.to_thresholds())
-
-        sinks: list = []
-        if cfg.alert.console:
-            sinks.append(ConsoleSink(min_severity=cfg.alert.min_severity))
-        if cfg.alert.jsonl_path:
-            sinks.append(JsonlSink(cfg.alert.jsonl_path))
-        sink = MultiSink(*sinks)
-
+        extractor, machine, sink, calib = _build_detection(cfg, calib_path, src.meta)
         typer.echo(
             "calib:   "
             + calib.camera_id
@@ -193,6 +207,239 @@ def run(
         typer.echo("mean pipeline rate " + format(fps_ema, ".1f") + " fps")
     if machine is not None:
         typer.echo("events emitted " + str(events_seen))
+
+
+@app.command()
+def extract(
+    source: str = typer.Argument(..., help="Source URI: file://, seq://, webcam://, bag://"),
+    out: Path = typer.Argument(..., help="Output tracks.jsonl path."),
+    config: Path = typer.Option(None, help="Path to a YAML config (for the pose backend)."),
+    max_frames: int = typer.Option(0, help="Stop after N frames. 0 = whole clip."),
+) -> None:
+    """Run pose once over a clip and write keypoints to tracks.jsonl.
+
+    This is the only command that touches imagery for a recorded clip: it reads
+    the frames, extracts keypoints, and discards the pixels. Everything after
+    this -- replay, sweep, eval -- works on the keypoints alone, so it is fast,
+    deterministic, and privacy-safe. Run it once per clip; it is the slow step.
+    """
+    from ahfd.capture import open_source
+    from ahfd.io import TracksWriter
+    from ahfd.pose import KeypointSmoother, build_estimator
+    from ahfd.track import SimpleTracker
+
+    cfg = load_config(config)
+
+    src = open_source(source)
+    typer.echo(
+        "source:  " + source + "  "
+        + str(src.meta.width) + "x" + str(src.meta.height)
+        + " @ " + format(src.meta.fps, ".0f") + " fps"
+    )
+    typer.echo("loading pose model (the first run downloads weights)...")
+    estimator = build_estimator(cfg.pose)
+    tracker = SimpleTracker(min_keypoint_score=cfg.pose.min_keypoint_score)
+    smoother = (
+        KeypointSmoother(
+            min_cutoff=cfg.smoothing.min_cutoff,
+            beta=cfg.smoothing.beta,
+            d_cutoff=cfg.smoothing.d_cutoff,
+        )
+        if cfg.smoothing.enabled
+        else None
+    )
+    typer.echo("model:   " + estimator.name)
+
+    writer = TracksWriter(out)
+    n = 0
+    try:
+        for frame in src:
+            pose = estimator.estimate(frame)
+            pose = tracker.update(pose)
+            if smoother is not None:
+                smoother.retain_only(tracker.live_ids)
+                pose = pose.with_people(
+                    tuple(
+                        p.with_keypoints(smoother.smooth(p.track_id, pose.t, p.keypoints))
+                        for p in pose.people
+                    )
+                )
+            writer.write(pose)
+            n += 1
+            if max_frames and n >= max_frames:
+                break
+    finally:
+        src.close()
+        writer.close()
+
+    typer.echo("wrote " + str(writer.count) + " frames to " + str(out))
+
+
+@app.command()
+def replay(
+    tracks: Path = typer.Argument(..., help="A tracks.jsonl from `ahfd extract`."),
+    config: Path = typer.Option(None, help="Path to a YAML config (thresholds, calibration)."),
+    calibration: Path = typer.Option(None, help="Per-camera calibration YAML."),
+    view: str = typer.Option("none", help="'skeleton' to watch it, 'none' for headless."),
+) -> None:
+    """Replay tracks.jsonl through detection. No model, no camera.
+
+    Reads the keypoints extracted earlier and runs features -> state machine ->
+    alerts. Runs far faster than real time and gives byte-identical events every
+    run, which is what makes threshold tuning and golden regression tests
+    possible. `--view skeleton` renders the stick figures back for the demo, so
+    a canned clip can stand in for the camera on demo day.
+    """
+    from ahfd.capture.base import SourceMeta
+    from ahfd.io import read_tracks, tracks_meta
+
+    cfg = load_config(config)
+    calib_path = calibration or cfg.calibration
+
+    size = tracks_meta(tracks)
+    if size is None:
+        typer.echo("empty tracks file: " + str(tracks))
+        raise typer.Exit(code=1)
+
+    meta = SourceMeta(uri="tracks://" + str(tracks), width=size[0], height=size[1], fps=0.0)
+    extractor, machine, sink, calib = _build_detection(cfg, calib_path, meta)
+    typer.echo(
+        "calib:   " + calib.camera_id
+        + "  " + str(size[0]) + "x" + str(size[1])
+        + "  zones " + str(len(calib.zones.zones))
+    )
+
+    render = view == "skeleton"
+    if render:
+        import cv2
+
+        from ahfd.viz import render_skeleton
+
+    events_seen = 0
+    n = 0
+    live_ids: set[int] = set()
+    try:
+        for pose in read_tracks(tracks):
+            live_ids = {p.track_id for p in pose.people if p.track_id is not None}
+            extractor.retain_only(live_ids)
+            machine.retain_only(live_ids)
+            for person in pose.people:
+                features = extractor.extract(person, pose.t)
+                if features is None:
+                    continue
+                event = machine.update(features)
+                if event is not None:
+                    sink.emit(event)
+                    events_seen += 1
+            if render:
+                canvas = render_skeleton(pose, min_keypoint_score=cfg.pose.min_keypoint_score)
+                cv2.imshow("ahfd -- replay (skeleton only)", canvas)
+                if (cv2.waitKey(1) & 0xFF) == ord("q"):
+                    break
+            n += 1
+    finally:
+        sink.close()
+        if render:
+            cv2.destroyAllWindows()
+
+    typer.echo("replayed " + str(n) + " frames, emitted " + str(events_seen) + " events")
+
+
+@app.command()
+def sweep(
+    param: str = typer.Argument(..., help="Threshold to vary, e.g. detect.vz_trigger."),
+    range_: str = typer.Option(..., "--range", help="lo:hi:step, e.g. -1.5:-0.5:0.1"),
+    tracks: Path = typer.Option(..., help="Directory of <clip>.jsonl track files."),
+    annotations: Path = typer.Option(..., help="Directory of <clip>.json ground truth."),
+    config: Path = typer.Option(None, help="Base config."),
+    calibration: Path = typer.Option(None, help="Per-camera calibration YAML."),
+) -> None:
+    """Sweep one threshold and print the recall vs false-alarms/hour curve.
+
+    For each value it replays every track file through detection and scores the
+    result, so the whole curve comes from the fast keypoint replay rather than
+    re-running pose. The crossover point on this curve is how an operating point
+    gets chosen, and the curve itself is the strongest single figure for the
+    report.
+    """
+    from ahfd.capture.base import SourceMeta
+    from ahfd.eval import GroundTruth, evaluate
+    from ahfd.io import read_tracks, tracks_meta
+
+    lo, hi, step = (float(x) for x in range_.split(":"))
+    section, _, field = param.partition(".")
+    if section != "detect":
+        raise typer.BadParameter("only detect.* thresholds can be swept, got " + repr(param))
+
+    base = load_config(config)
+    calib_path = calibration or base.calibration
+
+    clips = sorted(tracks.glob("*.jsonl"))
+    if not clips:
+        raise typer.BadParameter("no *.jsonl track files in " + str(tracks))
+
+    typer.echo(param + "  |  recall  |  FA/hour  |  latency(s)")
+    typer.echo("-" * 48)
+
+    value = lo
+    while value <= hi + 1e-9:
+        cfg = base.model_copy(deep=True)
+        if not hasattr(cfg.detect, field):
+            raise typer.BadParameter("unknown detect threshold: " + repr(field))
+        setattr(cfg.detect, field, value)
+
+        pairs = []
+        for clip in clips:
+            ann = annotations / (clip.stem + ".json")
+            if not ann.exists():
+                continue
+            truth = GroundTruth.load(ann)
+            size = tracks_meta(clip)
+            if size is None:
+                continue
+            meta = SourceMeta(uri=str(clip), width=size[0], height=size[1], fps=0.0)
+            extractor, machine, _sink, _calib = _build_detection(cfg, calib_path, meta)
+
+            events = _replay_events(clip, extractor, machine, read_tracks)
+            pairs.append((truth, events))
+
+        report = evaluate(pairs)
+        typer.echo(
+            format(value, "8.3f")
+            + "  |  " + format(report.recall, "6.3f")
+            + "  |  " + format(report.false_alarms_per_hour, "7.2f")
+            + "  |  " + format(report.latency_median(), "6.1f")
+        )
+        value += step
+
+
+def _replay_events(clip, extractor, machine, read_tracks):
+    """Replay one track file to an in-memory list of PredictedEvents."""
+    from ahfd.eval import PredictedEvent
+
+    events = []
+    for pose in read_tracks(clip):
+        live = {p.track_id for p in pose.people if p.track_id is not None}
+        extractor.retain_only(live)
+        machine.retain_only(live)
+        for person in pose.people:
+            features = extractor.extract(person, pose.t)
+            if features is None:
+                continue
+            event = machine.update(features)
+            if event is not None:
+                events.append(
+                    PredictedEvent(
+                        type=event.type,
+                        t_alert=event.t_alert,
+                        t_trigger=event.t_trigger,
+                        track_id=event.track_id,
+                        severity=event.severity,
+                        zone=event.zone,
+                        evidence=event.evidence,
+                    )
+                )
+    return events
 
 
 @app.command()

@@ -34,9 +34,9 @@ def open_source(uri: str) -> FrameSource:
         return BagSource(uri[len("bag://") :])
 
     if uri.startswith("seq://"):
-        raise NotImplementedError(
-            "dataset image sequence source is not implemented yet (seq://)"
-        )
+        from ahfd.capture.imageseq import ImageSequenceSource
+
+        return ImageSequenceSource(uri[len("seq://") :], uri=uri)
 
     # Bare path -- treat as a video file.
     return VideoSource(uri, uri=uri)
