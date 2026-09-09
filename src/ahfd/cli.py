@@ -570,20 +570,33 @@ def dashboard(
         )
 
     state = DashboardState()
-    runner = PipelineRunner(uri, cfg, calib_path, state, show_rgb=show_rgb)
-    server = DashboardServer(state, host=bind_host, port=bind_port)
+    controller = DashboardController(
+        cfg,
+        calib_path,
+        state,
+        source=uri,
+        show_rgb=show_rgb,
+        # Only a process started with --rgb (or the config flag) may turn RGB
+        # back on from the page. Turning it off is always allowed.
+        rgb_authorised=show_rgb,
+        log=typer.echo,
+    )
+    server = DashboardServer(
+        state, host=bind_host, port=bind_port, controller=controller
+    )
 
     typer.echo("source:  " + uri + ("  [RGB]" if show_rgb else "  [skeleton only]"))
     typer.echo("serving: http://" + bind_host + ":" + str(bind_port) + "  (Ctrl+C to stop)")
+    typer.echo("         camera and pose model can be changed from the page")
 
-    runner.start()
+    controller.start()
     try:
         server.serve_forever()
     except KeyboardInterrupt:
         typer.echo("\nstopping...")
     finally:
         server.shutdown()
-        runner.stop()
+        controller.stop()
 
 
 @app.command()

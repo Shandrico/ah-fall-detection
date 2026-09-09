@@ -623,6 +623,85 @@ def _fake_rs(specs, boom=None):
     return mod
 
 
+# ------------------------------------------------------------ cli wiring
+
+
+def _stub_serving(monkeypatch):
+    """Ctrl+C the server the moment it would block, and let shutdown return.
+
+    BaseServer.shutdown() waits on an event that only serve_forever() sets, so
+    a stub that never enters the real loop has to close the socket itself or
+    the command's finally block hangs forever.
+    """
+    monkeypatch.setattr(
+        DashboardServer,
+        "serve_forever",
+        lambda self, *a, **k: (_ for _ in ()).throw(KeyboardInterrupt),
+    )
+    monkeypatch.setattr(DashboardServer, "shutdown", DashboardServer.server_close)
+
+
+class TestDashboardCommand:
+    """Actually execute `ahfd dashboard`.
+
+    Every other test here reaches for DashboardController directly, so the
+    command body itself -- which names it imports, which keywords it passes --
+    was never run. A rename there is a NameError the moment a user types the
+    command and nothing else would catch it.
+    """
+
+    def test_command_wires_controller_and_server(self, tmp_path, monkeypatch):
+        from typer.testing import CliRunner
+
+        from ahfd.cli import app
+
+        started: list = []
+        monkeypatch.setattr(PipelineRunner, "start", lambda self: started.append(self))
+        monkeypatch.setattr(PipelineRunner, "stop", lambda self, timeout=5.0: None)
+        _stub_serving(monkeypatch)
+
+        cfg = tmp_path / "cfg.yaml"
+        cfg.write_text(
+            "source: \"seq://" + str(tmp_path).replace("\\", "/") + "\"\n"
+            "detect:\n  enabled: false\n"
+            "dashboard:\n  host: \"127.0.0.1\"\n  port: 0\n"
+            "  sources:\n    - label: \"Clip\"\n      uri: \"webcam://0\"\n",
+            encoding="utf-8",
+        )
+
+        result = CliRunner().invoke(app, ["dashboard", "--config", str(cfg)])
+        assert result.exit_code == 0, result.output
+        assert "camera and pose model can be changed from the page" in result.output
+        assert len(started) == 1  # exactly one pipeline, started through the controller
+
+    def test_backend_override_reaches_the_pipeline(self, tmp_path, monkeypatch):
+        from typer.testing import CliRunner
+
+        from ahfd.cli import app
+
+        made: list = []
+        monkeypatch.setattr(
+            PipelineRunner, "start", lambda self: made.append((self.source_uri, self.cfg))
+        )
+        monkeypatch.setattr(PipelineRunner, "stop", lambda self, timeout=5.0: None)
+        _stub_serving(monkeypatch)
+
+        cfg = tmp_path / "cfg.yaml"
+        cfg.write_text(
+            "detect:\n  enabled: false\n"
+            "dashboard:\n  host: \"127.0.0.1\"\n  port: 0\n",
+            encoding="utf-8",
+        )
+        result = CliRunner().invoke(
+            app,
+            ["dashboard", "--config", str(cfg), "--source", "webcam://3",
+             "--backend", "rtmpose"],
+        )
+        assert result.exit_code == 0, result.output
+        assert made[0][0] == "webcam://3"
+        assert made[0][1].pose.backend == "rtmpose"
+
+
 # --------------------------------------------------------------- config
 
 

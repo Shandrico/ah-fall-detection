@@ -69,15 +69,23 @@ def make_handler(state: DashboardState, controller=None):
             return not origin or origin.split("//", 1)[-1] == self.headers.get("Host")
 
         def _body(self) -> dict | None:
-            """Parse a small JSON object. None means malformed."""
+            """Parse a small JSON object. None means malformed or too large.
+
+            The announced bytes are always consumed first, even when the
+            request is going to be rejected: replying to a body we never read
+            resets the connection and the client never sees the reason.
+            """
             try:
                 n = int(self.headers.get("Content-Length") or 0)
             except ValueError:
                 return None
-            if n <= 0 or n > 8192:  # a control message is tiny by definition
+            if n <= 0 or n > 1 << 20:
+                return None
+            raw = self.rfile.read(n)
+            if n > 8192:  # a control message is tiny by definition
                 return None
             try:
-                payload = json.loads(self.rfile.read(n).decode("utf-8"))
+                payload = json.loads(raw.decode("utf-8"))
             except (ValueError, UnicodeDecodeError):
                 return None
             return payload if isinstance(payload, dict) else None
@@ -99,9 +107,29 @@ def make_handler(state: DashboardState, controller=None):
             else:
                 self._send(404, "text/plain", b"not found")
 
+        def _drain(self) -> None:
+            """Discard an unread request body.
+
+            Answering before reading it makes the client see a reset socket
+            instead of the response -- on Windows, a ConnectionAbortedError
+            rather than the 403 that explains what happened.
+            """
+            try:
+                n = int(self.headers.get("Content-Length") or 0)
+            except ValueError:
+                return
+            if 0 < n <= 1 << 20:
+                self.rfile.read(n)
+
         def do_POST(self) -> None:  # noqa: N802
             path = self.path.split("?", 1)[0]
-            if not self._same_origin():
+            same_origin = self._same_origin()
+            # Only the switch handler parses a body; every other route has to
+            # discard one before replying. See _drain.
+            if path != "/api/switch" or not same_origin:
+                self._drain()
+
+            if not same_origin:
                 self._json(403, {"ok": False, "error": "cross-origin POST refused"})
             elif path.startswith("/api/ack/"):
                 state.acknowledge(path[len("/api/ack/"):])
