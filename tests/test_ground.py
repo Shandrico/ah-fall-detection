@@ -216,6 +216,19 @@ class TestGravity:
         assert plane.pitch_deg == pytest.approx(pitch, abs=1e-9)
         assert plane.roll_deg == pytest.approx(0.0, abs=1e-9)
 
+    @pytest.mark.parametrize("tilt", [10.0, 24.75, 40.0])
+    def test_downward_d435i_vector_gives_positive_downtilt(self, tilt):
+        """Regression: a real D435i pointed down reads a NEGATIVE z component
+        (opposite the level-camera model), which used to raise 'pitch must be
+        positive' and crash `ahfd calibrate`. A downward mount must resolve to
+        that downtilt, not an error."""
+        g = np.array(
+            [0.0, math.cos(math.radians(tilt)), -math.sin(math.radians(tilt))]
+        )
+        plane = GroundPlane.from_gravity(WARD_INTRINSICS, 2.6, g)
+        assert plane.pitch_deg == pytest.approx(tilt, abs=1e-6)
+        assert plane.roll_deg == pytest.approx(0.0, abs=1e-6)
+
     @pytest.mark.parametrize("pitch,roll", [(20.0, 5.0), (30.0, -8.0)])
     def test_recovers_pitch_and_roll(self, pitch, roll):
         p, r = math.radians(pitch), math.radians(roll)

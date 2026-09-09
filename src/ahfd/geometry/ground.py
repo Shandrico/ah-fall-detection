@@ -127,6 +127,18 @@ class GroundPlane:
         constant that silently goes stale when the mount sags.
         """
         pitch, roll = cls.pitch_roll_from_gravity(gravity_cam)
+        # A fall-detection camera always looks down, so the tilt magnitude IS
+        # the downtilt. The RealSense accelerometer's sign convention makes a
+        # downward tilt come out negative from the optical-frame formula (a
+        # real D435i pointed down reads ~ -25 deg), which the level-camera model
+        # here would otherwise reject outright. Take the magnitude, and fold
+        # roll into [-90, 90] so the same convention cannot flip a level camera
+        # to 180 deg. An upward-looking camera is not a valid mount.
+        pitch = abs(pitch)
+        if roll > 90.0:
+            roll -= 180.0
+        elif roll < -90.0:
+            roll += 180.0
         return cls(
             intrinsics=intrinsics,
             height_m=height_m,
