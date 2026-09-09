@@ -533,6 +533,7 @@ def dashboard(
     source: str = typer.Option(None, help="Source URI. Defaults to the config's source."),
     config: Path = typer.Option(None, help="Path to a YAML config."),
     calibration: Path = typer.Option(None, help="Per-camera calibration (for detection)."),
+    backend: str = typer.Option(None, help="Override the pose backend: rtmo | rtmpose | yolo."),
     host: str = typer.Option(None, help="Bind address. Default 127.0.0.1 (localhost)."),
     port: int = typer.Option(None, help="Port. Default 8000."),
     rgb: bool = typer.Option(
@@ -551,6 +552,8 @@ def dashboard(
     from ahfd.dashboard import DashboardServer, DashboardState, PipelineRunner
 
     cfg = load_config(config)
+    if backend:
+        cfg.pose.backend = backend  # CLI override -- swap models without editing the config
     uri = source or cfg.source
     calib_path = calibration or cfg.calibration
     bind_host = host or cfg.dashboard.host
