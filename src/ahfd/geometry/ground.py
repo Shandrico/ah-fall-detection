@@ -126,20 +126,30 @@ class GroundPlane:
         depth is unusable at range: orientation stops being a hand-measured
         constant that silently goes stale when the mount sags.
         """
-        g = np.asarray(gravity_cam, dtype=float).reshape(3)
-        norm = float(np.linalg.norm(g))
-        if norm < 1e-6:
-            raise ValueError("gravity vector is degenerate (near zero length)")
-        g = g / norm
-
-        pitch = math.degrees(math.asin(float(np.clip(g[2], -1.0, 1.0))))
-        roll = math.degrees(math.atan2(float(g[0]), float(g[1])))
+        pitch, roll = cls.pitch_roll_from_gravity(gravity_cam)
         return cls(
             intrinsics=intrinsics,
             height_m=height_m,
             pitch_deg=pitch,
             roll_deg=roll,
         )
+
+    @staticmethod
+    def pitch_roll_from_gravity(gravity_cam: np.ndarray) -> tuple[float, float]:
+        """Camera downtilt (pitch) and roll, in degrees, from a gravity vector.
+
+        Pure vector math -- no intrinsics or height needed -- so a live angle
+        readout (`ahfd level`) can reuse exactly the same conversion the
+        calibration uses, which keeps the two from disagreeing.
+        """
+        g = np.asarray(gravity_cam, dtype=float).reshape(3)
+        norm = float(np.linalg.norm(g))
+        if norm < 1e-6:
+            raise ValueError("gravity vector is degenerate (near zero length)")
+        g = g / norm
+        pitch = math.degrees(math.asin(float(np.clip(g[2], -1.0, 1.0))))
+        roll = math.degrees(math.atan2(float(g[0]), float(g[1])))
+        return pitch, roll
 
     # ------------------------------------------------------------- internals
 

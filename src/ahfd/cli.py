@@ -733,6 +733,64 @@ def _check_calibration_resolution(calib, meta) -> None:
 
 
 @app.command()
+def level(
+    source: str = typer.Option("rs://", help="Source with an IMU (the D435i)."),
+    target_pitch: float = typer.Option(
+        20.0, help="Desired downtilt, for the on-screen guidance."
+    ),
+) -> None:
+    """Live camera pitch/roll from the IMU -- for aiming the mount.
+
+    Watch the numbers update as you tilt the camera: set pitch to your target
+    downtilt (~20 deg for the ward geometry) and roll near 0 (level). Needs the
+    RealSense IMU; a plain webcam has no IMU and cannot report an angle.
+
+    Ctrl+C to stop. Nothing is written -- this is a read-only aiming aid.
+    """
+    import numpy as np
+
+    from ahfd.capture import open_source
+    from ahfd.geometry.ground import GroundPlane
+
+    src = open_source(source)
+    typer.echo("aiming aid -- target pitch " + format(target_pitch, ".0f") + " deg, roll 0. Ctrl+C to stop.")
+
+    seen_imu = False
+    try:
+        for frame in src:
+            if frame.gravity is None:
+                # First frame without gravity: this source has no IMU.
+                if not seen_imu:
+                    typer.echo(
+                        "this source reports no IMU gravity -- angle readout "
+                        "needs the RealSense (rs://). A webcam has no IMU."
+                    )
+                    break
+                continue
+            seen_imu = True
+            pitch, roll = GroundPlane.pitch_roll_from_gravity(np.asarray(frame.gravity))
+            level_hint = "LEVEL" if abs(roll) < 1.5 else ("tilt " + ("right" if roll > 0 else "left"))
+            pitch_hint = (
+                "on target"
+                if abs(pitch - target_pitch) < 2.0
+                else ("aim down" if pitch < target_pitch else "aim up")
+            )
+            # Overwrite one line in place.
+            print(
+                "\rpitch {:6.1f} deg ({:<8})  roll {:6.1f} deg ({:<10})".format(
+                    pitch, pitch_hint, roll, level_hint
+                ),
+                end="",
+                flush=True,
+            )
+    except KeyboardInterrupt:
+        pass
+    finally:
+        src.close()
+        print()  # newline after the in-place line
+
+
+@app.command()
 def info() -> None:
     """Report versions and whether a RealSense is actually present.
 
