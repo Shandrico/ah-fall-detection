@@ -99,6 +99,9 @@ pytest                           # 364 tests, no camera needed
 
 The first `run` downloads pose weights (cached afterwards).
 
+**Full how-to** — sources (webcam/RealSense), backends (RTMO/RTMPose/YOLO),
+devices, calibration, tuning: **[docs/USAGE.md](docs/USAGE.md)**.
+
 ## Two pose backends
 
 | Backend | How | Speed (iGPU, ~5 people) | Best for |
