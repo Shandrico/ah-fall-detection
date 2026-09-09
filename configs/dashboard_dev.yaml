@@ -23,8 +23,8 @@ pose:
   model_size: "s"
   runtime: "openvino"   # Intel iGPU; falls back to CPU if openvino is absent
   device: "gpu"
-  min_score: 0.3
-  min_keypoint_score: 0.3
+  min_score: 0.5
+  min_keypoint_score: 0.45
 
 smoothing:
   enabled: true

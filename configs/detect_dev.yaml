@@ -17,8 +17,8 @@ pose:
   model_input_size: [640, 640]
   runtime: "openvino"   # falls back to onnxruntime/cpu if openvino is absent
   device: "gpu"
-  min_score: 0.3
-  min_keypoint_score: 0.3
+  min_score: 0.5
+  min_keypoint_score: 0.45
 
 smoothing:
   enabled: true
