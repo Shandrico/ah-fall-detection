@@ -37,6 +37,15 @@ dashboard:
   port: 8000
   show_rgb: true        # this is a monitoring demo; RGB is the point
   jpeg_quality: 92
+  # The picker on the page. A connected RealSense is added automatically.
+  sources:
+    - label: "Laptop webcam"
+      uri: "webcam://0"
+    - label: "USB webcam"
+      uri: "webcam://1"
+    - label: "Staged clip"
+      uri: "file://data/clips/fall_01.mp4"
+  allow_custom_source: true
 
 privacy:
   allow_raw_capture: false

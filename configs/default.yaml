@@ -7,17 +7,11 @@ pose:
   # Which PoseEstimator implementation to use. The model is a config line so the
   # pose bake-off (rtmo / yolo / rtmpose) is a swap, not a rewrite.
   backend: "rtmo"
-  model_size: "s"        # s / m / l -- s is the CPU-friendly default
-  # Fixed by the published ONNX graph -- changing it needs a model re-export,
-  # not a config edit. The code refuses any other value rather than failing
-  # deep inside onnxruntime.
   model_input_size: [640, 640]
-
-  # Measured: onnxruntime + cpu is ~210 ms/frame (about 5 fps) on a laptop CPU.
-  # Fine for development, too slow for a live demo. Faster options:
-  #   onnxruntime + cuda   NVIDIA GPU -- and the same path the Jetson uses,
-  #                        so dev and deploy share one runtime
-  #   openvino    + gpu    Intel iGPU / Arc
+  # onnxruntime + cpu is ~210 ms/frame (about 5 fps) on a laptop CPU: fine for
+  # development, too slow for a live demo. Faster combinations:
+  #   onnxruntime + cuda   NVIDIA GPU -- the same path the Jetson uses
+  #   openvino    + gpu    Intel iGPU / Arc -- the fast option on this laptop
   #   openvino    + npu    Intel Core Ultra NPU
   # Each needs its own extra package installed.
   runtime: "onnxruntime" # "onnxruntime" | "openvino" | "opencv"
@@ -40,6 +34,21 @@ view:
   show_bbox: false
   show_ids: true
   show_fps: true
+
+dashboard:
+  host: "127.0.0.1"      # localhost only -- not exposed to the ward network
+  port: 8000
+  show_rgb: false        # skeleton-only by default; --rgb needs AH/DPO sign-off
+  jpeg_quality: 90
+  # Cameras the page offers in its picker. A connected RealSense is appended
+  # automatically; nothing else is probed, because scanning webcam indices is
+  # slow and can grab a device another program is already using.
+  sources:
+    - label: "Laptop webcam"
+      uri: "webcam://0"
+  # backends: []         # empty offers all of rtmo / rtmpose / yolo
+  allow_custom_source: true   # the free-text URI box on the page
+  switch_timeout_s: 5.0       # how long to wait for a camera to be released
 
 privacy:
   # Raw frame capture is for consented staged-fall sessions only. All three of

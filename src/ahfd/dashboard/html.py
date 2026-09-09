@@ -32,9 +32,21 @@ DASHBOARD_HTML = r"""<!doctype html>
   h1 { font-size:17px; margin:0; letter-spacing:.3px; }
   h1 .dot { color:var(--ok); }
   .controls { display:flex; gap:8px; align-items:center; }
-  select, button { background:var(--panel); color:var(--ink); border:1px solid var(--line);
+  select, button, input { background:var(--panel); color:var(--ink); border:1px solid var(--line);
                    border-radius:7px; padding:6px 10px; font-size:13px; cursor:pointer; }
   button:hover { border-color:var(--accent); }
+  input { cursor:text; }
+  select:disabled, button:disabled, input:disabled { opacity:.45; cursor:not-allowed; }
+  .bar { display:flex; gap:8px; align-items:center; flex-wrap:wrap; font-size:13px;
+         padding:10px 18px; border-bottom:1px solid var(--line); background:var(--panel2); }
+  .bar label, .bar .hint { color:var(--muted); font-size:12px; }
+  .bar .hint { margin-left:auto; text-align:right; }
+  .pill { padding:3px 10px; border-radius:999px; font-size:11px; background:#22304a;
+          text-transform:uppercase; letter-spacing:.6px; }
+  .pill.running { background:var(--ok); color:#04210b; }
+  .pill.switching, .pill.starting { background:var(--warn); color:#000; }
+  .pill.error, .pill.ended, .pill.stopped { background:var(--crit); color:#fff; }
+  .feed.switching img { opacity:.3; filter:grayscale(1); transition:opacity .2s; }
   .metrics { display:grid; grid-template-columns:repeat(6,1fr); gap:10px; padding:14px 14px 0; }
   @media (max-width:1100px){ .metrics{ grid-template-columns:repeat(3,1fr);} }
   .metric { background:var(--panel); border:1px solid var(--line); border-radius:10px; padding:10px 12px; }
@@ -87,6 +99,18 @@ DASHBOARD_HTML = r"""<!doctype html>
   </div>
 </header>
 
+<div class="bar" id="bar">
+  <span class="pill" id="rt-status">idle</span>
+  <label for="src">camera</label>
+  <select id="src"></select>
+  <input id="srcuri" placeholder="or a URI: file://clip.mp4" size="22"/>
+  <button id="srcgo">Switch</button>
+  <label for="bk">model</label>
+  <select id="bk"></select>
+  <button id="rgb">RGB: off</button>
+  <span class="hint" id="rt-detail"></span>
+</div>
+
 <section class="metrics">
   <div class="metric"><div class="k">FPS</div><div class="v" id="m-fps">-</div></div>
   <div class="metric"><div class="k">People in view</div><div class="v" id="m-people">0</div></div>
@@ -121,6 +145,7 @@ DASHBOARD_HTML = r"""<!doctype html>
 <script>
 const RANK = {LOW:0, BED_EXIT:1, NEAR_MISS:1, FALL_SUSPECTED:2, PERSON_DOWN:3, FALL_CONFIRMED:4};
 let soundOn = false, lastAlertCount = 0;
+let opts = null, lastSwitchSeq = -1;
 
 function esc(s){ return String(s).replace(/[&<>]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;'}[c])); }
 function evi(e){ return e.evidence ? Object.entries(e.evidence).map(([k,v])=>k+'='+v).join('  ') : ''; }
@@ -138,6 +163,51 @@ function beep(){
 
 async function ack(id){ await fetch('/api/ack/'+id,{method:'POST'}); refresh(); }
 window._ack = ack;
+
+function hint(msg){ document.getElementById('rt-detail').textContent = msg; }
+
+// A JSON body, not a bare path: a POST with no body is a CORS simple request
+// that any other tab the nurse has open could fire at us. See server.py.
+async function post(path, body){
+  const r = await fetch(path, {method:'POST',
+    headers:{'Content-Type':'application/json'}, body:JSON.stringify(body)});
+  try { return await r.json(); } catch(_){ return {ok:false, error:'server error'}; }
+}
+
+async function switchTo(patch){
+  const r = await post('/api/switch', patch);
+  if(!r.ok) hint(r.error || 'switch failed');
+  refresh();
+}
+
+function fill(id, pairs){
+  document.getElementById(id).innerHTML =
+    pairs.map(([v,t])=>`<option value="${esc(v)}">${esc(t)}</option>`).join('');
+}
+
+async function loadOptions(){
+  try { opts = await (await fetch('/api/options')).json(); } catch(_){ return; }
+  if(!opts || !opts.ok){ document.getElementById('bar').style.display='none'; return; }
+  fill('src', opts.sources.map(s=>[s.uri, s.label + (s.detected ? ' \u2022 connected' : '')]));
+  fill('bk',  opts.backends.map(b=>[b,b]));
+  document.getElementById('srcuri').disabled = !opts.allow_custom_source;
+  document.getElementById('rgb').disabled    = !opts.allow_rgb;
+}
+
+// Never yank a <select> out from under the user: skip the one they are using.
+function syncSelects(rt){
+  [['src', rt.source], ['bk', rt.backend]].forEach(([id, want])=>{
+    const el = document.getElementById(id);
+    if(!want || el === document.activeElement) return;
+    if(![...el.options].some(o=>o.value===want)){
+      el.insertAdjacentHTML('afterbegin', `<option value="${esc(want)}">${esc(want)}</option>`);
+    }
+    el.value = want;
+  });
+  if(rt.show_rgb != null){
+    document.getElementById('rgb').textContent = 'RGB: ' + (rt.show_rgb ? 'on' : 'off');
+  }
+}
 
 function card(e, withAck){
   const sev = e.severity||0;
@@ -159,7 +229,31 @@ async function refresh(){
   document.getElementById('m-bed').textContent = s.counts.bed_exit;
   document.getElementById('m-up').textContent = fmtUp(s.uptime_s);
   document.getElementById('q-count').textContent = s.open_count;
-  document.getElementById('feedtag').textContent = s.people + ' in view · ' + s.fps + ' fps';
+
+  const rt = s.runtime || {};
+  const busy = rt.status === 'switching' || rt.status === 'starting';
+  const pill = document.getElementById('rt-status');
+  pill.className = 'pill ' + (rt.status || '');
+  pill.textContent = rt.status || 'idle';
+  document.querySelector('.feed').classList.toggle('switching', busy);
+  ['src','srcgo','bk'].forEach(id=>{ document.getElementById(id).disabled = busy; });
+  document.getElementById('srcuri').disabled = busy || !(opts && opts.allow_custom_source);
+
+  hint(
+      rt.status === 'error' ? (rt.error || 'error')
+    : rt.warning ? rt.warning
+    : (rt.status === 'starting' && rt.since_s > 3)
+        ? 'loading model \u2014 the first use of a backend downloads weights (~35 MB)'
+    : [rt.model, rt.resolution, rt.show_rgb ? 'RGB' : 'skeleton only']
+        .filter(Boolean).join(' \u00b7 '));
+
+  if(rt.switch_seq !== lastSwitchSeq){ lastSwitchSeq = rt.switch_seq; syncSelects(rt); }
+
+  // A frozen last frame from the old camera looks exactly like a live one, so
+  // say which way the feed is pointing while a switch is in flight.
+  document.getElementById('feedtag').textContent = busy
+    ? 'switching to ' + (rt.source_label || rt.source || '\u2026')
+    : s.people + ' in view \u00b7 ' + s.fps + ' fps';
 
   if (s.open_count > lastAlertCount) beep();
   lastAlertCount = s.open_count;
@@ -191,6 +285,19 @@ document.getElementById('full').addEventListener('click', ()=>{
 });
 document.getElementById('sev').addEventListener('change', refresh);
 
+document.getElementById('src').addEventListener('change', e=>switchTo({source:e.target.value}));
+document.getElementById('bk').addEventListener('change',  e=>switchTo({backend:e.target.value}));
+document.getElementById('srcgo').addEventListener('click', ()=>{
+  const v = document.getElementById('srcuri').value.trim();
+  if(v) switchTo({source:v});
+});
+document.getElementById('rgb').addEventListener('click', async function(){
+  const r = await post('/api/switch', {show_rgb: this.textContent.endsWith('off')});
+  if(r.ok) this.textContent = 'RGB: ' + (r.show_rgb ? 'on' : 'off');
+  else hint(r.error || 'could not change the view');
+});
+
+loadOptions();
 refresh();
 setInterval(refresh, 1000);
 </script>

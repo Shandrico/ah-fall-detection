@@ -548,8 +548,11 @@ def dashboard(
     One pipeline thread produces frames; the web server only forwards them, so
     extra viewers cost nothing and there is no per-request encoding. Skeleton-
     only by default; --rgb (or dashboard.show_rgb in config) shows video.
+
+    --source and --backend set the *initial* camera and model; both can then be
+    changed from the page (see dashboard.sources in the config).
     """
-    from ahfd.dashboard import DashboardServer, DashboardState, PipelineRunner
+    from ahfd.dashboard import DashboardController, DashboardServer, DashboardState
 
     cfg = load_config(config)
     if backend:
@@ -825,29 +828,33 @@ def info() -> None:
             ver = "(installed)"
         typer.echo(import_name.ljust(11) + " " + ver)
 
-    try:
-        import pyrealsense2 as rs
-    except ImportError:
+    # Same probe the dashboard's camera picker uses, so the two can never
+    # disagree about what is plugged in.
+    from ahfd.capture import probe_realsense
+
+    probe = probe_realsense()
+    if not probe.installed:
         typer.echo("pyrealsense2 NOT INSTALLED (install the 'realsense' extra)")
         return
 
-    typer.echo("pyrealsense " + str(rs.__version__))
-    devices = list(rs.context().query_devices())
-    typer.echo("realsense devices: " + str(len(devices)))
+    typer.echo("pyrealsense " + str(probe.version))
+    if probe.error:
+        typer.echo("  enumeration failed: " + probe.error)
+        return
 
-    if not devices:
+    typer.echo("realsense devices: " + str(len(probe.devices)))
+
+    if not probe.devices:
         typer.echo("  none found -- check the cable is USB 3 and the port is host-mode")
         return
 
-    for d in devices:
-        name = d.get_info(rs.camera_info.name)
-        usb = d.get_info(rs.camera_info.usb_type_descriptor)
-        typer.echo("  " + name + "  usb " + usb)
+    for d in probe.devices:
+        typer.echo("  " + d.name + "  usb " + d.usb)
         # A D435i on a USB 2 link silently loses stream profiles rather than
         # erroring, so say so plainly.
-        if usb.startswith("2"):
+        if d.usb2:
             typer.echo(
-                "  WARNING: negotiated USB " + usb + " -- depth+colour at 30 fps "
+                "  WARNING: negotiated USB " + d.usb + " -- depth+colour at 30 fps "
                 "will not fit. Use a USB 3 cable, no passive extension."
             )
 

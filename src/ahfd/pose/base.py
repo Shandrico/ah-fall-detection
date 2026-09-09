@@ -14,6 +14,11 @@ from typing import Protocol, runtime_checkable
 from ahfd.capture.base import Frame
 from ahfd.types import PoseFrame
 
+# Every backend `build_estimator` knows how to construct. A backend is a code
+# capability, so the list lives here rather than in config; which subset a
+# given deployment offers is policy (see `dashboard.backends`).
+AVAILABLE_BACKENDS = ("rtmo", "rtmpose", "yolo")
+
 
 @runtime_checkable
 class PoseEstimator(Protocol):
@@ -69,5 +74,7 @@ def build_estimator(cfg) -> PoseEstimator:
     raise ValueError(
         "unknown pose backend: "
         + repr(cfg.backend)
-        + " (available: rtmo, rtmpose, yolo)"
+        + " (available: "
+        + ", ".join(AVAILABLE_BACKENDS)
+        + ")"
     )

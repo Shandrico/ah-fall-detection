@@ -12,6 +12,11 @@ from __future__ import annotations
 
 from ahfd.capture.base import FrameSource
 
+# The schemes `open_source` understands. Exported so that anything validating a
+# URI before handing it over (the dashboard's picker) cannot drift from the
+# dispatch below.
+SOURCE_SCHEMES = ("webcam://", "file://", "rs://", "bag://", "seq://")
+
 
 def open_source(
     uri: str, width: int | None = None, height: int | None = None

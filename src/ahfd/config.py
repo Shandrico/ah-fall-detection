@@ -106,6 +106,13 @@ class CaptureConfig(BaseModel):
     height: int | None = None
 
 
+class SourceOption(BaseModel):
+    """One labelled camera in the dashboard's picker."""
+
+    label: str
+    uri: str
+
+
 class DashboardConfig(BaseModel):
     host: str = "127.0.0.1"  # localhost only by default -- not exposed to the network
     port: int = 8000
@@ -113,6 +120,18 @@ class DashboardConfig(BaseModel):
     # the privacy-safe skeleton view.
     show_rgb: bool = False
     jpeg_quality: int = 90  # 0-100; higher is sharper and larger per frame
+
+    # Cameras offered in the page's picker. A connected RealSense is appended
+    # automatically; nothing else is probed, because scanning webcam indices is
+    # slow and can grab a device another program is using.
+    sources: list[SourceOption] = Field(default_factory=list)
+    # Restrict the model picker. Empty means every backend the code supports.
+    # A ward will want to hide `yolo`, which is AGPL and benchmark-only.
+    backends: list[str] = Field(default_factory=list)
+    # The free-text URI box. False on a ward: only the cameras listed above.
+    allow_custom_source: bool = True
+    # How long to wait for a retiring pipeline to let go of its camera.
+    switch_timeout_s: float = 5.0
 
 
 class Config(BaseModel):

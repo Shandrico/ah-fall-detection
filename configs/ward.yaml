@@ -90,5 +90,18 @@ view:
   show_fps: true
   show_metrics: true       # per-person height/spread/velocity readout + calib check
 
+# ---------------------------------------------------------------- dashboard
+dashboard:
+  host: "127.0.0.1"
+  port: 8000
+  show_rgb: false          # virtual nursing is a separate, signed-off decision
+  sources:
+    - label: "Ward 6 -- bay A"
+      uri: "rs://"
+  # yolo is AGPL and benchmark-only, so it is not offered on a ward.
+  backends: ["rtmo", "rtmpose"]
+  # No free-text URI box: the page can only select the cameras listed above.
+  allow_custom_source: false
+
 privacy:
   allow_raw_capture: false

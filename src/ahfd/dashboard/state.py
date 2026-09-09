@@ -3,11 +3,22 @@
 The design here is a direct response to what went wrong in the reference
 implementation, where the dashboard drove a Jetson to 99 C. Two rules:
 
-1. **One producer.** The pipeline thread encodes the annotated frame to JPEG
-   exactly once per frame and stores the bytes here. Viewers read those bytes;
-   they never trigger encoding. Ten browsers cost the same as one.
+1. **One producer of frames.** The pipeline thread encodes the annotated
+   frame to JPEG exactly once per frame and stores the bytes here. Viewers read
+   those bytes; they never trigger encoding. Ten browsers cost the same as one.
+   The control plane (a switch request, an acknowledgement) also writes here,
+   but only small scalars under the same short-held lock -- the rule is about
+   cost, not exclusivity.
 2. **No per-viewer work in the store.** Reads copy a small snapshot under a
    short-held lock and return. Nothing here loops, sleeps, or blocks.
+
+Publishing is fenced by a **generation** number. A switch bumps it before the
+outgoing pipeline is even asked to stop, so everything that pipeline publishes
+afterwards is dropped. That matters because `stop()` can time out: a thread
+wedged in a blocking read on an unplugged camera stays alive, and without the
+fence it would keep painting frames -- and raising alerts -- from a camera
+nobody is looking at any more. Losing one frame period of real events is the
+better half of that trade.
 
 Session totals are kept as running counters that only increment, separate from
 the bounded recent-events log. The log is capped so memory is bounded over a
@@ -42,25 +53,83 @@ class DashboardState:
         self._fps = 0.0
         self._started = time.time()
         self._last_alert_ts = 0.0  # wall-clock of the most recent alerting event
+        # Control plane: which pipeline may publish, and what it is doing.
+        self._gen = 0
+        self._switch_seq = 0
+        self._status = "idle"
+        self._status_since = time.time()
+        self._error: str | None = None
+        self._runtime: dict[str, Any] = {}
 
     # ---- producer side (pipeline thread) -------------------------------
 
     def publish_frame(
-        self, jpeg: bytes, tracks: list[dict[str, Any]], fps: float
+        self, jpeg: bytes, tracks: list[dict[str, Any]], fps: float, gen: int = 0
     ) -> None:
         with self._lock:
+            if gen != self._gen:
+                return  # a retired pipeline; see the module docstring
             self._jpeg = jpeg
             self._seq += 1
             self._tracks = list(tracks)
             self._people = len(tracks)
             self._fps = fps
 
-    def publish_event(self, event: dict[str, Any]) -> None:
+    def publish_event(self, event: dict[str, Any], gen: int = 0) -> None:
         with self._lock:
+            if gen != self._gen:
+                return
             self._events.append(event)
             self._counts[event["type"]] = self._counts.get(event["type"], 0) + 1
             if event.get("type") in ALERTING_TYPES:
                 self._last_alert_ts = time.time()
+
+    # ---- control plane (controller thread) ------------------------------
+
+    def begin_generation(self, **switching_to: Any) -> int:
+        """Claim the publishing slot for a new pipeline, fencing out the old.
+
+        The live metrics are cleared with it: "three people in view" left over
+        from a camera that is no longer running is worse than a blank. The
+        last JPEG is deliberately kept -- MJPEG holds the last part on screen
+        regardless, and clearing it would blank the feed for anyone who
+        connects mid-switch.
+        """
+        with self._lock:
+            self._gen += 1
+            self._switch_seq += 1
+            self._fps = 0.0
+            self._tracks = []
+            self._people = 0
+            self._status = "switching"
+            self._status_since = time.time()
+            self._error = None
+            self._runtime = dict(switching_to)
+            return self._gen
+
+    @property
+    def generation(self) -> int:
+        with self._lock:
+            return self._gen
+
+    def publish_status(
+        self, gen: int, status: str, *, error: str | None = None, **info: Any
+    ) -> None:
+        """Report where a pipeline is: starting / running / ended / error."""
+        with self._lock:
+            if gen != self._gen:
+                return  # a retired pipeline's last words
+            self._status = status
+            self._status_since = time.time()
+            self._error = error
+            self._runtime.update({k: v for k, v in info.items() if v is not None})
+
+    def update_runtime(self, gen: int, **info: Any) -> None:
+        """Amend the runtime detail without touching the status or its clock."""
+        with self._lock:
+            if gen != self._gen:
+                return
+            self._runtime.update(info)
 
     # ---- consumer side (web server threads) ----------------------------
 
@@ -102,6 +171,16 @@ class DashboardState:
                     {**e, "acknowledged": e.get("event_id") in acked}
                     for e in reversed(events)
                 ],
+                # Which camera and model are running, and whether a switch is
+                # in flight. The authoritative keys go last so a stale entry in
+                # _runtime can never shadow them.
+                "runtime": {
+                    **self._runtime,
+                    "status": self._status,
+                    "since_s": round(time.time() - self._status_since, 1),
+                    "error": self._error,
+                    "switch_seq": self._switch_seq,
+                },
             }
 
     def acknowledge(self, event_id: str) -> None:

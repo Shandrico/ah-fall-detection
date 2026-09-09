@@ -38,6 +38,12 @@ visible: what you see on screen is everything the system keeps.
   which reverses the ward privacy stance and needs AH/DPO sign-off. Binds to
   localhost only by default.
 
+  The camera and the pose model can be **changed from the page** — the picker
+  is driven by `dashboard.sources`, plus a RealSense if one is attached. A
+  switch swaps in a fresh pipeline; there is still exactly one. The RGB toggle
+  is one-way: the page can turn video *off* at any time, but turning it *on*
+  needs a process that was started with `--rgb`.
+
   It serves a web page — it opens **no window**. Run it, then open the printed
   `http://127.0.0.1:8000` in a browser. For a sharp 720p RGB view:
   `ahfd dashboard --config configs/dashboard_dev.yaml` (capture resolution and

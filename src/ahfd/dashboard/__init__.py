@@ -6,11 +6,20 @@ async stack that overheated the reference implementation.
 
 RGB display is opt-in (`dashboard.show_rgb`); the default is skeleton-only,
 which keeps the ward privacy stance. Showing RGB is a decision for AH/DPO, not
-a default.
+a default -- so the page can turn it off, but not on.
+
+The camera and the pose model are changeable from the page: DashboardController
+owns the current PipelineRunner and swaps it for a fresh one.
 """
 
+from ahfd.dashboard.controller import DashboardController
 from ahfd.dashboard.runner import PipelineRunner
 from ahfd.dashboard.server import DashboardServer
 from ahfd.dashboard.state import DashboardState
 
-__all__ = ["DashboardState", "DashboardServer", "PipelineRunner"]
+__all__ = [
+    "DashboardState",
+    "DashboardServer",
+    "DashboardController",
+    "PipelineRunner",
+]

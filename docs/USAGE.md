@@ -34,6 +34,8 @@ Almost every command is "pick a **source**, a **backend**, and a **device**."
 | `seq://path/to/frames/` | a folder of images (public datasets) |
 | `bag://recording.bag` | a recorded RealSense `.bag` |
 
+These same URIs are what the dashboard's camera picker offers (§5).
+
 ### Backend — which pose model (`--backend`)
 
 | Backend | What it is | When |
@@ -150,7 +152,51 @@ ahfd dashboard --config configs/dashboard_dev.yaml
 
 Then open **http://127.0.0.1:8000** in a browser (it opens no window itself).
 Skeleton-only by default; add `--rgb` for live video (reverses the privacy
-stance — needs sign-off). `--backend` works here too.
+stance — needs sign-off).
+
+### Changing the camera and the model from the page
+
+`--source` and `--backend` set the **initial** camera and model. Both can then
+be changed from the control bar at the top of the page, without restarting the
+process — useful for the pose bake-off, and for a nurse who needs the other
+camera and doesn't own the terminal.
+
+The bar shows a status pill and, on the right, what is actually running
+(`rtmo-s · 1280x720 · skeleton only`). While a switch is in flight the pill
+reads `switching`/`starting` and the feed dims — a frozen last frame from the
+old camera otherwise looks exactly like a live one. **The first switch to a
+backend you have not used before downloads its weights (~35 MB), so `starting`
+can persist for a while**; the hint line says so.
+
+Notes:
+
+- The camera list comes from `dashboard.sources` in the config. A connected
+  RealSense is appended automatically. Webcam indices are deliberately *not*
+  probed — scanning them is slow on Windows and can grab a device another
+  program is using.
+- The free-text box takes a full URI (`file://clip.mp4`, `seq://frames/`). A
+  bare path is refused: it is indistinguishable from a typo.
+- **RGB is one-way from the browser.** The button turns RGB *off* at any time;
+  turning it *on* requires the process to have been started with `--rgb` (or
+  `dashboard.show_rgb: true`), i.e. by someone who saw the AH/DPO warning.
+- A failed switch (busy camera, bad URI, unknown backend) leaves the running
+  pipeline alone and puts the reason in the hint line.
+
+```yaml
+dashboard:
+  sources:
+    - label: "Ward 6 -- bay A"
+      uri: "rs://"
+    - label: "Laptop webcam"
+      uri: "webcam://0"
+  backends: ["rtmo", "rtmpose"]   # empty offers all three
+  allow_custom_source: false      # no free-text box on a ward
+  switch_timeout_s: 5.0           # how long to wait for a camera to release
+```
+
+The page is unauthenticated by design and binds to localhost. If you set
+`dashboard.host: "0.0.0.0"`, also set `allow_custom_source: false` — otherwise
+anyone on the LAN can point the pipeline at any file on the box.
 
 ## 6. Benchmark the pose models
 

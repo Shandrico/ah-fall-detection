@@ -14,7 +14,15 @@ The MJPEG endpoint is the part that has to be right:
   next write raises a socket error, the handler breaks out and the thread ends.
   That is the disconnect detection the reference build was missing.
 * The page loads the stream once via an <img> tag; there is no timer
-  reopening it, so connections do not accumulate.
+  reopening it, so connections do not accumulate. A source switch does not
+  disturb it: the sequence number simply stops advancing and the browser holds
+  the last part it received.
+
+POSTs change what the camera is pointing at, so they carry a JSON body and are
+checked for a same-origin header. Both matter: a path-only POST with no body is
+a CORS *simple request*, which any page the nurse happens to have open in
+another tab can fire at 127.0.0.1 without a preflight. That was already true of
+/api/ack, where a drive-by page could silently clear a standing fall alert.
 """
 
 from __future__ import annotations
@@ -29,7 +37,12 @@ from ahfd.dashboard.state import DashboardState
 _BOUNDARY = "ahfdframe"
 
 
-def make_handler(state: DashboardState):
+def _clean(value):
+    """A non-empty string, or None. Blank fields mean 'leave this alone'."""
+    return value.strip() if isinstance(value, str) and value.strip() else None
+
+
+def make_handler(state: DashboardState, controller=None):
     class Handler(BaseHTTPRequestHandler):
         # Quieten the default per-request stderr logging.
         def log_message(self, *args) -> None:  # noqa: A003
@@ -42,6 +55,33 @@ def make_handler(state: DashboardState):
             self.end_headers()
             self.wfile.write(body)
 
+        def _json(self, code: int, payload: dict) -> None:
+            self._send(code, "application/json", json.dumps(payload).encode())
+
+        def _same_origin(self) -> bool:
+            """Reject a POST driven from another site's page.
+
+            The dashboard is unauthenticated by design (localhost, one ward
+            box), which is fine for reading. Requests with no Origin (curl, the
+            tests) are allowed; a browser always sends one cross-origin.
+            """
+            origin = self.headers.get("Origin")
+            return not origin or origin.split("//", 1)[-1] == self.headers.get("Host")
+
+        def _body(self) -> dict | None:
+            """Parse a small JSON object. None means malformed."""
+            try:
+                n = int(self.headers.get("Content-Length") or 0)
+            except ValueError:
+                return None
+            if n <= 0 or n > 8192:  # a control message is tiny by definition
+                return None
+            try:
+                payload = json.loads(self.rfile.read(n).decode("utf-8"))
+            except (ValueError, UnicodeDecodeError):
+                return None
+            return payload if isinstance(payload, dict) else None
+
         def do_GET(self) -> None:  # noqa: N802
             path = self.path.split("?", 1)[0]
             if path in ("/", "/index.html"):
@@ -49,6 +89,11 @@ def make_handler(state: DashboardState):
             elif path == "/api/state":
                 body = json.dumps(state.snapshot()).encode()
                 self._send(200, "application/json", body)
+            elif path == "/api/options":
+                if controller is None:
+                    self._json(503, {"ok": False, "error": "controls unavailable"})
+                else:
+                    self._json(200, controller.options())
             elif path == "/stream.mjpg":
                 self._stream()
             else:
@@ -56,14 +101,34 @@ def make_handler(state: DashboardState):
 
         def do_POST(self) -> None:  # noqa: N802
             path = self.path.split("?", 1)[0]
-            if path.startswith("/api/ack/"):
+            if not self._same_origin():
+                self._json(403, {"ok": False, "error": "cross-origin POST refused"})
+            elif path.startswith("/api/ack/"):
                 state.acknowledge(path[len("/api/ack/"):])
                 self._send(200, "application/json", b'{"ok":true}')
             elif path.startswith("/api/unack/"):
                 state.unacknowledge(path[len("/api/unack/"):])
                 self._send(200, "application/json", b'{"ok":true}')
+            elif path == "/api/switch":
+                self._switch()
             else:
                 self._send(404, "text/plain", b"not found")
+
+        def _switch(self) -> None:
+            if controller is None:
+                self._json(503, {"ok": False, "error": "controls unavailable"})
+                return
+            body = self._body()
+            if body is None:
+                self._json(400, {"ok": False, "error": "expected a small JSON object"})
+                return
+            rgb = body.get("show_rgb")
+            code, result = controller.switch(
+                source=_clean(body.get("source")),
+                backend=_clean(body.get("backend")),
+                show_rgb=rgb if isinstance(rgb, bool) else None,
+            )
+            self._json(code, result)
 
         def _stream(self) -> None:
             """MJPEG multipart stream of the latest annotated frame."""
@@ -104,6 +169,13 @@ class DashboardServer(ThreadingHTTPServer):
     # means a viewer still mid-stream cannot block process shutdown.
     daemon_threads = True
 
-    def __init__(self, state: DashboardState, host: str = "127.0.0.1", port: int = 8000):
-        super().__init__((host, port), make_handler(state))
+    def __init__(
+        self,
+        state: DashboardState,
+        host: str = "127.0.0.1",
+        port: int = 8000,
+        controller=None,
+    ):
+        super().__init__((host, port), make_handler(state, controller))
         self.state = state
+        self.controller = controller
