@@ -56,8 +56,18 @@ def build_estimator(cfg) -> PoseEstimator:
             min_score=cfg.min_score,
         )
 
+    if backend == "yolo":
+        # Benchmark-only backend -- AGPL-3.0, so not for deployment. See yolo_pose.py.
+        from ahfd.pose.yolo_pose import YOLOPoseEstimator
+
+        return YOLOPoseEstimator(
+            model_size=cfg.model_size,
+            device=cfg.device,
+            min_score=cfg.min_score,
+        )
+
     raise ValueError(
         "unknown pose backend: "
         + repr(cfg.backend)
-        + " (available: rtmo, rtmpose)"
+        + " (available: rtmo, rtmpose, yolo)"
     )

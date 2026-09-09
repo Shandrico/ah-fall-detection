@@ -19,6 +19,9 @@ realsense = ["pyrealsense2>=2.54"]
 # Intel iGPU / Arc acceleration on Windows. ~3.3x faster than CPU, and needs
 # no CUDA toolkit. See configs/laptop_gpu.yaml.
 openvino = ["openvino>=2024.0"]
+# YOLO-pose backend, for the pose bake-off only. AGPL-3.0 -- not for deployment.
+# Pulls in torch, so it is deliberately kept out of the default install.
+yolo = ["ultralytics>=8.2"]
 dev = ["pytest>=7.4"]
 
 [project.scripts]
