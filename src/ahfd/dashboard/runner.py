@@ -126,7 +126,12 @@ class PipelineRunner:
                 else None
             )
 
-            state.publish_status(gen, "running", model=estimator.name)
+            # `detect` rides along so the page can explain why every chip reads
+            # TRACKED: with detection off there is no posture to report, which
+            # otherwise looks exactly like a broken state machine.
+            state.publish_status(
+                gen, "running", model=estimator.name, detect=cfg.detect.enabled
+            )
             self._loop(src, estimator, tracker, smoother, extractor, machine)
             state.publish_status(gen, "stopped" if self._stop.is_set() else "ended")
         except Exception as exc:  # noqa: BLE001 -- a dead daemon thread tells nobody

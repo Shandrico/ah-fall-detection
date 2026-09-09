@@ -82,6 +82,10 @@ DASHBOARD_HTML = r"""<!doctype html>
   .ev button { margin-top:7px; padding:4px 12px; font-size:12px; }
   .ev.ack { opacity:.45; }
   .empty { color:var(--muted); font-size:13px; padding:10px; text-align:center; }
+  .note { color:var(--muted); font-size:11.5px; line-height:1.5; padding:8px 10px;
+          border:1px dashed var(--line); border-radius:8px; margin-bottom:8px; }
+  .note code { color:var(--ink); background:var(--panel2); border-radius:4px;
+               padding:1px 4px; font-size:11px; }
   .queue { max-height:32vh; overflow:auto; } .log { max-height:40vh; overflow:auto; }
 </style>
 </head>
@@ -244,7 +248,8 @@ async function refresh(){
     : rt.warning ? rt.warning
     : (rt.status === 'starting' && rt.since_s > 3)
         ? 'loading model \u2014 the first use of a backend downloads weights (~35 MB)'
-    : [rt.model, rt.resolution, rt.show_rgb ? 'RGB' : 'skeleton only']
+    : [rt.model, rt.resolution, rt.show_rgb ? 'RGB' : 'skeleton only',
+       rt.detect === false ? 'detection off' : null]
         .filter(Boolean).join(' \u00b7 '));
 
   if(rt.switch_seq !== lastSwitchSeq){ lastSwitchSeq = rt.switch_seq; syncSelects(rt); }
@@ -268,7 +273,15 @@ async function refresh(){
     return `<div class="chip"><span>Track ${t.track_id}${extra}</span>
       <span class="badge s-${esc(t.state)}">${esc(t.state)}</span></div>`;
   }).join('') : '<div class="empty">none</div>';
-  document.getElementById('tracks').innerHTML = tr;
+  // Without detection there is no posture, only a track id. Say why, or every
+  // chip reading TRACKED looks like a broken state machine.
+  const note = rt.detect === false
+    ? `<div class="note">No posture states: this config has
+       <code>detect.enabled: false</code>. Postures (UPRIGHT, SITTING, IN_BED,
+       FALLING, ON_GROUND) need detection on and a calibration matching the
+       capture resolution &mdash; try
+       <code>--config configs/detect_dev.yaml</code>.</div>` : '';
+  document.getElementById('tracks').innerHTML = note + tr;
 
   const floor = parseInt(document.getElementById('sev').value,10);
   const shown = s.events.filter(e=>(e.severity||0)>=floor);

@@ -154,6 +154,25 @@ Then open **http://127.0.0.1:8000** in a browser (it opens no window itself).
 Skeleton-only by default; add `--rgb` for live video (reverses the privacy
 stance — needs sign-off).
 
+### Why every person might say `TRACKED`
+
+The per-person posture states — `UPRIGHT`, `SITTING`, `IN_BED`, `FALLING`,
+`ON_GROUND` — come from the fall state machine, which needs **`detect.enabled:
+true` and a calibration matching the capture resolution**. Without those there
+is no ground plane, so there are no metres and no posture: every chip reads
+`TRACKED` and the page says `detection off` in the status line.
+
+`configs/dashboard_dev.yaml` deliberately runs with detection **off** — it is
+the 720p monitoring demo. To see postures on a laptop:
+
+```powershell
+ahfd dashboard --config configs/detect_dev.yaml
+```
+
+That profile runs 640×480 against `calib/laptop_webcam.yaml`, which is
+plumbing-grade geometry — the states will flip around more than a real mount
+would. It proves the chain works; it is not tuned.
+
 ### Changing the camera and the model from the page
 
 `--source` and `--backend` set the **initial** camera and model. Both can then

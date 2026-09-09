@@ -623,6 +623,110 @@ def _fake_rs(specs, boom=None):
     return mod
 
 
+# ------------------------------------------------------- posture reporting
+
+
+def _posture_setup(tmp_path, n_frames=12):
+    """A calibrated 640x480 ward and a stub that projects a standing adult.
+
+    Mirrors tests/test_integration.py: a 3D body goes through the real camera
+    model, the real FeatureExtractor and the real FallStateMachine. Only the
+    pose model is stubbed, so this needs no camera and no download.
+    """
+    import numpy as np
+
+    from ahfd.cli import _write_calibration_yaml
+    from ahfd.geometry import GroundPlane
+    from ahfd.types import NUM_KEYPOINTS, Intrinsics, PersonPose, PoseFrame
+
+    intr = Intrinsics.from_hfov(640, 480, hfov_deg=69.4, vfov_deg=42.5)
+    ground = GroundPlane(intr, height_m=2.6, pitch_deg=20.0)
+
+    # (height above floor, lateral offset) for a 1.7 m adult, COCO-17 order.
+    body = (
+        (1.62, 0.00), (1.64, 0.03), (1.64, -0.03), (1.62, 0.07), (1.62, -0.07),
+        (1.40, 0.18), (1.40, -0.18), (1.10, 0.20), (1.10, -0.20),
+        (0.85, 0.20), (0.85, -0.20), (0.95, 0.12), (0.95, -0.12),
+        (0.50, 0.12), (0.50, -0.12), (0.08, 0.10), (0.08, -0.10),
+    )
+
+    def project(point):
+        rel = np.asarray(point, float) - np.array([0.0, 0.0, ground.height_m])
+        d = ground.rotation.T @ rel
+        return (intr.cx + intr.fx * d[0] / d[2], intr.cy + intr.fy * d[1] / d[2])
+
+    standing = np.array([[lat, 5.0, h] for h, lat in body], dtype=float)
+    pts = np.array([project(pt) for pt in standing], dtype=np.float32)
+
+    class StandingStub:
+        name = "standing-stub"
+
+        def estimate(self, frame):
+            person = PersonPose(
+                keypoints=pts.copy(),
+                scores=np.ones(NUM_KEYPOINTS, dtype=np.float32),
+                score=1.0,
+                track_id=None,
+            )
+            return PoseFrame(
+                t=frame.t, index=frame.index, width=640, height=480, people=(person,)
+            )
+
+    frames = tmp_path / "frames"
+    frames.mkdir()
+    for i in range(n_frames):
+        cv2.imwrite(str(frames / ("f_%03d.png" % i)), np.zeros((480, 640, 3), np.uint8))
+
+    calib = tmp_path / "calib.yaml"
+    _write_calibration_yaml(calib, "test-cam", intr, 2.6, pitch_deg=20.0)
+    return "seq://" + str(frames), str(calib), StandingStub()
+
+
+class TestPostureReachesTheDashboard:
+    def test_detection_on_reports_a_posture(self, tmp_path, monkeypatch):
+        """The regression this guards: chips must not all read TRACKED."""
+        uri, calib, stub = _posture_setup(tmp_path)
+        monkeypatch.setattr("ahfd.pose.build_estimator", lambda cfg: stub)
+
+        cfg = Config()
+        cfg.detect.enabled = True
+        state = DashboardState()
+        runner = PipelineRunner(uri, cfg, calib, state, show_rgb=False)
+        runner.start()
+        wait_for(lambda: state.snapshot()["tracks"])
+        tracks = state.snapshot()["tracks"]
+        runner.stop(timeout=3.0)
+
+        assert tracks, "no tracks published"
+        assert tracks[0]["state"] == "UPRIGHT", tracks
+        assert tracks[0]["height_m"] > 1.0, tracks  # metric, from the ground plane
+        assert state.snapshot()["runtime"]["detect"] is True
+
+    def test_detection_off_says_so(self, tmp_path, monkeypatch):
+        """With detect off the chips read TRACKED -- the page must explain why."""
+        uri, _calib, stub = _posture_setup(tmp_path)
+        monkeypatch.setattr("ahfd.pose.build_estimator", lambda cfg: stub)
+
+        cfg = Config()
+        cfg.detect.enabled = False
+        state = DashboardState()
+        runner = PipelineRunner(uri, cfg, None, state, show_rgb=False)
+        runner.start()
+        wait_for(lambda: state.snapshot()["tracks"])
+        snap = state.snapshot()
+        runner.stop(timeout=3.0)
+
+        assert snap["tracks"][0]["state"] == "TRACKED"
+        assert snap["runtime"]["detect"] is False
+
+
+def test_page_explains_missing_postures():
+    from ahfd.dashboard.html import DASHBOARD_HTML
+
+    assert "detect.enabled: false" in DASHBOARD_HTML
+    assert "detection off" in DASHBOARD_HTML
+
+
 # ------------------------------------------------------------ cli wiring
 
 
