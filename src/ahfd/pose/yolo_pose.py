@@ -69,13 +69,30 @@ class YOLOPoseEstimator:
         from ultralytics import YOLO
 
         # Ultralytics runs on torch, so it uses a torch device, not the
-        # onnxruntime/openvino runtimes the other backends use. Map our "gpu"
-        # to CUDA; on this laptop that needs a CUDA torch build (the RTX), else
-        # it falls back to CPU.
-        self._device = {"gpu": "cuda"}.get(device, device)
+        # onnxruntime/openvino runtimes the other backends use. Our config's
+        # "gpu" means "the fast accelerator" -- for RTMO that is the Intel iGPU
+        # via OpenVINO, which torch cannot use, so for YOLO "gpu" means CUDA.
+        # But a CPU-only torch build has no CUDA, so resolve against what is
+        # actually available and fall back to CPU with a note rather than
+        # crashing mid-stream (which is what a raw "gpu"->"cuda" map did).
+        self._device = self._resolve_device(device)
         self._min_score = min_score
         self._name = model_name[:-3] if model_name.endswith(".pt") else model_name
         self._model = YOLO(model_name)
+
+    @staticmethod
+    def _resolve_device(device: str) -> str:
+        wanted = {"gpu": "cuda"}.get(device, device)
+        if str(wanted).startswith("cuda"):
+            import torch
+
+            if not torch.cuda.is_available():
+                print(
+                    "YOLO: CUDA not available (torch is a CPU build) -- using CPU. "
+                    "For GPU, install a CUDA torch build."
+                )
+                return "cpu"
+        return wanted
 
     @property
     def name(self) -> str:
