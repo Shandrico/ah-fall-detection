@@ -96,8 +96,11 @@ class DashboardController:
         self._abandoned: list[PipelineRunner] = []
         self._switching = threading.Lock()
         self._log = log or (lambda msg: None)
-        # Probed once, at construction. Enumerating the USB bus per HTTP
-        # request would be a request-triggered hardware poke on a shared box.
+        # Probed at construction, and again only when a human asks (rescan).
+        # Enumerating the USB bus on every poll would be a hardware poke per
+        # viewer per second; doing it never means a camera plugged in after
+        # launch can only be found by restarting.
+        self._probe = probe
         self._sources = build_source_options(cfg, probe(), current=self.source)
         self._backends = allowed_backends(cfg)
 
@@ -128,6 +131,19 @@ class DashboardController:
             "allow_custom_source": self.cfg.dashboard.allow_custom_source,
             "allow_rgb": self._rgb_authorised,
         }
+
+    def rescan(self) -> tuple[int, dict]:
+        """Re-enumerate the cameras and return the refreshed picker.
+
+        Deliberately explicit: a D435i plugged in after launch is invisible
+        until someone asks, because the alternative is probing the USB bus on
+        every one-second poll from every open browser.
+        """
+        self._sources = build_source_options(
+            self.cfg, self._probe(), current=self.source
+        )
+        self._log("rescanned cameras: " + str(len(self._sources)) + " offered")
+        return 200, self.options()
 
     def switch(self, *, source=None, backend=None, show_rgb=None) -> tuple[int, dict]:
         """Point the pipeline at a different camera and/or model.
@@ -164,15 +180,21 @@ class DashboardController:
 
         Asymmetric on purpose. Turning RGB OFF is always allowed -- tightening
         the privacy stance needs nobody's permission. Turning it ON requires
-        the process to have been started with --rgb or dashboard.show_rgb, i.e.
-        by someone who saw the AH/DPO warning. A browser button must not be
-        able to reverse the ward's default on its own.
+        the process to have been started with --allow-rgb or --rgb (or their
+        config equivalents), i.e. by someone who saw the AH/DPO warning. A
+        browser button must not be able to reverse the ward's default on its
+        own.
+
+        --allow-rgb is the virtual-nursing case: the ward runs skeleton-only
+        and a clinician who needs to look turns video on for as long as they
+        need it, rather than the camera starting as video for everyone.
         """
         if on and not self._rgb_authorised:
             return 403, {
                 "ok": False,
                 "error": "RGB view is not authorised for this session -- restart "
-                "with --rgb (needs AH/DPO sign-off)",
+                "with --allow-rgb (or --rgb to start in it). Needs AH/DPO "
+                "sign-off.",
             }
         self.show_rgb = on
         if self._runner is not None:

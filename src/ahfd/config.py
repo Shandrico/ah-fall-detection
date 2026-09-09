@@ -119,6 +119,12 @@ class DashboardConfig(BaseModel):
     # RGB reverses the skeleton-only ward stance, so it is opt-in. Default is
     # the privacy-safe skeleton view.
     show_rgb: bool = False
+    # Authorise the page's RGB button WITHOUT starting in RGB. This is the
+    # virtual-nursing shape: the ward runs skeleton-only, and a clinician who
+    # needs to look turns video on for as long as they need it. show_rgb
+    # implies this -- someone who started in RGB has already made the call.
+    # Turning RGB *off* from the page never needs authorising.
+    allow_rgb: bool = False
     jpeg_quality: int = 90  # 0-100; higher is sharper and larger per frame
 
     # Cameras offered in the page's picker. A connected RealSense is appended
@@ -148,11 +154,21 @@ class Config(BaseModel):
 
 
 def load_config(path: str | Path | None = None) -> Config:
-    """Load configuration from YAML, falling back to built-in defaults."""
+    """Load configuration from YAML.
+
+    A path asked for explicitly must exist. Falling back to built-in defaults
+    on a typo runs a *completely different* configuration -- and since
+    `detect.enabled` defaults to False, the only symptom is that nothing ever
+    detects anything, which reads as a broken detector rather than a wrong
+    filename. Only the implicit default path is allowed to be absent.
+    """
+    explicit = path is not None
     if path is None:
         path = DEFAULT_CONFIG_PATH
     path = Path(path)
     if not path.exists():
+        if explicit:
+            raise FileNotFoundError("config not found: " + str(path))
         return Config()
     data = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
     return Config.model_validate(data)

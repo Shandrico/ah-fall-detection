@@ -294,6 +294,16 @@ class TestRgbGate:
         ctl = controller(show_rgb=True)
         assert ctl.options()["allow_rgb"] is True
 
+    def test_authorised_without_starting_in_rgb(self):
+        """Virtual nursing: skeleton-only by default, clinician may look."""
+        ctl = controller(rgb_authorised=True)
+        ctl.start()
+        assert ctl.options()["allow_rgb"] is True
+        assert ctl.made[0].show_rgb is False  # started on the privacy-safe view
+        code, body = ctl.set_rgb(True)
+        assert code == 200 and body["show_rgb"] is True
+        assert ctl.made[0].show_rgb is True
+
     def test_switch_routes_a_lone_rgb_flag_to_set_rgb(self):
         ctl = controller()
         ctl.start()
@@ -318,6 +328,90 @@ class TestOptions:
         cfg = make_cfg(sources=[SourceOption(label="Laptop", uri="webcam://0")])
         opts = controller(cfg, source="file://clip.mp4").options()
         assert opts["sources"][0]["uri"] == "file://clip.mp4"
+
+
+class TestRescan:
+    """A camera plugged in after launch must be findable without a restart."""
+
+    def test_hot_plugged_camera_appears_after_rescan(self):
+        plugged = [NO_DEVICES]
+        cfg = make_cfg(sources=[SourceOption(label="Laptop", uri="webcam://0")])
+        ctl = DashboardController(
+            cfg, None, DashboardState(),
+            runner_factory=lambda *a, **k: FakeRunner(*a, **k),
+            probe=lambda: plugged[0],
+        )
+        assert [o["uri"] for o in ctl.options()["sources"]] == ["webcam://0"]
+
+        # ... the D435i is plugged in ...
+        plugged[0] = RealSenseProbe(
+            installed=True, devices=(RealSenseDevice("RealSense D435I", "346", "3.2"),)
+        )
+        assert [o["uri"] for o in ctl.options()["sources"]] == ["webcam://0"], (
+            "the picker must not silently re-probe on every poll"
+        )
+
+        code, opts = ctl.rescan()
+        assert code == 200
+        assert [o["uri"] for o in opts["sources"]] == ["webcam://0", "rs://"]
+        assert opts["sources"][1]["label"] == "RealSense D435I"
+        assert opts["sources"][1]["detected"] is True
+        # The refreshed list sticks, so a following switch accepts rs://.
+        assert ctl.options()["sources"][1]["uri"] == "rs://"
+
+    def test_unplugged_camera_disappears_after_rescan(self):
+        plugged = [RealSenseProbe(installed=True, devices=(RealSenseDevice("D435i"),))]
+        ctl = DashboardController(
+            make_cfg(sources=[SourceOption(label="Laptop", uri="webcam://0")]),
+            None, DashboardState(),
+            runner_factory=lambda *a, **k: FakeRunner(*a, **k),
+            probe=lambda: plugged[0],
+        )
+        assert len(ctl.options()["sources"]) == 2
+        plugged[0] = NO_DEVICES
+        assert len(ctl.rescan()[1]["sources"]) == 1
+
+    def test_rescan_keeps_the_running_source_listed(self):
+        ctl = controller(source="seq://clips/a")
+        ctl.start()
+        assert ctl.rescan()[1]["sources"][0]["uri"] == "seq://clips/a"
+
+    def test_rescan_endpoint(self):
+        class Probing:
+            def __init__(self):
+                self.calls = 0
+
+            def options(self):
+                return {"ok": True, "sources": [], "backends": [],
+                        "allow_custom_source": True, "allow_rgb": False}
+
+            def rescan(self):
+                self.calls += 1
+                return 200, {**self.options(), "rescanned": True}
+
+        ctl = Probing()
+        srv, _state, base = serve(ctl)
+        try:
+            status, body = request(base + "/api/rescan", {})
+            assert status == 200 and body["rescanned"] is True
+            assert ctl.calls == 1
+        finally:
+            srv.shutdown(); srv.server_close()
+
+    def test_rescan_without_a_controller_is_503(self):
+        srv, _state, base = serve()
+        try:
+            assert request(base + "/api/rescan", {})[0] == 503
+        finally:
+            srv.shutdown(); srv.server_close()
+
+    def test_rescan_is_same_origin_checked(self):
+        srv, _state, base = serve(FakeController())
+        try:
+            assert request(base + "/api/rescan", {},
+                           headers={"Origin": "http://evil.example"})[0] == 403
+        finally:
+            srv.shutdown(); srv.server_close()
 
 
 class TestSourceOptionBuilding:
@@ -431,6 +525,37 @@ class TestRunnerErrorsSurface:
         assert rt["status"] == "ended"
         assert rt["model"] == "stub"
 
+    def test_source_that_opens_but_yields_no_frames_says_camera_busy(self, monkeypatch):
+        """A camera held by another program opens but grabs nothing. Without a
+        message that reads as a silent dead feed -- the exact confusion that
+        looked like a broken dashboard."""
+        from ahfd.capture.base import SourceMeta
+
+        class EmptySource:
+            meta = SourceMeta(uri="webcam://0", width=640, height=480, fps=30.0)
+
+            def __iter__(self):
+                return iter(())  # opened fine, but no frames ever come
+
+            def close(self):
+                pass
+
+        class StubEstimator:
+            name = "stub"
+
+            def estimate(self, frame):  # never called -- no frames
+                return None
+
+        monkeypatch.setattr(
+            "ahfd.capture.open_source", lambda uri, width=None, height=None: EmptySource()
+        )
+        monkeypatch.setattr("ahfd.pose.build_estimator", lambda cfg: StubEstimator())
+        cfg = Config()
+        cfg.detect.enabled = False
+        rt = run_and_wait("webcam://0", cfg)
+        assert rt["status"] == "error"
+        assert "no frames" in rt["error"]
+
 
 # -------------------------------------------------------------- server
 
@@ -448,6 +573,9 @@ class FakeController:
     def switch(self, **kwargs):
         self.seen.append(kwargs)
         return self.code, self.payload
+
+    def rescan(self):
+        return 200, self.options()
 
 
 def serve(controller=None):
@@ -626,7 +754,7 @@ def _fake_rs(specs, boom=None):
 # ------------------------------------------------------- posture reporting
 
 
-def _posture_setup(tmp_path, n_frames=12):
+def _posture_setup(tmp_path, n_frames=60):
     """A calibrated 640x480 ward and a stub that projects a standing adult.
 
     Mirrors tests/test_integration.py: a 3D body goes through the real camera
@@ -693,11 +821,16 @@ class TestPostureReachesTheDashboard:
         state = DashboardState()
         runner = PipelineRunner(uri, cfg, calib, state, show_rgb=False)
         runner.start()
-        wait_for(lambda: state.snapshot()["tracks"])
+        # The machine reports UNKNOWN until the track is old enough to classify
+        # (min_track_age_s), so wait for it to commit rather than for frame one.
+        def settled():
+            t = state.snapshot()["tracks"]
+            return t and t[0]["state"] != "UNKNOWN"
+
+        assert wait_for(settled, timeout=15.0), state.snapshot()["tracks"]
         tracks = state.snapshot()["tracks"]
         runner.stop(timeout=3.0)
 
-        assert tracks, "no tracks published"
         assert tracks[0]["state"] == "UPRIGHT", tracks
         assert tracks[0]["height_m"] > 1.0, tracks  # metric, from the ground plane
         assert state.snapshot()["runtime"]["detect"] is True
@@ -725,6 +858,66 @@ def test_page_explains_missing_postures():
 
     assert "detect.enabled: false" in DASHBOARD_HTML
     assert "detection off" in DASHBOARD_HTML
+
+
+def test_page_has_a_rescan_control():
+    from ahfd.dashboard.html import DASHBOARD_HTML
+
+    assert 'id="rescan"' in DASHBOARD_HTML
+    assert "/api/rescan" in DASHBOARD_HTML
+
+
+def test_every_state_has_a_badge_style():
+    """A new State without a colour renders as an unlabelled grey pill."""
+    from typing import get_args
+
+    from ahfd.dashboard.html import DASHBOARD_HTML
+    from ahfd.detect.state_machine import State
+
+    missing = [s for s in get_args(State) if ".s-" + s not in DASHBOARD_HTML]
+    assert not missing, "no badge style for: " + ", ".join(missing)
+    # The placeholder the runner uses when detection is off needs one too.
+    assert ".s-TRACKED" in DASHBOARD_HTML
+
+
+class TestConfigPathIsChecked:
+    """A typo'd --config used to silently run built-in defaults.
+
+    Since detect.enabled defaults to False, the symptom was "nothing detects
+    anything" -- which reads as a broken detector, not a wrong filename.
+    """
+
+    def test_missing_explicit_path_raises(self, tmp_path):
+        from ahfd.config import load_config
+
+        with pytest.raises(FileNotFoundError, match="config not found"):
+            load_config(tmp_path / "typo.yml")
+
+    def test_implicit_default_may_be_absent(self, monkeypatch, tmp_path):
+        import ahfd.config as config_mod
+        from ahfd.config import load_config
+
+        monkeypatch.setattr(config_mod, "DEFAULT_CONFIG_PATH", tmp_path / "gone.yaml")
+        assert load_config().detect.enabled is False  # built-in defaults, no raise
+
+    def test_real_config_still_loads(self):
+        from pathlib import Path
+
+        from ahfd.config import load_config
+
+        root = Path(__file__).resolve().parents[1]
+        assert load_config(root / "configs" / "detect_dev.yaml").detect.enabled is True
+
+    def test_cli_reports_a_bad_config_path(self, tmp_path):
+        from typer.testing import CliRunner
+
+        from ahfd.cli import app
+
+        result = CliRunner().invoke(
+            app, ["dashboard", "--config", str(tmp_path / "nope.yaml")]
+        )
+        assert result.exit_code != 0
+        assert isinstance(result.exception, FileNotFoundError)
 
 
 # ------------------------------------------------------------ cli wiring
@@ -778,6 +971,136 @@ class TestDashboardCommand:
         assert "camera and pose model can be changed from the page" in result.output
         assert len(started) == 1  # exactly one pipeline, started through the controller
 
+    def test_detect_flag_overrides_the_config(self, tmp_path, monkeypatch):
+        """--detect must not require finding the right YAML file."""
+        from typer.testing import CliRunner
+
+        from ahfd.cli import app
+
+        made: list = []
+        monkeypatch.setattr(PipelineRunner, "start", lambda self: made.append(self.cfg))
+        monkeypatch.setattr(PipelineRunner, "stop", lambda self, timeout=5.0: None)
+        _stub_serving(monkeypatch)
+
+        cfg = tmp_path / "cfg.yaml"
+        cfg.write_text(
+            "detect:\n  enabled: false\n"
+            "dashboard:\n  host: \"127.0.0.1\"\n  port: 0\n",
+            encoding="utf-8",
+        )
+
+        result = CliRunner().invoke(
+            app, ["dashboard", "--config", str(cfg), "--detect",
+                  "--calibration", "calib/laptop_webcam.yaml"]
+        )
+        assert result.exit_code == 0, result.output
+        assert made[0].detect.enabled is True
+        assert "detect:  on" in result.output
+
+    def test_no_detect_flag_turns_it_off(self, tmp_path, monkeypatch):
+        from typer.testing import CliRunner
+
+        from ahfd.cli import app
+
+        made: list = []
+        monkeypatch.setattr(PipelineRunner, "start", lambda self: made.append(self.cfg))
+        monkeypatch.setattr(PipelineRunner, "stop", lambda self, timeout=5.0: None)
+        _stub_serving(monkeypatch)
+
+        cfg = tmp_path / "cfg.yaml"
+        cfg.write_text(
+            "detect:\n  enabled: true\n"
+            "dashboard:\n  host: \"127.0.0.1\"\n  port: 0\n",
+            encoding="utf-8",
+        )
+        result = CliRunner().invoke(
+            app, ["dashboard", "--config", str(cfg), "--no-detect"]
+        )
+        assert result.exit_code == 0, result.output
+        assert made[0].detect.enabled is False
+        assert "detect:  off" in result.output
+
+    def test_config_detect_is_kept_when_the_flag_is_absent(self, tmp_path, monkeypatch):
+        from typer.testing import CliRunner
+
+        from ahfd.cli import app
+
+        made: list = []
+        monkeypatch.setattr(PipelineRunner, "start", lambda self: made.append(self.cfg))
+        monkeypatch.setattr(PipelineRunner, "stop", lambda self, timeout=5.0: None)
+        _stub_serving(monkeypatch)
+
+        cfg = tmp_path / "cfg.yaml"
+        cfg.write_text(
+            "calibration: \"calib/laptop_webcam.yaml\"\n"
+            "detect:\n  enabled: true\n"
+            "dashboard:\n  host: \"127.0.0.1\"\n  port: 0\n",
+            encoding="utf-8",
+        )
+        result = CliRunner().invoke(app, ["dashboard", "--config", str(cfg)])
+        assert result.exit_code == 0, result.output
+        assert made[0].detect.enabled is True
+
+    def _launch(self, monkeypatch, tmp_path, body, extra_args=()):
+        from typer.testing import CliRunner
+
+        from ahfd.cli import app
+
+        monkeypatch.setattr(PipelineRunner, "start", lambda self: None)
+        monkeypatch.setattr(PipelineRunner, "stop", lambda self, timeout=5.0: None)
+        _stub_serving(monkeypatch)
+        made: list = []
+        real_init = DashboardServer.__init__
+
+        def spy(self, state, host="127.0.0.1", port=8000, controller=None):
+            made.append(controller)
+            real_init(self, state, host, port, controller)
+
+        monkeypatch.setattr(DashboardServer, "__init__", spy)
+
+        cfg = tmp_path / "cfg.yaml"
+        cfg.write_text(
+            body + "dashboard:\n  host: \"127.0.0.1\"\n  port: 0\n"
+            if "dashboard:" not in body
+            else body,
+            encoding="utf-8",
+        )
+        result = CliRunner().invoke(
+            app, ["dashboard", "--config", str(cfg), *extra_args]
+        )
+        assert result.exit_code == 0, result.output
+        return made[0], result.output
+
+    def test_allow_rgb_flag_authorises_without_starting_in_rgb(
+        self, tmp_path, monkeypatch
+    ):
+        ctl, out = self._launch(monkeypatch, tmp_path, "", extra_args=["--allow-rgb"])
+        assert ctl.options()["allow_rgb"] is True
+        assert ctl.show_rgb is False
+        assert "[skeleton only, RGB allowed]" in out
+        assert "WARNING: RGB view is ON" not in out
+
+    def test_allow_rgb_config_field_authorises(self, tmp_path, monkeypatch):
+        ctl, out = self._launch(
+            monkeypatch,
+            tmp_path,
+            'dashboard:\n  host: "127.0.0.1"\n  port: 0\n  allow_rgb: true\n',
+        )
+        assert ctl.options()["allow_rgb"] is True
+        assert ctl.show_rgb is False
+
+    def test_rgb_flag_still_starts_in_rgb_and_authorises(self, tmp_path, monkeypatch):
+        ctl, out = self._launch(monkeypatch, tmp_path, "", extra_args=["--rgb"])
+        assert ctl.options()["allow_rgb"] is True
+        assert ctl.show_rgb is True
+        assert "WARNING: RGB view is ON" in out
+
+    def test_plain_launch_leaves_rgb_locked(self, tmp_path, monkeypatch):
+        ctl, out = self._launch(monkeypatch, tmp_path, "")
+        assert ctl.options()["allow_rgb"] is False
+        assert "[skeleton only]" in out
+        assert ctl.set_rgb(True)[0] == 403
+
     def test_backend_override_reaches_the_pipeline(self, tmp_path, monkeypatch):
         from typer.testing import CliRunner
 
@@ -823,3 +1146,15 @@ def test_shipped_configs_load(name):
     cfg = load_config(path)
     for source in cfg.dashboard.sources:
         assert source.uri and source.label
+
+
+def test_detect_dev_offers_the_rgb_toggle():
+    """The dev profile is where you check the pose is tracking you."""
+    from pathlib import Path
+
+    from ahfd.config import load_config
+
+    root = Path(__file__).resolve().parents[1]
+    cfg = load_config(root / "configs" / "detect_dev.yaml")
+    assert cfg.dashboard.allow_rgb is True
+    assert cfg.dashboard.show_rgb is False  # still starts privacy-safe

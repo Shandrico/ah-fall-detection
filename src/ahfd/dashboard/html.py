@@ -71,6 +71,11 @@ DASHBOARD_HTML = r"""<!doctype html>
   .s-IN_BED { background:#1f6feb; color:#fff; }
   .s-SITTING { background:var(--warn); color:#000; }
   .s-UPRIGHT { background:var(--ok); color:#04210b; }
+  /* Not postures: the machine has a track but cannot say what it is doing.
+     Muted on purpose -- these must not read as a clinical state. */
+  .s-RECOVERED { background:#1f6feb33; color:#9dc1f5; border:1px solid #1f6feb66; }
+  .s-LOW_CONFIDENCE,.s-UNKNOWN,.s-TRACKED { background:transparent; color:var(--muted);
+                                            border:1px dashed var(--line); }
   .ev { border-left:4px solid var(--line); padding:9px 11px; margin-bottom:8px; background:var(--panel2);
         border-radius:0 8px 8px 0; }
   .ev.sev4 { border-left-color:var(--crit); } .ev.sev3 { border-left-color:var(--warn); }
@@ -107,6 +112,7 @@ DASHBOARD_HTML = r"""<!doctype html>
   <span class="pill" id="rt-status">idle</span>
   <label for="src">camera</label>
   <select id="src"></select>
+  <button id="rescan" title="Re-check which cameras are plugged in">&#8635;</button>
   <input id="srcuri" placeholder="or a URI: file://clip.mp4" size="22"/>
   <button id="srcgo">Switch</button>
   <label for="bk">model</label>
@@ -189,13 +195,19 @@ function fill(id, pairs){
     pairs.map(([v,t])=>`<option value="${esc(v)}">${esc(t)}</option>`).join('');
 }
 
+function applyOptions(o){
+  opts = o;
+  fill('src', o.sources.map(s=>[s.uri, s.label + (s.detected ? ' \u2022 connected' : '')]));
+  fill('bk',  o.backends.map(b=>[b,b]));
+  document.getElementById('srcuri').disabled = !o.allow_custom_source;
+  document.getElementById('rgb').disabled    = !o.allow_rgb;
+  lastSwitchSeq = -1;   // force the selects to re-sync to what is running
+}
+
 async function loadOptions(){
-  try { opts = await (await fetch('/api/options')).json(); } catch(_){ return; }
-  if(!opts || !opts.ok){ document.getElementById('bar').style.display='none'; return; }
-  fill('src', opts.sources.map(s=>[s.uri, s.label + (s.detected ? ' \u2022 connected' : '')]));
-  fill('bk',  opts.backends.map(b=>[b,b]));
-  document.getElementById('srcuri').disabled = !opts.allow_custom_source;
-  document.getElementById('rgb').disabled    = !opts.allow_rgb;
+  let o; try { o = await (await fetch('/api/options')).json(); } catch(_){ return; }
+  if(!o || !o.ok){ document.getElementById('bar').style.display='none'; return; }
+  applyOptions(o);
 }
 
 // Never yank a <select> out from under the user: skip the one they are using.
@@ -300,6 +312,19 @@ document.getElementById('sev').addEventListener('change', refresh);
 
 document.getElementById('src').addEventListener('change', e=>switchTo({source:e.target.value}));
 document.getElementById('bk').addEventListener('change',  e=>switchTo({backend:e.target.value}));
+document.getElementById('rescan').addEventListener('click', async function(){
+  const before = opts ? opts.sources.length : 0;
+  this.disabled = true;
+  const r = await post('/api/rescan', {});
+  this.disabled = false;
+  if(!r.ok){ hint(r.error || 'rescan failed'); return; }
+  applyOptions(r);
+  const found = r.sources.filter(s=>s.detected).length;
+  hint(r.sources.length + ' camera' + (r.sources.length===1?'':'s') + ' offered'
+       + (found ? ', ' + found + ' detected' : '')
+       + (r.sources.length === before ? ' (no change)' : ''));
+  refresh();
+});
 document.getElementById('srcgo').addEventListener('click', ()=>{
   const v = document.getElementById('srcuri').value.trim();
   if(v) switchTo({source:v});

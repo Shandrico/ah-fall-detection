@@ -196,8 +196,21 @@ Notes:
 - The free-text box takes a full URI (`file://clip.mp4`, `seq://frames/`). A
   bare path is refused: it is indistinguishable from a typo.
 - **RGB is one-way from the browser.** The button turns RGB *off* at any time;
-  turning it *on* requires the process to have been started with `--rgb` (or
-  `dashboard.show_rgb: true`), i.e. by someone who saw the AH/DPO warning.
+  turning it *on* needs the process to have been started with authorisation,
+  i.e. by someone who saw the AH/DPO warning. Three ways to launch:
+
+  | Launch | Starts as | RGB button |
+  |---|---|---|
+  | `ahfd dashboard` | skeleton | locked (403) |
+  | `ahfd dashboard --allow-rgb` | skeleton | **enabled** |
+  | `ahfd dashboard --rgb` | RGB | enabled |
+
+  `--allow-rgb` (or `dashboard.allow_rgb: true`) is the **virtual-nursing**
+  shape: the ward runs skeleton-only and a clinician who needs to look turns
+  video on for as long as they need it, rather than every camera starting as
+  video for everyone. `configs/detect_dev.yaml` sets it, so the dev profile
+  starts privacy-safe but lets you flip to RGB to check the pose is tracking
+  you. The status line reads `[skeleton only, RGB allowed]` when it is on.
 - A failed switch (busy camera, bad URI, unknown backend) leaves the running
   pipeline alone and puts the reason in the hint line.
 

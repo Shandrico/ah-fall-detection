@@ -139,11 +139,19 @@ def make_handler(state: DashboardState, controller=None):
                 self._send(200, "application/json", b'{"ok":true}')
             elif path == "/api/switch":
                 self._switch()
+            elif path == "/api/rescan":
+                if controller is None:
+                    self._json(503, {"ok": False, "error": "controls unavailable"})
+                else:
+                    self._json(*controller.rescan())
             else:
                 self._send(404, "text/plain", b"not found")
 
         def _switch(self) -> None:
             if controller is None:
+                # Drain first: this is the one POST route do_POST leaves
+                # unread, and answering an unread body resets the connection.
+                self._drain()
                 self._json(503, {"ok": False, "error": "controls unavailable"})
                 return
             body = self._body()

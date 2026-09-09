@@ -132,8 +132,26 @@ class PipelineRunner:
             state.publish_status(
                 gen, "running", model=estimator.name, detect=cfg.detect.enabled
             )
-            self._loop(src, estimator, tracker, smoother, extractor, machine)
-            state.publish_status(gen, "stopped" if self._stop.is_set() else "ended")
+            frames_seen = self._loop(
+                src, estimator, tracker, smoother, extractor, machine
+            )
+            if self._stop.is_set():
+                state.publish_status(gen, "stopped")
+            elif frames_seen == 0:
+                # The source opened but never produced a frame. On Windows the
+                # webcam is exclusive, so the usual cause is another program (or
+                # a leftover dashboard) still holding it -- which otherwise shows
+                # as a silent dead feed with no error at all.
+                state.publish_status(
+                    gen,
+                    "error",
+                    error="no frames from "
+                    + str(self.source_uri)
+                    + " -- the camera may be in use by another program (only one "
+                    "at a time on Windows) or disconnected.",
+                )
+            else:
+                state.publish_status(gen, "ended")
         except Exception as exc:  # noqa: BLE001 -- a dead daemon thread tells nobody
             # typer.BadParameter is a click UsageError: the text is on .message,
             # and format_message() would prepend CLI framing that means nothing
@@ -145,14 +163,17 @@ class PipelineRunner:
             if src is not None:
                 src.close()
 
-    def _loop(self, src, estimator, tracker, smoother, extractor, machine) -> None:
+    def _loop(self, src, estimator, tracker, smoother, extractor, machine) -> int:
+        """Run until the source ends or a stop is asked. Returns frames processed."""
         cfg = self.cfg
         from ahfd.viz import render_overlay, render_skeleton
 
         fps_ema: float | None = None
+        frames_seen = 0
         for frame in src:
             if self._stop.is_set():
                 break
+            frames_seen += 1
             t0 = time.perf_counter()
 
             pose = estimator.estimate(frame)
@@ -243,3 +264,5 @@ class PipelineRunner:
                     buf.tobytes(), list(track_info.values()), fps_ema or 0.0,
                     gen=self.gen,
                 )
+
+        return frames_seen

@@ -44,6 +44,17 @@ class TestPitchPath:
         assert load_calibration(out).zones.zones == []
 
 
+class TestMissingFile:
+    def test_missing_calibration_gives_actionable_error(self, tmp_path):
+        """A missing calib file must say how to make it, not a raw errno."""
+        missing = tmp_path / "d435i.yaml"
+        with pytest.raises(FileNotFoundError) as excinfo:
+            load_calibration(missing)
+        msg = str(excinfo.value)
+        assert "ahfd calibrate" in msg
+        assert "d435i.yaml" in msg
+
+
 class TestGravityPath:
     @pytest.mark.parametrize("pitch", [10.0, 20.0, 35.0])
     def test_imu_gravity_round_trips_to_pitch(self, tmp_path, pitch):

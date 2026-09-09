@@ -49,5 +49,14 @@ view:
   show_ids: true
   show_fps: true
 
+dashboard:
+  # A development profile: start on the privacy-safe skeleton view, but let the
+  # page switch to RGB so you can check the pose is actually tracking you.
+  show_rgb: false
+  allow_rgb: true
+  sources:
+    - label: "Laptop webcam"
+      uri: "webcam://0"
+
 privacy:
   allow_raw_capture: false

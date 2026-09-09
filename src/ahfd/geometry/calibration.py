@@ -75,6 +75,17 @@ def _intrinsics_from(entry: dict) -> Intrinsics:
 def load_calibration(path: str | Path) -> Calibration:
     """Read a calibration YAML."""
     path = Path(path)
+    if not path.exists():
+        # A raw "[Errno 2] No such file or directory" tells the user nothing.
+        # This file is created by `ahfd calibrate`, so say that.
+        raise FileNotFoundError(
+            "calibration file not found: "
+            + str(path)
+            + "\nCreate it first with:  ahfd calibrate "
+            + str(path)
+            + " --source rs:// --height <metres>"
+            + "\n(use --pitch <deg> instead of the IMU for a webcam). See docs/USAGE.md."
+        )
     data = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
 
     camera = data.get("camera")

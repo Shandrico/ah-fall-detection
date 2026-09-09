@@ -69,6 +69,12 @@ def run(
     backend: str = typer.Option(
         None, help="Override the pose backend: rtmo | rtmpose | yolo."
     ),
+    detect: bool = typer.Option(
+        None,
+        "--detect/--no-detect",
+        help="Turn fall detection on or off. On needs a calibration matching "
+        "the capture resolution.",
+    ),
     view: str = typer.Option(None, help="'skeleton' or 'none' for headless."),
     max_frames: int = typer.Option(
         0, help="Stop after N frames. 0 runs until you quit."
@@ -85,6 +91,8 @@ def run(
     cfg = load_config(config)
     if backend:
         cfg.pose.backend = backend  # CLI override -- swap models without editing the config
+    if detect is not None:
+        cfg.detect.enabled = detect
     uri = source or cfg.source
     view_mode = view or cfg.view.mode
 
@@ -534,6 +542,12 @@ def dashboard(
     config: Path = typer.Option(None, help="Path to a YAML config."),
     calibration: Path = typer.Option(None, help="Per-camera calibration (for detection)."),
     backend: str = typer.Option(None, help="Override the pose backend: rtmo | rtmpose | yolo."),
+    detect: bool = typer.Option(
+        None,
+        "--detect/--no-detect",
+        help="Turn fall detection on or off. On needs a calibration matching "
+        "the capture resolution; without it there are no postures, only tracks.",
+    ),
     host: str = typer.Option(None, help="Bind address. Default 127.0.0.1 (localhost)."),
     port: int = typer.Option(None, help="Port. Default 8000."),
     rgb: bool = typer.Option(
@@ -541,6 +555,12 @@ def dashboard(
         "--rgb",
         help="Show live RGB video instead of skeleton-only. Reverses the ward "
         "privacy stance -- needs AH/DPO sign-off before real use.",
+    ),
+    allow_rgb: bool = typer.Option(
+        False,
+        "--allow-rgb",
+        help="Start skeleton-only but let the page switch to RGB (virtual "
+        "nursing). Same sign-off as --rgb; the difference is the default.",
     ),
 ) -> None:
     """Serve the nurse dashboard: live view, per-person state, alert log.
@@ -557,11 +577,14 @@ def dashboard(
     cfg = load_config(config)
     if backend:
         cfg.pose.backend = backend  # CLI override -- swap models without editing the config
+    if detect is not None:
+        cfg.detect.enabled = detect
     uri = source or cfg.source
     calib_path = calibration or cfg.calibration
     bind_host = host or cfg.dashboard.host
     bind_port = port or cfg.dashboard.port
     show_rgb = rgb or cfg.dashboard.show_rgb
+    rgb_allowed = show_rgb or allow_rgb or cfg.dashboard.allow_rgb
 
     if show_rgb:
         typer.echo(
@@ -576,16 +599,32 @@ def dashboard(
         state,
         source=uri,
         show_rgb=show_rgb,
-        # Only a process started with --rgb (or the config flag) may turn RGB
-        # back on from the page. Turning it off is always allowed.
-        rgb_authorised=show_rgb,
+        # Turning RGB off from the page is always allowed; turning it on takes
+        # --rgb, --allow-rgb, or the matching config flag.
+        rgb_authorised=rgb_allowed,
         log=typer.echo,
     )
     server = DashboardServer(
         state, host=bind_host, port=bind_port, controller=controller
     )
 
-    typer.echo("source:  " + uri + ("  [RGB]" if show_rgb else "  [skeleton only]"))
+    typer.echo(
+        "source:  "
+        + uri
+        + (
+            "  [RGB]"
+            if show_rgb
+            else ("  [skeleton only, RGB allowed]" if rgb_allowed else "  [skeleton only]")
+        )
+    )
+    typer.echo(
+        "detect:  "
+        + (
+            "on -- calib " + str(calib_path)
+            if cfg.detect.enabled
+            else "off -- pose and tracking only, no posture states"
+        )
+    )
     typer.echo("serving: http://" + bind_host + ":" + str(bind_port) + "  (Ctrl+C to stop)")
     typer.echo("         camera and pose model can be changed from the page")
 
