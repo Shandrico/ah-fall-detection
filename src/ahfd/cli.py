@@ -66,6 +66,9 @@ def run(
     calibration: Path = typer.Option(
         None, help="Per-camera calibration YAML. Required for fall detection."
     ),
+    backend: str = typer.Option(
+        None, help="Override the pose backend: rtmo | rtmpose | yolo."
+    ),
     view: str = typer.Option(None, help="'skeleton' or 'none' for headless."),
     max_frames: int = typer.Option(
         0, help="Stop after N frames. 0 runs until you quit."
@@ -80,6 +83,8 @@ def run(
     from ahfd.viz import render_overlay, render_skeleton
 
     cfg = load_config(config)
+    if backend:
+        cfg.pose.backend = backend  # CLI override -- swap models without editing the config
     uri = source or cfg.source
     view_mode = view or cfg.view.mode
 
