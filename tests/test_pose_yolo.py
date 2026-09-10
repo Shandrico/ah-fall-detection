@@ -80,8 +80,8 @@ class TestBuildEstimator:
         monkeypatch.setitem(sys.modules, "ultralytics", stub)
 
         est = build_estimator(PoseConfig(backend="yolo", model_size="s"))
-        assert est.name == "yolo11s-pose"
-        assert created["name"] == "yolo11s-pose.pt"
+        assert est.name == "yolo26s-pose"
+        assert created["name"] == "yolo26s-pose.pt"
 
     def test_unknown_backend_lists_yolo(self):
         with pytest.raises(ValueError) as excinfo:
@@ -92,6 +92,22 @@ class TestBuildEstimator:
 class TestModelSize:
     def test_valid_sizes(self):
         assert VALID_SIZES == ("n", "s", "m", "l", "x")
+
+    def test_bare_letter_defaults_to_newest_generation(self):
+        from ahfd.pose.yolo_pose import _resolve_model_name
+
+        assert _resolve_model_name("s") == "yolo26s-pose.pt"
+
+    def test_generation_plus_letter_is_explicit(self):
+        from ahfd.pose.yolo_pose import _resolve_model_name
+
+        assert _resolve_model_name("11s") == "yolo11s-pose.pt"
+        assert _resolve_model_name("26x") == "yolo26x-pose.pt"
+
+    def test_full_filename_passes_through(self):
+        from ahfd.pose.yolo_pose import _resolve_model_name
+
+        assert _resolve_model_name("yolo11m-pose.pt") == "yolo11m-pose.pt"
 
     def test_rejects_bad_size(self, monkeypatch):
         import types as _t

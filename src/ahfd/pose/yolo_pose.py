@@ -16,13 +16,42 @@ lazily and only here, so the default install stays lean.
 
 from __future__ import annotations
 
+import re
+
 import numpy as np
 
 from ahfd.capture.base import Frame
 from ahfd.types import NUM_KEYPOINTS, PersonPose, PoseFrame
 
-# Model-size letters for the YOLO11 pose family, smallest to largest.
+# Model-size letters for the YOLO pose family, smallest to largest.
 VALID_SIZES = ("n", "s", "m", "l", "x")
+# Default generation for a bare size letter. YOLO is benchmark-only here (AGPL),
+# so there is no deployment reason to stay on an old generation -- default to the
+# newest pose family. Was "11": v26 pose weights are confirmed downloadable on
+# ultralytics >= 8.4. Pick a specific generation with "26s" / "11m", or pass a
+# full "....pt" filename.
+DEFAULT_VERSION = "26"
+
+
+def _resolve_model_name(model_size: str) -> str:
+    """Turn a config `model_size` into a YOLO pose weight filename.
+
+    Accepts a bare size letter ("s" -> the default generation), an explicit
+    generation+letter ("11s", "26x"), or a full ".pt" filename (used as-is).
+    """
+    s = model_size.strip()
+    if s.endswith(".pt"):
+        return s
+    if s in VALID_SIZES:
+        return "yolo" + DEFAULT_VERSION + s + "-pose.pt"
+    m = re.fullmatch(r"(\d+)([nsmlx])", s)
+    if m:
+        return "yolo" + m.group(1) + m.group(2) + "-pose.pt"
+    raise ValueError(
+        "model_size must be one of " + repr(VALID_SIZES)
+        + " (defaults to YOLO" + DEFAULT_VERSION + "), a generation+size like "
+        "'11s' or '26x', or a .pt filename; got " + repr(model_size)
+    )
 
 
 def _to_people(
@@ -55,16 +84,7 @@ class YOLOPoseEstimator:
     """PoseEstimator backed by an Ultralytics YOLO pose model."""
 
     def __init__(self, model_size: str = "s", device: str = "cpu", min_score: float = 0.3):
-        # Accept a bare size letter or a full model filename.
-        if model_size in VALID_SIZES:
-            model_name = "yolo11" + model_size + "-pose.pt"
-        elif model_size.endswith(".pt"):
-            model_name = model_size
-        else:
-            raise ValueError(
-                "model_size must be one of " + repr(VALID_SIZES)
-                + " or a .pt filename, got " + repr(model_size)
-            )
+        model_name = _resolve_model_name(model_size)
 
         from ultralytics import YOLO
 
