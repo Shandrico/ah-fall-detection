@@ -87,6 +87,17 @@ class DashboardController:
         self.calib_path = calib_path
         self.state = state
         self.source = source or cfg.source
+        # Per-source calibration. The picker can change cameras, and each camera
+        # needs its own calibration (intrinsics/height/tilt are per-camera), so a
+        # switch has to switch the calibration with it. Built from the configured
+        # sources; the initial --calibration (or config `calibration:`) applies to
+        # the initial source unless that source is listed with its own.
+        self._calib_by_uri: dict[str, str] = {
+            s.uri: s.calibration for s in cfg.dashboard.sources if s.calibration
+        }
+        if calib_path and self.source not in self._calib_by_uri:
+            self._calib_by_uri[self.source] = calib_path
+        self.calib_path = self._calib_for(self.source)
         self.show_rgb = show_rgb
         # RGB can always be turned OFF from the page; turning it ON needs the
         # process to have been started with the authorisation. See set_rgb.
@@ -227,7 +238,11 @@ class DashboardController:
                 show_rgb=self.show_rgb,
             )
             self._retire(self._runner, gen)
+            # Swap the calibration to the new camera's before spawning: _spawn
+            # hands self.calib_path to the runner, and the wrong one would fail
+            # the resolution guard or produce wrong metres.
             self.cfg, self.source = cfg, uri
+            self.calib_path = self._calib_for(uri)
             self._spawn(gen)
         except Exception as exc:  # noqa: BLE001 -- a control-plane bug must not
             self.state.publish_status(  # leave the page stuck on "switching"
@@ -255,9 +270,23 @@ class DashboardController:
             )
 
     def _spawn(self, gen: int) -> None:
+        cfg = self.cfg
+        if self.calib_path is None and cfg.detect.enabled:
+            # This camera was offered without a calibration, so fall detection
+            # cannot run on it. Degrade to pose-only here rather than letting the
+            # runner error: an uncalibrated camera in a multi-camera picker should
+            # still show a live view, with its chips reading TRACKED (the page
+            # explains why). A camera WITH a calibration that is merely the wrong
+            # resolution still errors in the runner -- that is a real config bug.
+            cfg = cfg.model_copy(deep=True)
+            cfg.detect.enabled = False
+            self._log(
+                "no calibration for " + str(self.source) + "; detection off for "
+                "this camera (pose only)"
+            )
         self._runner = self._runner_factory(
             self.source,
-            self.cfg,
+            cfg,
             self.calib_path,
             self.state,
             show_rgb=self.show_rgb,
@@ -270,6 +299,10 @@ class DashboardController:
             if s["uri"] == uri:
                 return s["label"]
         return uri
+
+    def _calib_for(self, uri: str) -> str | None:
+        """The calibration to use for a source, or None if it has none."""
+        return self._calib_by_uri.get(uri)
 
     def _validate(self, source, backend) -> str | None:
         if backend is not None and backend not in self._backends:

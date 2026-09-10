@@ -53,7 +53,8 @@ dashboard:
   sources:
     - label: "RealSense D435i"
       uri: "rs://"
-  backends: ["rtmpose", "rtmo"]
+  # yolo is AGPL and benchmark-only -- fine for local testing, not a ward deploy.
+  backends: ["rtmpose", "rtmo", "yolo"]
   allow_custom_source: false
 
 privacy:

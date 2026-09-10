@@ -13,6 +13,11 @@ import yaml
 from pydantic import BaseModel, Field
 
 DEFAULT_CONFIG_PATH = Path(__file__).resolve().parents[2] / "configs" / "default.yaml"
+# `ahfd dashboard` with no --config loads this instead of default.yaml, so the
+# out-of-the-box dashboard can enable detection and list several cameras (each
+# with its own calibration) without changing the `ahfd run` default, which must
+# stay detection-off so a bare `ahfd run` needs no calibration.
+DASHBOARD_CONFIG_PATH = Path(__file__).resolve().parents[2] / "configs" / "dashboard.yaml"
 
 
 class PoseConfig(BaseModel):
@@ -111,6 +116,13 @@ class SourceOption(BaseModel):
 
     label: str
     uri: str
+    # Per-camera calibration YAML. Each camera has its own intrinsics, height and
+    # tilt, so switching the picker must switch the calibration too -- otherwise a
+    # webcam->RealSense switch reuses one calibration and either trips the
+    # resolution guard or emits confidently wrong metres. None means this camera
+    # is uncalibrated: the dashboard runs pose-only on it (postures read TRACKED)
+    # rather than refusing to show it.
+    calibration: str | None = None
 
 
 class DashboardConfig(BaseModel):

@@ -108,6 +108,11 @@ class PipelineRunner:
                 # calibration is a config error and should surface in a second,
                 # not once a 35 MB download has finished. Deferred import to
                 # avoid a hard dependency when detection is off.
+                #
+                # The dashboard controller disables detection for a camera it
+                # deliberately listed without a calibration (see _spawn), so a
+                # missing calibration reaching HERE is a genuine mistake worth an
+                # error -- not the multi-camera "uncalibrated spare camera" case.
                 from ahfd.cli import _build_detection
 
                 extractor, machine, _sink, _calib = _build_detection(

@@ -1,0 +1,74 @@
+# The default dashboard: `ahfd dashboard` (no --config) loads THIS file.
+#
+#   ahfd dashboard          # then open http://127.0.0.1:8000
+#
+# One dashboard, a camera picker for all your cameras, and fall detection ON.
+# Each camera in the picker carries its OWN calibration, so switching between
+# the webcam and the RealSense in the dropdown switches the calibration with it
+# -- and posture labels (UPRIGHT / SITTING / IN_BED / ON_GROUND / FALLING) work
+# on whichever camera is selected. A camera with no calibration listed runs
+# pose-only (its chips read TRACKED) instead of erroring.
+#
+# Resolution note: `capture` below is 640x480, which the WEBCAM honours (so it
+# matches calib/laptop_webcam.yaml). The RealSense ignores requested sizes and
+# always streams 1920x1080, which matches calib/d435i.yaml -- so one capture
+# block serves both cameras. To open straight onto the RealSense, change
+# `source` to "rs://".
+
+source: "webcam://0"        # initial camera; pick another from the page's dropdown
+
+capture:
+  width: 640                # webcam only; the RealSense streams its native 1920x1080
+  height: 480
+
+pose:
+  backend: "rtmpose"        # top-down: better at range than rtmo (your pick)
+  mode: "performance"       # rtmpose: performance / balanced / lightweight
+  model_size: "s"           # used by rtmo if you switch to it
+  runtime: "openvino"       # Intel iGPU; falls back to onnxruntime/cpu if openvino is absent
+  device: "gpu"
+  min_score: 0.5            # raised from 0.30 to cut flicker / objects-as-people
+  min_keypoint_score: 0.45
+
+smoothing:
+  enabled: true
+
+detect:
+  enabled: true
+  # Thresholds omitted -> DetectConfig defaults (the ward-geometry starting
+  # point: camera ~2.6 m, ~20 deg downtilt). Tune later with `ahfd sweep`.
+
+alert:
+  console: true
+  jsonl_path: "data/events/dashboard.jsonl"
+  min_severity: 0
+
+view:
+  mode: "overlay"
+  show_ids: true
+  show_fps: true
+  show_metrics: true
+
+dashboard:
+  host: "127.0.0.1"
+  port: 8000
+  show_rgb: true            # dev/testing: see the person. A ward sets this false.
+  jpeg_quality: 92
+  # The camera picker. Each entry carries its own calibration, so switching
+  # cameras switches calibration too. A connected RealSense is also auto-added,
+  # but list it here explicitly so it gets calib/d435i.yaml (the auto entry has
+  # no calibration and would run pose-only).
+  sources:
+    - label: "Laptop webcam"
+      uri: "webcam://0"
+      calibration: "calib/laptop_webcam.yaml"
+    - label: "RealSense D435i"
+      uri: "rs://"
+      calibration: "calib/d435i.yaml"
+  # yolo is AGPL and benchmark-only -- fine for local testing, not for a ward
+  # deployment. Included here because this is the dev dashboard.
+  backends: ["rtmpose", "rtmo", "yolo"]
+  allow_custom_source: true
+
+privacy:
+  allow_raw_capture: false

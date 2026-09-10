@@ -288,11 +288,11 @@ async function refresh(){
   // Without detection there is no posture, only a track id. Say why, or every
   // chip reading TRACKED looks like a broken state machine.
   const note = rt.detect === false
-    ? `<div class="note">No posture states: this config has
-       <code>detect.enabled: false</code>. Postures (UPRIGHT, SITTING, IN_BED,
-       FALLING, ON_GROUND) need detection on and a calibration matching the
-       capture resolution &mdash; try
-       <code>--config configs/detect_dev.yaml</code>.</div>` : '';
+    ? `<div class="note">No posture states here: either detection is off
+       (<code>detect.enabled: false</code>) or the selected camera has no
+       calibration for its resolution. Postures (UPRIGHT, SITTING, IN_BED,
+       FALLING, ON_GROUND) need detection on and a matching calibration for the
+       camera in view.</div>` : '';
   document.getElementById('tracks').innerHTML = note + tr;
 
   const floor = parseInt(document.getElementById('sev').value,10);

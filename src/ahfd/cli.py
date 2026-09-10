@@ -570,11 +570,19 @@ def dashboard(
     only by default; --rgb (or dashboard.show_rgb in config) shows video.
 
     --source and --backend set the *initial* camera and model; both can then be
-    changed from the page (see dashboard.sources in the config).
+    changed from the page (see dashboard.sources in the config). Each camera in
+    dashboard.sources may carry its own `calibration:`, so switching cameras in
+    the picker switches the calibration too.
+
+    With no --config this loads configs/dashboard.yaml (detection on, a picker
+    for the webcam and the RealSense), not the run default.
     """
+    from ahfd.config import DASHBOARD_CONFIG_PATH
     from ahfd.dashboard import DashboardController, DashboardServer, DashboardState
 
-    cfg = load_config(config)
+    # Bare `ahfd dashboard` loads the dashboard default (detection on, several
+    # cameras) rather than the run default -- see DASHBOARD_CONFIG_PATH.
+    cfg = load_config(config or DASHBOARD_CONFIG_PATH)
     if backend:
         cfg.pose.backend = backend  # CLI override -- swap models without editing the config
     if detect is not None:

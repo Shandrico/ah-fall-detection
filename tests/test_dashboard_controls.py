@@ -198,6 +198,49 @@ class TestSwitching:
         assert ctl.made[0].cfg.pose.backend == "rtmo"
         assert ctl.made[1].cfg.pose.backend == "rtmpose"
 
+    def test_each_camera_keeps_its_own_calibration(self):
+        """Switching the picker must switch the per-source calibration with it."""
+        cfg = make_cfg(
+            sources=[
+                SourceOption(
+                    label="Webcam", uri="webcam://0",
+                    calibration="calib/laptop_webcam.yaml",
+                ),
+                SourceOption(
+                    label="RealSense", uri="rs://", calibration="calib/d435i.yaml",
+                ),
+            ],
+            allow_custom_source=True,
+        )
+        ctl = controller(cfg)
+        ctl.start()
+        assert ctl.made[0].calib_path == "calib/laptop_webcam.yaml"
+        ctl.switch(source="rs://")
+        assert wait_for(lambda: len(ctl.made) == 2)
+        assert ctl.made[1].calib_path == "calib/d435i.yaml"
+
+    def test_uncalibrated_camera_degrades_to_pose_only(self):
+        """A camera offered without a calibration runs pose-only, not an error:
+        detection is turned off for it while the calibrated camera keeps it on."""
+        cfg = make_cfg(
+            sources=[
+                SourceOption(label="RealSense", uri="rs://", calibration="calib/d435i.yaml"),
+                SourceOption(label="Spare webcam", uri="webcam://1"),
+            ],
+            allow_custom_source=True,
+        )
+        cfg.detect.enabled = True
+        ctl = controller(cfg, source="rs://")
+        ctl.start()
+        # Calibrated camera: keeps its calibration and detection.
+        assert ctl.made[0].calib_path == "calib/d435i.yaml"
+        assert ctl.made[0].cfg.detect.enabled is True
+        # Uncalibrated camera: no calibration, detection quietly disabled.
+        ctl.switch(source="webcam://1")
+        assert wait_for(lambda: len(ctl.made) == 2)
+        assert ctl.made[1].calib_path is None
+        assert ctl.made[1].cfg.detect.enabled is False
+
     def test_second_switch_is_rejected_not_queued(self):
         ctl = controller()
         ctl.start()
