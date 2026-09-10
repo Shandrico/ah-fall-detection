@@ -47,11 +47,17 @@ def _import_rs():
 class _RealSenseBase:
     """Shared pipeline: filters, alignment, IMU gravity, frame assembly."""
 
-    def __init__(self, color_size=(1920, 1080), depth_size=(848, 480), fps=30):
+    def __init__(self, color_size=(1920, 1080), depth_size=(848, 480), fps=30, with_depth=False):
+        # with_depth defaults OFF: nothing downstream consumes depth (the
+        # geometry is homography-based), but capturing + filtering + aligning it
+        # every frame is the reason the RealSense ran at <15 fps while the webcam
+        # hit 40-60. RGB-only makes the RealSense as fast as any 1080p source.
+        # The IMU stays on (it is cheap and calibration needs it).
         self._rs = _import_rs()
         self._color_size = color_size
         self._depth_size = depth_size
         self._fps = fps
+        self._with_depth = with_depth
         self._pipeline = self._rs.pipeline()
         self._config = self._rs.config()
         self._align = None
@@ -89,10 +95,10 @@ class _RealSenseBase:
     def _start(self):
         rs = self._rs
         profile = self._pipeline.start(self._config)
-        self._align = rs.align(rs.stream.color)
-
-        depth_sensor = profile.get_device().first_depth_sensor()
-        self._depth_scale = float(depth_sensor.get_depth_scale())
+        if self._with_depth:
+            self._align = rs.align(rs.stream.color)
+            depth_sensor = profile.get_device().first_depth_sensor()
+            self._depth_scale = float(depth_sensor.get_depth_scale())
 
     def _read_gravity(self, frames) -> np.ndarray | None:
         """Gravity vector in the camera frame, from the accelerometer.
@@ -126,11 +132,20 @@ class _RealSenseBase:
         return measure, display
 
     def _assemble(self, frames, index: int, t: float) -> Frame | None:
-        aligned = self._align.process(frames)
-        color_frame = aligned.get_color_frame()
-        depth_frame = aligned.get_depth_frame()
-        if not color_frame or not depth_frame:
-            return None
+        # RGB-only path (default): no align, no depth filtering -- the expensive
+        # per-frame work that made the RealSense slow. Depth path kept for any
+        # future depth feature, behind with_depth.
+        if self._with_depth:
+            aligned = self._align.process(frames)
+            color_frame = aligned.get_color_frame()
+            depth_frame = aligned.get_depth_frame()
+            if not color_frame or not depth_frame:
+                return None
+        else:
+            color_frame = frames.get_color_frame()
+            depth_frame = None
+            if not color_frame:
+                return None
 
         if self._intrinsics is None:
             intr = color_frame.get_profile().as_video_stream_profile().get_intrinsics()
@@ -144,7 +159,9 @@ class _RealSenseBase:
             )
 
         bgr = np.asanyarray(color_frame.get_data())
-        measure, display = self._measure_and_filtered(depth_frame)
+        measure = display = None
+        if depth_frame is not None:
+            measure, display = self._measure_and_filtered(depth_frame)
 
         gravity = self._read_gravity(frames)
         if gravity is not None:
@@ -171,16 +188,17 @@ class _RealSenseBase:
 class RealSenseSource(_RealSenseBase):
     """Live D435i."""
 
-    def __init__(self, color_size=(1920, 1080), depth_size=(848, 480), fps=30):
-        super().__init__(color_size, depth_size, fps)
+    def __init__(self, color_size=(1920, 1080), depth_size=(848, 480), fps=30, with_depth=False):
+        super().__init__(color_size, depth_size, fps, with_depth=with_depth)
         rs = self._rs
         self._config.enable_stream(
             rs.stream.color, color_size[0], color_size[1], rs.format.bgr8, fps
         )
-        self._config.enable_stream(
-            rs.stream.depth, depth_size[0], depth_size[1], rs.format.z16, fps
-        )
-        # IMU streams for the gravity vector.
+        if with_depth:
+            self._config.enable_stream(
+                rs.stream.depth, depth_size[0], depth_size[1], rs.format.z16, fps
+            )
+        # IMU streams for the gravity vector (cheap; calibration needs accel).
         self._config.enable_stream(rs.stream.accel)
         self._config.enable_stream(rs.stream.gyro)
 
@@ -191,7 +209,7 @@ class RealSenseSource(_RealSenseBase):
             width=self._color_size[0],
             height=self._color_size[1],
             fps=float(self._fps),
-            has_depth=True,
+            has_depth=self._with_depth,
         )
 
     def __iter__(self) -> Iterator[Frame]:
