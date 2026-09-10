@@ -1,0 +1,60 @@
+# RealSense D435i development profile: full pipeline with fall detection ON,
+# posture labels, and RGB, running on the D435i + Intel iGPU.
+#
+#   ahfd dashboard --config configs/detect_rs.yaml   # then open http://127.0.0.1:8000
+#   ahfd run       --config configs/detect_rs.yaml --view overlay
+#
+# This is the config that makes posture labels (UPRIGHT / SITTING / IN_BED /
+# ON_GROUND / FALLING) show up on the D435i. They read TRACKED instead whenever
+# detect.enabled is false OR the calibration resolution does not match capture.
+# Here both are handled: detection is on, and calib/d435i.yaml is 1920x1080,
+# which is exactly what the RealSense streams (RGB-only by default now).
+#
+# The DECISION thresholds are left at their defaults on purpose -- the defaults
+# already assume a camera at ~2.6 m looking down ~20 deg (the ward geometry),
+# which is this setup. Tune them later against staged clips with `ahfd sweep`;
+# do not hand-guess. See configs/ward.yaml for the full annotated threshold list.
+
+source: "rs://"
+calibration: "calib/d435i.yaml"
+
+pose:
+  backend: "rtmpose"     # top-down: better at range/far beds than rtmo (your pick)
+  mode: "performance"    # rtmpose: performance / balanced / lightweight
+  runtime: "openvino"    # Intel iGPU; falls back to onnxruntime/cpu if openvino is absent
+  device: "gpu"
+  min_score: 0.5         # raised from 0.30 to cut flicker / objects-as-people
+  min_keypoint_score: 0.45
+
+smoothing:
+  enabled: true
+
+detect:
+  enabled: true
+  # Thresholds intentionally omitted -> DetectConfig defaults (the ward-geometry
+  # starting point). Add per-ward overrides here once swept against clips.
+
+alert:
+  console: true
+  jsonl_path: "data/events/rs_dev.jsonl"
+  min_severity: 0
+
+view:
+  mode: "overlay"        # RGB + skeleton + posture, so you can verify tracking
+  show_ids: true
+  show_fps: true
+  show_metrics: true     # per-person height / floor-spread / velocity + calib check
+
+dashboard:
+  host: "127.0.0.1"
+  port: 8000
+  show_rgb: true         # dev/testing: see the person and the posture. A ward sets this false.
+  jpeg_quality: 92
+  sources:
+    - label: "RealSense D435i"
+      uri: "rs://"
+  backends: ["rtmpose", "rtmo"]
+  allow_custom_source: false
+
+privacy:
+  allow_raw_capture: false
