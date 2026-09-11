@@ -31,6 +31,14 @@ import numpy as np
 from ahfd.capture.base import Frame, SourceMeta
 from ahfd.types import Intrinsics
 
+# A marginal USB link, or another program (RealSense Viewer, Teams, a browser)
+# momentarily grabbing the camera, makes the first open or first frame fail
+# intermittently even though the device is healthy a second later. Retry the
+# open a few times -- escalating to a hardware reset -- rather than letting one
+# bad moment crash the whole run. See _RealSenseBase._start_with_retry.
+_FIRST_FRAME_TIMEOUT_MS = 8000
+_START_ATTEMPTS = 4
+
 
 def _import_rs():
     try:
@@ -100,6 +108,66 @@ class _RealSenseBase:
             depth_sensor = profile.get_device().first_depth_sensor()
             self._depth_scale = float(depth_sensor.get_depth_scale())
 
+    def _reset_device(self) -> None:
+        """Hardware-reset the device and wait for it to re-enumerate.
+
+        Last-ditch recovery when a plain retry keeps failing: a reset clears a
+        wedged pipeline that a previous program (or an unclean exit) left behind.
+        """
+        import time
+
+        rs = self._rs
+        try:
+            devices = rs.context().query_devices()
+            if len(devices) > 0:
+                devices[0].hardware_reset()
+        except Exception:  # pragma: no cover - best-effort recovery
+            pass
+        time.sleep(4.0)  # re-enumeration takes a few seconds
+
+    def _start_with_retry(self) -> None:
+        """Start the pipeline and confirm frames actually flow, retrying through
+        the intermittent failures a marginal link or a competing program cause.
+
+        A start can 'succeed' while no frames ever arrive (the device is there
+        but something else holds it, or the link stalled), so each attempt also
+        waits for one real frame as a health check before handing control to the
+        caller. Most bad moments clear within a retry or two; a hardware reset is
+        the last resort before giving up with an actionable message.
+        """
+        import time
+
+        rs = self._rs
+        last: Exception | None = None
+        for attempt in range(_START_ATTEMPTS):
+            try:
+                self._start()
+                self._pipeline.wait_for_frames(_FIRST_FRAME_TIMEOUT_MS)
+                return
+            except Exception as exc:  # noqa: BLE001 - retry on any capture failure
+                last = exc
+                try:
+                    self._pipeline.stop()
+                except Exception:
+                    pass
+                if attempt >= _START_ATTEMPTS - 1:
+                    break
+                if attempt == _START_ATTEMPTS - 2:
+                    self._reset_device()  # escalate before the final attempt
+                else:
+                    time.sleep(1.5)
+                self._pipeline = rs.pipeline()  # a fresh pipeline for the retry
+        raise RuntimeError(
+            "RealSense did not deliver frames after "
+            + str(_START_ATTEMPTS)
+            + " attempts (last error: "
+            + str(last)
+            + "). This is a USB/ownership issue, not a config one: close any other "
+            "program using the camera (RealSense Viewer, Teams, Zoom, a browser tab), "
+            "use the cable that shipped with the D435i in a USB-3 port with no hub, "
+            "and unplug/replug to reset."
+        ) from last
+
     def _read_gravity(self, frames) -> np.ndarray | None:
         """Gravity vector in the camera frame, from the accelerometer.
 
@@ -158,7 +226,12 @@ class _RealSenseBase:
                 cy=intr.ppy,
             )
 
-        bgr = np.asanyarray(color_frame.get_data())
+        # .copy() is load-bearing: get_data() returns a view into the frame's
+        # buffer from librealsense's fixed pool (~16 frames). Any consumer that
+        # HOLDS frames -- `ahfd bench` accumulates them -- would pin the whole
+        # pool and stall the stream at frame 16, and a recycled buffer would also
+        # corrupt a held image. Copying makes each Frame own its pixels.
+        bgr = np.asanyarray(color_frame.get_data()).copy()
         measure = display = None
         if depth_frame is not None:
             measure, display = self._measure_and_filtered(depth_frame)
@@ -215,12 +288,18 @@ class RealSenseSource(_RealSenseBase):
     def __iter__(self) -> Iterator[Frame]:
         import time
 
-        self._start()
+        self._start_with_retry()
         index = 0
         start = time.monotonic()
         try:
             while True:
-                frames = self._pipeline.wait_for_frames()
+                try:
+                    frames = self._pipeline.wait_for_frames()
+                except RuntimeError:
+                    # A transient mid-stream stall on a marginal link. Give it one
+                    # more, longer, chance before propagating -- a single missed
+                    # frameset should not end a capture.
+                    frames = self._pipeline.wait_for_frames(_FIRST_FRAME_TIMEOUT_MS)
                 frame = self._assemble(frames, index, time.monotonic() - start)
                 if frame is not None:
                     yield frame
