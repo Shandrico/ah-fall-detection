@@ -537,6 +537,260 @@ def bench(
 
 
 @app.command()
+def calibrate_zones(
+    calibration: Path = typer.Argument(..., help="Calibration YAML to add the zone(s) to."),
+    source: str = typer.Option("rs://", help="Camera to grab a frame from (ignored with --frame)."),
+    frame: Path = typer.Option(None, help="Click on this saved image instead of a live frame."),
+) -> None:
+    """Draw bed/zone polygons by clicking on a frame; write them into the calibration.
+
+    Click the corners of the bed SURFACE (the mattress edges). Each click is
+    back-projected to floor metres at the bed height you enter, using the camera
+    geometry already in the calibration (run `ahfd calibrate` first). Keys in the
+    window: left-click adds a point, 'u' undo, 'f' finish the polygon, 'q'/Esc
+    cancel. You can add several zones in one run. This is the only zone step that
+    needs a frame -- zones are used purely from metres afterwards.
+    """
+    import cv2
+    import yaml
+
+    from ahfd.geometry.calibration import load_calibration
+    from ahfd.geometry.zones import Zone, polygon_from_pixels
+
+    calib = load_calibration(calibration)
+    ground = calib.ground
+
+    win = "ahfd calibrate-zones"
+    cv2.namedWindow(win)
+
+    if frame is not None:
+        img = cv2.imread(str(frame))
+        if img is None:
+            cv2.destroyAllWindows()
+            raise typer.BadParameter("could not read image: " + str(frame))
+    else:
+        # Live preview: watch the feed and press SPACE to freeze the moment you
+        # want to draw on (so the subject can be positioned and the image is
+        # steady). The frozen frame is held in memory only and never written to
+        # disk -- the privacy guard forbids saving imagery here (see
+        # tests/test_privacy.py), and none is needed: you click, it measures, done.
+        from ahfd.capture import open_source
+
+        src = open_source(source)
+        img = None
+        typer.echo("live view -- SPACE to freeze the frame, 'q' to quit")
+        try:
+            for f in src:
+                if f.bgr is None:
+                    continue
+                view = f.bgr.copy()
+                cv2.putText(
+                    view, "SPACE = freeze   q = quit", (20, 40),
+                    cv2.FONT_HERSHEY_SIMPLEX, 1.0, (0, 255, 255), 2, cv2.LINE_AA,
+                )
+                cv2.imshow(win, view)
+                key = cv2.waitKey(20) & 0xFF
+                if key == ord(" "):
+                    img = f.bgr.copy()
+                    break
+                if key in (ord("q"), 27):
+                    break
+        finally:
+            src.close()
+        if img is None:
+            cv2.destroyAllWindows()
+            raise typer.BadParameter("no frame frozen (quit before pressing SPACE).")
+
+    h, w = img.shape[:2]
+    k = ground.intrinsics
+    if (w, h) != (k.width, k.height):
+        cv2.destroyAllWindows()
+        raise typer.BadParameter(
+            "frame is " + str(w) + "x" + str(h) + " but the calibration is for "
+            + str(k.width) + "x" + str(k.height) + "; use a frame at the "
+            "calibrated resolution or the metres will be wrong."
+        )
+
+    data = yaml.safe_load(calibration.read_text(encoding="utf-8")) or {}
+    data.setdefault("zones", [])
+
+    clicks: list[tuple[int, int]] = []
+
+    def on_mouse(event, x, y, flags, param):
+        if event == cv2.EVENT_LBUTTONDOWN:
+            clicks.append((x, y))
+
+    cv2.setMouseCallback(win, on_mouse)
+
+    added = 0
+    while True:
+        clicks.clear()
+        typer.echo("\nclick the zone corners in the window; 'f' finish, 'u' undo, 'q' cancel")
+        cancelled = False
+        while True:
+            disp = img.copy()
+            cv2.putText(
+                disp, "click corners   f = finish   u = undo   q = cancel", (20, 40),
+                cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 255, 255), 2, cv2.LINE_AA,
+            )
+            for i, (x, y) in enumerate(clicks):
+                cv2.circle(disp, (x, y), 5, (0, 255, 0), -1)
+                if i:
+                    cv2.line(disp, clicks[i - 1], clicks[i], (0, 255, 0), 2)
+            if len(clicks) >= 3:
+                cv2.line(disp, clicks[-1], clicks[0], (0, 200, 0), 1)
+            cv2.imshow(win, disp)
+            key = cv2.waitKey(20) & 0xFF
+            if key in (ord("q"), 27):
+                cancelled = True
+                break
+            if key == ord("u") and clicks:
+                clicks.pop()
+            if key == ord("f") and len(clicks) >= 3:
+                break
+
+        if cancelled or len(clicks) < 3:
+            typer.echo("  zone cancelled")
+        else:
+            pts = list(clicks)
+            name = typer.prompt("  zone name", default="bed_" + str(added + 1))
+            kind = typer.prompt("  kind (bed/chair/floor/exclude)", default="bed")
+            if kind in ("bed", "chair"):
+                top_m = float(
+                    typer.prompt(
+                        "  surface height top_m in metres (floor->mattress top)",
+                        default="0.4",
+                    )
+                )
+                risk = typer.prompt("  risk_level (none/low/medium/high)", default="high")
+                plane_z = top_m
+            else:
+                top_m, risk, plane_z = None, "unknown", 0.0
+            try:
+                poly = polygon_from_pixels(ground, pts, plane_z)
+                Zone(name=name, kind=kind, polygon=poly, top_m=top_m, risk_level=risk)
+            except ValueError as exc:
+                typer.echo("  ! invalid zone, not added: " + str(exc))
+            else:
+                entry: dict = {"name": name, "kind": kind}
+                if top_m is not None:
+                    entry["top_m"] = top_m
+                    entry["risk_level"] = risk
+                entry["polygon"] = [[p[0], p[1]] for p in poly]
+                data["zones"].append(entry)
+                added += 1
+                typer.echo(
+                    "  added " + name + " (" + kind + ", " + str(len(poly)) + " points"
+                    + (", top_m=" + str(top_m) + ", risk=" + risk if top_m is not None else "")
+                    + ")"
+                )
+
+        if not typer.confirm("add another zone?", default=False):
+            break
+
+    cv2.destroyAllWindows()
+    if added:
+        calibration.write_text(yaml.safe_dump(data, sort_keys=False), encoding="utf-8")
+        typer.echo("\nwrote " + str(added) + " zone(s) to " + str(calibration))
+    else:
+        typer.echo("\nno zones added; calibration unchanged")
+
+
+@app.command()
+def train_posture(
+    calibration: Path = typer.Option(..., help="Calibration YAML (for the metric features)."),
+    labels: Path = typer.Option(Path("data/postures"), help="Dir of posture-label JSONs."),
+    tracks: Path = typer.Option(Path("data/tracks"), help="Dir of extracted <clip>.jsonl."),
+    out: Path = typer.Option(None, help="Save the trained model here (.joblib), optional."),
+    max_depth: int = typer.Option(5, help="Tree depth (small = interpretable)."),
+) -> None:
+    """Train an interpretable posture classifier from labelled clips.
+
+    Reads posture labels + extracted tracks + calibration, builds a table of
+    metric features -> posture, and fits a small decision tree -- reporting
+    accuracy, a confusion matrix, and which features matter most.
+
+    Retraining is just re-running this on more labelled+extracted clips; the
+    code never changes, only the data grows. On a single recording session the
+    accuracy is NOT meaningful (it overfits) -- this is a plumbing/coverage
+    check until you have several people and sessions.
+    """
+    from collections import Counter
+
+    from ahfd.geometry.calibration import load_calibration
+    from ahfd.ml.posture import build_dataset, train
+
+    calib = load_calibration(calibration)
+    rows, labels_list, used, skipped = build_dataset(labels, tracks, calib)
+
+    if skipped:
+        typer.echo("WARNING: skipped label files that failed to parse (fix the JSON):")
+        for name, why in skipped:
+            typer.echo("  ! " + name + ": " + why)
+        typer.echo("")
+
+    typer.echo("clips used:")
+    for clip, n in used:
+        typer.echo("  " + clip.ljust(24) + str(n) + " labelled frames")
+    if not rows:
+        raise typer.BadParameter(
+            "no labelled frames found. Need posture files in "
+            + str(labels)
+            + " with real segments AND matching tracks in "
+            + str(tracks)
+            + " (run `ahfd extract` on the labelled clips first)."
+        )
+
+    dist = Counter(labels_list)
+    typer.echo("")
+    typer.echo(
+        "samples per posture: "
+        + ", ".join(k + "=" + str(v) for k, v in sorted(dist.items()))
+    )
+    typer.echo("total samples: " + str(len(rows)))
+
+    result = train(rows, labels_list, max_depth=max_depth)
+
+    typer.echo("")
+    if result.split_done:
+        typer.echo(
+            "train/test split: " + str(result.n_train) + " train, "
+            + str(result.n_test) + " test"
+        )
+        typer.echo("TEST accuracy: " + format(result.accuracy, ".3f"))
+    else:
+        typer.echo(
+            "too few samples for a held-out test -- trained on all, reporting "
+            "TRAINING accuracy (not a real score)"
+        )
+        typer.echo("TRAINING accuracy: " + format(result.accuracy, ".3f"))
+
+    typer.echo("")
+    typer.echo("confusion (rows=true, cols=pred): " + "  ".join(result.classes))
+    for cls, row in zip(result.classes, result.confusion):
+        typer.echo("  " + cls.ljust(12) + " ".join(str(x).rjust(4) for x in row))
+
+    typer.echo("")
+    typer.echo("feature importances (which features separate the postures):")
+    for feat, imp in result.importances:
+        typer.echo("  " + feat.ljust(14) + format(imp, ".3f") + " " + "#" * int(round(imp * 40)))
+
+    typer.echo("")
+    typer.echo(result.report)
+    typer.echo(
+        "NOTE: on one session this OVERFITS -- the number is a plumbing check, "
+        "not a real accuracy. Retrain on more people/sessions by labelling + "
+        "extracting more clips and re-running this exact command."
+    )
+
+    if out:
+        import joblib
+
+        joblib.dump(result.model, out)
+        typer.echo("saved model -> " + str(out))
+
+
+@app.command()
 def dashboard(
     source: str = typer.Option(None, help="Source URI. Defaults to the config's source."),
     config: Path = typer.Option(None, help="Path to a YAML config."),

@@ -140,6 +140,30 @@ class ZoneMap:
         return cls(zones=zones)
 
 
+def polygon_from_pixels(ground, pixels, plane_z: float = 0.0) -> list[Point]:
+    """Back-project clicked image pixels to a floor-plane polygon, in metres.
+
+    Each pixel's ray is intersected with the horizontal plane at height
+    ``plane_z`` -- the bed surface (``top_m``) for a bed zone, the floor (0.0)
+    otherwise -- using the calibrated ``ground`` (anything with ``pixel_to_plane``).
+    This is what lets a bed zone be *drawn* by clicking corners instead of
+    hand-measuring metres. Raises ``ValueError`` if a pixel's ray does not meet
+    the plane (it points at or above the horizon -- i.e. the far wall, not the
+    bed/floor).
+    """
+    poly: list[Point] = []
+    for u, v in pixels:
+        xy = ground.pixel_to_plane(float(u), float(v), plane_z)
+        if xy is None:
+            raise ValueError(
+                "pixel (" + str(u) + "," + str(v) + ") does not meet the plane at "
+                "z=" + str(plane_z) + " (it points at or above the horizon). Click "
+                "points on the bed/floor, not the far wall or ceiling."
+            )
+        poly.append((round(xy[0], 3), round(xy[1], 3)))
+    return poly
+
+
 def rectangle(
     centre: Point, length: float, width: float, angle_deg: float
 ) -> list[Point]:
