@@ -771,9 +771,28 @@ def train_posture(
         typer.echo("  " + cls.ljust(12) + " ".join(str(x).rjust(4) for x in row))
 
     typer.echo("")
-    typer.echo("feature importances (which features separate the postures):")
+    typer.echo("tree feature importances (what THIS tree split on -- noisy on small data):")
     for feat, imp in result.importances:
-        typer.echo("  " + feat.ljust(14) + format(imp, ".3f") + " " + "#" * int(round(imp * 40)))
+        if imp <= 0:
+            continue
+        typer.echo("  " + feat.ljust(18) + format(imp, ".3f") + " " + "#" * int(round(imp * 40)))
+
+    # The univariate ranking is the honest "which joint distinguishes them"
+    # answer: it scores each feature alone, so it is stable where the tree's
+    # importances are not. Show the top handful with their per-class means so
+    # the separation is legible, not just a score.
+    typer.echo("")
+    typer.echo("most discriminative features (ANOVA F-score, higher = separates postures better):")
+    header = "  " + "feature".ljust(18) + "F".rjust(8) + "  MI".ljust(8)
+    header += "".join(c[:8].rjust(10) for c in result.classes)
+    typer.echo(header)
+    for feat, fscore, miscore in result.separability[:8]:
+        line = "  " + feat.ljust(18) + format(fscore, ".1f").rjust(8) + ("  " + format(miscore, ".2f")).ljust(8)
+        for c in result.classes:
+            m = result.class_means[c].get(feat, float("nan"))
+            line += (format(m, ".2f") if m == m else "  --").rjust(10)
+        typer.echo(line)
+    typer.echo("  (last columns = mean value of that feature per posture -- read across to see the gap)")
 
     typer.echo("")
     typer.echo(result.report)
