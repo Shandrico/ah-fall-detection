@@ -1,0 +1,12 @@
+{
+  "clip_id": "fall_recover_02",
+  "duration_s": 33.9,
+  "segments": [
+    { "start_s": 0.0, "end_s": 0.0, "posture": "upright" },
+    { "start_s": 0.0, "end_s": 0.0, "posture": "on_ground" },
+    { "start_s": 0.0, "end_s": 0.0, "posture": "upright" },
+    { "start_s": 0.0, "end_s": 0.0, "posture": "on_ground" },
+    { "start_s": 0.0, "end_s": 0.0, "posture": "upright" },
+    { "start_s": 0.0, "end_s": 0.0, "posture": "on_ground" }
+  ]
+}

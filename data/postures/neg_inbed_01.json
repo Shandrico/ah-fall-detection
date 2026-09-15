@@ -1,0 +1,18 @@
+{
+  "clip_id": "neg_inbed_01",
+  "duration_s": 167.1,
+  "_howto": "Add one segment per STABLE posture held. start_s/end_s are seconds into the clip. Leave GAPS between segments for transitions (excluded from scoring). 'posture' must be one of: upright, sitting, in_bed, on_ground.",
+  "_postures": {
+    "upright": "standing on your feet / walking (system: UPRIGHT)",
+    "sitting": "seated torso-up -- chair or bed edge, feet down (system: SITTING)",
+    "in_bed": "on the mattress -- lying or sitting up in bed (system: IN_BED; needs a bed zone)",
+    "on_ground": "lying on the floor (system: ON_GROUND)"
+  },
+  "segments": [
+    { "start_s": 4.0, "end_s": 6.0, "posture": "upright" },
+    { "start_s": 7.0, "end_s": 8.0, "posture": "sitting" },
+    { "start_s": 9.0, "end_s": 156.0, "posture": "in_bed" },
+    { "start_s": 157.0, "end_s": 160.0, "posture": "sitting" },
+    { "start_s": 161.0, "end_s": 162.0, "posture": "upright" }
+  ]
+}

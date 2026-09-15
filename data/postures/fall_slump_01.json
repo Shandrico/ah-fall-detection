@@ -1,0 +1,27 @@
+{
+  "clip_id": "fall_slump_01",
+  "duration_s": 148.0,
+  "_howto": "Add one segment per STABLE posture held. start_s/end_s are seconds into the clip. Leave GAPS between segments for transitions (excluded from scoring). 'posture' must be one of: upright, sitting, in_bed, on_ground.",
+  "_postures": {
+    "upright": "standing on your feet / walking (system: UPRIGHT)",
+    "sitting": "seated torso-up -- chair or bed edge, feet down (system: SITTING)",
+    "in_bed": "on the mattress -- lying or sitting up in bed (system: IN_BED; needs a bed zone)",
+    "on_ground": "lying on the floor (system: ON_GROUND)"
+  },
+  "segments": [
+    { "start_s": 6.0, "end_s": 9.0, "posture": "sitting" },
+    { "start_s": 11.0, "end_s": 14.0, "posture": "on_ground" },
+
+    { "start_s": 16.0, "end_s": 21.0, "posture": "sitting" },
+    { "start_s": 23.0, "end_s": 25.0, "posture": "on_ground" },
+
+    { "start_s": 30.0, "end_s": 100, "posture": "sitting" },
+    { "start_s": 105.0, "end_s": 107.0, "posture": "on_ground" },
+
+    { "start_s": 112.0, "end_s": 118, "posture": "sitting" },
+    { "start_s": 121.0, "end_s": 123.0, "posture": "on_ground" },
+
+    { "start_s": 127.0, "end_s": 135.0, "posture": "sitting" },
+    { "start_s": 138.0, "end_s": 140.0, "posture": "on_ground" }
+  ]
+}

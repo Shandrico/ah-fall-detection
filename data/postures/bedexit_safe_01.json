@@ -1,0 +1,9 @@
+{
+  "clip_id": "bedexit_safe_01",
+  "duration_s": 310.13,
+  "segments": [
+    { "start_s": 10, "end_s": 14, "posture": "in_bed" },
+    { "start_s": 23, "end_s": 27, "posture": "upright" },
+    { "start_s": 32, "end_s": 39, "posture": "in_bed" }
+  ]
+}

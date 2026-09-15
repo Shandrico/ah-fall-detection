@@ -1,0 +1,9 @@
+{
+  "clip_id": "fall_recover_01",
+  "duration_s": 66.93,
+  "falls": [
+    { "t_impact": 15, "t_start": 13, "notes": "derived from postures: upright -> on_ground" },
+    { "t_impact": 32, "t_start": 30, "notes": "derived from postures: upright -> on_ground" },
+    { "t_impact": 57, "t_start": 54, "notes": "derived from postures: upright -> on_ground" }
+  ]
+}

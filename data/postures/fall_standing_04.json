@@ -1,0 +1,16 @@
+{
+  "clip_id": "fall_standing_04",
+  "duration_s": 42.5,
+  "segments": [
+    { "start_s": 0.0, "end_s": 0.0, "posture": "upright" },
+    { "start_s": 0.0, "end_s": 0.0, "posture": "on_ground" },
+    { "start_s": 0.0, "end_s": 0.0, "posture": "upright" },
+    { "start_s": 0.0, "end_s": 0.0, "posture": "on_ground" },
+    { "start_s": 0.0, "end_s": 0.0, "posture": "upright" },
+    { "start_s": 0.0, "end_s": 0.0, "posture": "on_ground" },
+    { "start_s": 0.0, "end_s": 0.0, "posture": "upright" },
+    { "start_s": 0.0, "end_s": 0.0, "posture": "on_ground" },
+    { "start_s": 0.0, "end_s": 0.0, "posture": "upright" },
+    { "start_s": 0.0, "end_s": 0.0, "posture": "on_ground" }
+  ]
+}

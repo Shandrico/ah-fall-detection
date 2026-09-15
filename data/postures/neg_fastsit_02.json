@@ -1,0 +1,12 @@
+{
+  "clip_id": "neg_fastsit_02",
+  "duration_s": 69.7,
+  "segments": [
+    { "start_s": 0.0, "end_s": 0.0, "posture": "upright" },
+    { "start_s": 0.0, "end_s": 0.0, "posture": "sitting" },
+    { "start_s": 0.0, "end_s": 0.0, "posture": "upright" },
+    { "start_s": 0.0, "end_s": 0.0, "posture": "sitting" },
+    { "start_s": 0.0, "end_s": 0.0, "posture": "upright" },
+    { "start_s": 0.0, "end_s": 0.0, "posture": "sitting" }
+  ]
+}

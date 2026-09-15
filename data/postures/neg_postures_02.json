@@ -1,0 +1,11 @@
+{
+  "clip_id": "neg_postures_02",
+  "duration_s": 136.0,
+  "segments": [
+    { "start_s": 0.0, "end_s": 0.0, "posture": "upright" },
+    { "start_s": 0.0, "end_s": 0.0, "posture": "sitting" },
+    { "start_s": 0.0, "end_s": 0.0, "posture": "in_bed" },
+    { "start_s": 0.0, "end_s": 0.0, "posture": "sitting" },
+    { "start_s": 0.0, "end_s": 0.0, "posture": "upright" }
+  ]
+}
