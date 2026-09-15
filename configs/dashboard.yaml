@@ -65,6 +65,14 @@ dashboard:
     - label: "RealSense D435i"
       uri: "rs://"
       calibration: "calib/d435i.yaml"
+    # Infrared low-light mode: streams the IR imager with the dot projector off.
+    # Needs its OWN calibration (the IR camera is 1280x720 with different
+    # intrinsics) -- run `ahfd calibrate calib/d435i_ir.yaml --source 'rs://ir'
+    # --height <m>`, then `ahfd copy-zones --from calib/d435i.yaml --to
+    # calib/d435i_ir.yaml` so the beds carry over.
+    - label: "RealSense D435i (IR / low-light)"
+      uri: "rs://ir"
+      calibration: "calib/d435i_ir.yaml"
   # yolo is AGPL and benchmark-only -- fine for local testing, not for a ward
   # deployment. Included here because this is the dev dashboard.
   backends: ["rtmpose", "rtmo", "yolo"]

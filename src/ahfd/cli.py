@@ -697,6 +697,61 @@ def calibrate_zones(
 
 
 @app.command()
+def copy_zones(
+    from_: Path = typer.Option(..., "--from", help="Calibration to copy zones FROM."),
+    to: list[Path] = typer.Option(
+        ..., "--to", help="Calibration(s) to copy zones INTO (repeat --to for several)."
+    ),
+    append: bool = typer.Option(
+        False, help="Add to the target's existing zones instead of replacing them."
+    ),
+) -> None:
+    """Copy bed/zone polygons from one calibration into others -- draw once, share.
+
+    Zones are stored in floor METRES, not pixels, so they describe the same
+    physical beds no matter which camera sees them. That means one set of zones
+    can be shared across every calibration of the SAME camera mount -- e.g. the
+    colour (calib/d435i.yaml) and infrared (calib/d435i_ir.yaml) views of one
+    D435i -- without redrawing.
+
+    It does NOT make sense to copy zones to a camera in a DIFFERENT position (a
+    webcam across the room): its floor frame is unrelated, so it needs its own
+    zones. A mismatched mount height usually means exactly that, and the copy to
+    that target is skipped with a warning.
+    """
+    import yaml
+
+    src = yaml.safe_load(from_.read_text(encoding="utf-8")) or {}
+    zones = src.get("zones") or []
+    if not zones:
+        raise typer.BadParameter("no zones in " + str(from_) + " to copy.")
+    src_h = (src.get("camera") or {}).get("height_m")
+
+    copied_to = 0
+    for target in to:
+        if target.resolve() == from_.resolve():
+            continue
+        data = yaml.safe_load(target.read_text(encoding="utf-8")) or {}
+        tgt_h = (data.get("camera") or {}).get("height_m")
+        if src_h is not None and tgt_h is not None and abs(float(src_h) - float(tgt_h)) > 0.1:
+            typer.echo(
+                "  ! SKIP " + target.name + ": mount height " + str(tgt_h) + " m != "
+                + str(src_h) + " m (looks like a different camera position -- it "
+                "needs its own zones). Draw them with `ahfd calibrate-zones`."
+            )
+            continue
+        existing = data.get("zones") or []
+        data["zones"] = (existing + list(zones)) if append else list(zones)
+        target.write_text(yaml.safe_dump(data, sort_keys=False), encoding="utf-8")
+        copied_to += 1
+        typer.echo(
+            "  " + str(len(zones)) + " zone(s) -> " + str(target)
+            + (" (appended)" if append else (" (replaced " + str(len(existing)) + ")"))
+        )
+    typer.echo("\ncopied into " + str(copied_to) + " calibration(s)")
+
+
+@app.command()
 def train_posture(
     calibration: Path = typer.Option(..., help="Calibration YAML (for the metric features)."),
     labels: Path = typer.Option(Path("data/postures"), help="Dir of posture-label JSONs."),
@@ -895,6 +950,7 @@ def label_postures(
 
     typer.echo("labelling " + clip.stem + "  ->  " + str(out_path))
     typer.echo("  s/SPACE=start  f=end  1-4=posture  u=undo  w=save  q=save+quit")
+    typer.echo("  click/drag the timeline to seek   c=cancel mark   r=remove segment here")
     n = run_labeler(clip, out_path)
     typer.echo("saved " + str(n) + " segment(s) to " + str(out_path))
 
