@@ -810,6 +810,65 @@ def train_posture(
 
 
 @app.command()
+def derive_falls(
+    postures: Path = typer.Option(Path("data/postures"), help="Dir of posture-label JSONs."),
+    out: Path = typer.Option(Path("data/annotations"), help="Dir to write fall ground-truth into."),
+    prune_placeholders: bool = typer.Option(
+        False,
+        "--prune-placeholders",
+        help="Delete stale t_impact:0.0 placeholder annotations for unlabelled fall clips.",
+    ),
+) -> None:
+    """Derive fall ground-truth from posture labels (no separate impact labelling).
+
+    A fall is an upright/sitting -> on_ground transition, so the posture
+    segments already contain the falls: t_impact is the start of each on_ground
+    hold, t_start the end of the posture before it. Negatives (neg_* / bedexit_*)
+    are written as empty-falls from their duration even without posture labels.
+    Unlabelled fall clips are left out of the ground truth until you label them.
+    Re-run this after every labelling session -- it keeps the falls in sync.
+    """
+    from ahfd.annotate import derive_annotations
+
+    written, unlabelled, pruned = derive_annotations(
+        postures, out, prune_placeholders=prune_placeholders
+    )
+
+    if not written:
+        raise typer.BadParameter(
+            "no annotations written from " + str(postures)
+            + " -- label some clips first with `ahfd label-postures`."
+        )
+
+    typer.echo("wrote fall ground-truth to " + str(out) + ":")
+    n_falls = 0
+    for clip, n in written:
+        n_falls += n
+        tag = (str(n) + " fall" + ("s" if n != 1 else "")) if n else "negative (0 falls)"
+        typer.echo("  " + clip.ljust(26) + tag)
+    typer.echo("\n" + str(len(written)) + " clip(s), " + str(n_falls) + " fall(s) total")
+
+    if unlabelled:
+        typer.echo(
+            "\nUNLABELLED fall clips (no posture labels yet -- NOT in the ground "
+            "truth, do not sweep them until labelled):\n  " + ", ".join(unlabelled)
+        )
+        if not prune_placeholders:
+            typer.echo(
+                "  (any leftover t_impact:0.0 placeholders remain; re-run with "
+                "--prune-placeholders to delete them)"
+            )
+    if pruned:
+        typer.echo("\npruned " + str(len(pruned)) + " stale placeholder annotation(s)")
+
+    typer.echo(
+        "\nnext: sweep a threshold against these, e.g.\n"
+        "  ahfd sweep detect.vz_trigger --range -1.5:-0.5:0.1 "
+        "--tracks data/tracks --annotations " + str(out)
+    )
+
+
+@app.command()
 def label_postures(
     clip: Path = typer.Argument(..., help="Video clip to label, e.g. data/clips/fall_slump_02.mp4."),
     out: Path = typer.Option(
