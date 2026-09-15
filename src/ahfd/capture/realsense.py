@@ -55,17 +55,41 @@ def _import_rs():
 class _RealSenseBase:
     """Shared pipeline: filters, alignment, IMU gravity, frame assembly."""
 
-    def __init__(self, color_size=(1920, 1080), depth_size=(848, 480), fps=30, with_depth=False):
+    def __init__(
+        self,
+        color_size=(1920, 1080),
+        depth_size=(848, 480),
+        fps=30,
+        with_depth=False,
+        *,
+        infrared=False,
+        ir_index=1,
+        ir_size=(1280, 720),
+        emitter=None,
+    ):
         # with_depth defaults OFF: nothing downstream consumes depth (the
         # geometry is homography-based), but capturing + filtering + aligning it
         # every frame is the reason the RealSense ran at <15 fps while the webcam
         # hit 40-60. RGB-only makes the RealSense as fast as any 1080p source.
         # The IMU stays on (it is cheap and calibration needs it).
+        #
+        # infrared streams the left IR imager instead of colour -- a grayscale
+        # night-vision image for low light. `emitter` controls the dot
+        # projector: leave it None to keep the device default, False to switch
+        # it off. For IR-as-pose-input you want it OFF (the projected dots
+        # otherwise cover the scene) plus an external IR floodlight so the room
+        # is lit; the caller sets that policy. The IR imager is a *different*
+        # camera from colour -- its own intrinsics and resolution -- so a stream
+        # switched to IR needs its own calibration.
         self._rs = _import_rs()
         self._color_size = color_size
         self._depth_size = depth_size
         self._fps = fps
         self._with_depth = with_depth
+        self._infrared = infrared
+        self._ir_index = ir_index
+        self._ir_size = ir_size
+        self._emitter = emitter
         self._pipeline = self._rs.pipeline()
         self._config = self._rs.config()
         self._align = None
@@ -103,10 +127,24 @@ class _RealSenseBase:
     def _start(self):
         rs = self._rs
         profile = self._pipeline.start(self._config)
+        device = profile.get_device()
+
+        # The dot projector lives on the stereo (depth) sensor, and can be set
+        # whether or not depth is streamed -- turning it off gives a clean IR
+        # image. Best-effort: not every firmware exposes the option.
+        if self._emitter is not None:
+            try:
+                sensor = device.first_depth_sensor()
+                if sensor.supports(rs.option.emitter_enabled):
+                    sensor.set_option(
+                        rs.option.emitter_enabled, 1.0 if self._emitter else 0.0
+                    )
+            except Exception:  # pragma: no cover - best-effort hardware option
+                pass
+
         if self._with_depth:
             self._align = rs.align(rs.stream.color)
-            depth_sensor = profile.get_device().first_depth_sensor()
-            self._depth_scale = float(depth_sensor.get_depth_scale())
+            self._depth_scale = float(device.first_depth_sensor().get_depth_scale())
 
     def _reset_device(self) -> None:
         """Hardware-reset the device and wait for it to re-enumerate.
@@ -199,7 +237,47 @@ class _RealSenseBase:
         display = np.asanyarray(f["hole"].process(common).get_data()).copy()
         return measure, display
 
+    def _assemble_ir(self, frames, index: int, t: float) -> Frame | None:
+        """Assemble a Frame from the left IR imager, as a 3-channel grey image.
+
+        The IR frame is single-channel Y8; replicating it to three channels
+        lets the pose stage -- which expects a BGR image -- consume it with no
+        change. `np.repeat` returns a fresh array, so (like the colour path's
+        .copy()) the Frame owns its pixels and cannot pin the frame pool.
+        """
+        ir_frame = frames.get_infrared_frame(self._ir_index)
+        if not ir_frame:
+            return None
+
+        if self._intrinsics is None:
+            intr = ir_frame.get_profile().as_video_stream_profile().get_intrinsics()
+            self._intrinsics = Intrinsics(
+                width=intr.width, height=intr.height,
+                fx=intr.fx, fy=intr.fy, cx=intr.ppx, cy=intr.ppy,
+            )
+
+        ir = np.asanyarray(ir_frame.get_data())  # (H, W) uint8
+        bgr = np.repeat(ir[:, :, None], 3, axis=2)  # grey -> 3-channel, owns pixels
+
+        gravity = self._read_gravity(frames)
+        if gravity is not None:
+            self._gravity = gravity
+
+        return Frame(
+            index=index,
+            t=t,
+            bgr=bgr,
+            depth=None,
+            depth_raw=None,
+            depth_scale=self._depth_scale,
+            intrinsics=self._intrinsics,
+            gravity=self._gravity,
+        )
+
     def _assemble(self, frames, index: int, t: float) -> Frame | None:
+        if self._infrared:
+            return self._assemble_ir(frames, index, t)
+
         # RGB-only path (default): no align, no depth filtering -- the expensive
         # per-frame work that made the RealSense slow. Depth path kept for any
         # future depth feature, behind with_depth.
@@ -261,12 +339,33 @@ class _RealSenseBase:
 class RealSenseSource(_RealSenseBase):
     """Live D435i."""
 
-    def __init__(self, color_size=(1920, 1080), depth_size=(848, 480), fps=30, with_depth=False):
-        super().__init__(color_size, depth_size, fps, with_depth=with_depth)
-        rs = self._rs
-        self._config.enable_stream(
-            rs.stream.color, color_size[0], color_size[1], rs.format.bgr8, fps
+    def __init__(
+        self,
+        color_size=(1920, 1080),
+        depth_size=(848, 480),
+        fps=30,
+        with_depth=False,
+        *,
+        infrared=False,
+        ir_index=1,
+        ir_size=(1280, 720),
+        emitter=None,
+    ):
+        super().__init__(
+            color_size, depth_size, fps, with_depth=with_depth,
+            infrared=infrared, ir_index=ir_index, ir_size=ir_size, emitter=emitter,
         )
+        rs = self._rs
+        if infrared:
+            # Left IR imager, single-channel Y8. Colour is not enabled -- one
+            # stream is all pose needs, and it keeps the frame rate up.
+            self._config.enable_stream(
+                rs.stream.infrared, ir_index, ir_size[0], ir_size[1], rs.format.y8, fps
+            )
+        else:
+            self._config.enable_stream(
+                rs.stream.color, color_size[0], color_size[1], rs.format.bgr8, fps
+            )
         if with_depth:
             self._config.enable_stream(
                 rs.stream.depth, depth_size[0], depth_size[1], rs.format.z16, fps
@@ -277,10 +376,11 @@ class RealSenseSource(_RealSenseBase):
 
     @property
     def meta(self) -> SourceMeta:
+        width, height = self._ir_size if self._infrared else self._color_size
         return SourceMeta(
-            uri="rs://",
-            width=self._color_size[0],
-            height=self._color_size[1],
+            uri="rs://ir" if self._infrared else "rs://",
+            width=width,
+            height=height,
             fps=float(self._fps),
             has_depth=self._with_depth,
         )
