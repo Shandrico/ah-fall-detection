@@ -865,6 +865,102 @@ def train_posture(
 
 
 @app.command()
+def label_review(
+    postures: Path = typer.Option(Path("data/postures"), help="Dir of posture-label JSONs."),
+    posture: str = typer.Option(None, help="Show only segments of this posture (upright/sitting/in_bed/on_ground)."),
+    clip: str = typer.Option(None, help="Show only this clip's segments."),
+) -> None:
+    """Review your posture labels: per-posture coverage, or filter to check one.
+
+    With no options: a summary of how much of each posture you've labelled (so
+    you can see, e.g., how many seconds of `sitting` exist and in which clips).
+    `--posture sitting` lists every sitting segment across all clips; `--clip X`
+    lists one clip's segments. Placeholder rows (start==end) are ignored.
+    """
+    from collections import defaultdict
+
+    from ahfd.annotate import POSTURE_CLASSES, load_existing_segments
+
+    if posture and posture not in POSTURE_CLASSES:
+        raise typer.BadParameter(
+            "posture must be one of: " + ", ".join(POSTURE_CLASSES)
+        )
+
+    # clip -> list of (start, end, posture)
+    by_clip: dict[str, list[tuple[float, float, str]]] = {}
+    for path in sorted(Path(postures).glob("*.json")):
+        _cid, segs = load_existing_segments(path)
+        if segs:
+            by_clip[path.stem] = [
+                (float(s["start_s"]), float(s["end_s"]), s["posture"]) for s in segs
+            ]
+
+    if not by_clip:
+        typer.echo("no labelled segments found in " + str(postures))
+        return
+
+    def dur(a, b):
+        return b - a
+
+    # --- filter to one clip ------------------------------------------------
+    if clip:
+        segs = by_clip.get(clip)
+        if not segs:
+            raise typer.BadParameter("no real segments for clip " + repr(clip))
+        typer.echo(clip + ":")
+        for a, b, p in sorted(segs):
+            typer.echo("  %6.1f - %6.1f s  (%5.1fs)  %s" % (a, b, dur(a, b), p))
+        return
+
+    # --- filter to one posture across all clips ----------------------------
+    if posture:
+        total = 0.0
+        n = 0
+        typer.echo(posture + " segments across all clips:")
+        for cid in sorted(by_clip):
+            for a, b, p in sorted(by_clip[cid]):
+                if p == posture:
+                    typer.echo("  %-24s %6.1f - %6.1f s  (%5.1fs)" % (cid, a, b, dur(a, b)))
+                    total += dur(a, b)
+                    n += 1
+        typer.echo("\n%d segment(s), %.1f s total of %s" % (n, total, posture))
+        return
+
+    # --- default: coverage summary ----------------------------------------
+    per_posture_secs: dict[str, float] = defaultdict(float)
+    per_posture_segs: dict[str, int] = defaultdict(int)
+    per_posture_clips: dict[str, set] = defaultdict(set)
+    for cid, segs in by_clip.items():
+        for a, b, p in segs:
+            per_posture_secs[p] += dur(a, b)
+            per_posture_segs[p] += 1
+            per_posture_clips[p].add(cid)
+
+    typer.echo("posture coverage (across " + str(len(by_clip)) + " labelled clips):")
+    typer.echo("  " + "posture".ljust(12) + "segs".rjust(6) + "seconds".rjust(10) + "   clips")
+    for p in POSTURE_CLASSES:
+        typer.echo(
+            "  " + p.ljust(12) + str(per_posture_segs[p]).rjust(6)
+            + format(per_posture_secs[p], ".1f").rjust(10)
+            + "   " + str(len(per_posture_clips[p]))
+        )
+    unknown = set(per_posture_secs) - set(POSTURE_CLASSES)
+    for p in sorted(unknown):
+        typer.echo("  ! " + p.ljust(10) + " (not a valid posture class) "
+                   + str(per_posture_segs[p]) + " segs")
+
+    typer.echo("\nper clip:")
+    for cid in sorted(by_clip):
+        counts: dict[str, float] = defaultdict(float)
+        for a, b, p in by_clip[cid]:
+            counts[p] += dur(a, b)
+        summary = "  ".join(
+            k + ":" + format(v, ".0f") + "s" for k, v in sorted(counts.items())
+        )
+        typer.echo("  " + cid.ljust(24) + summary)
+
+
+@app.command()
 def derive_falls(
     postures: Path = typer.Option(Path("data/postures"), help="Dir of posture-label JSONs."),
     out: Path = typer.Option(Path("data/annotations"), help="Dir to write fall ground-truth into."),
