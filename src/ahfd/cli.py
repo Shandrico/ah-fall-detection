@@ -721,7 +721,7 @@ def train_posture(
     from ahfd.ml.posture import build_dataset, train
 
     calib = load_calibration(calibration)
-    rows, labels_list, used, skipped = build_dataset(labels, tracks, calib)
+    rows, labels_list, _groups, used, skipped = build_dataset(labels, tracks, calib)
 
     if skipped:
         typer.echo("WARNING: skipped label files that failed to parse (fix the JSON):")
@@ -807,6 +807,128 @@ def train_posture(
 
         joblib.dump(result.model, out)
         typer.echo("saved model -> " + str(out))
+
+
+@app.command()
+def label_postures(
+    clip: Path = typer.Argument(..., help="Video clip to label, e.g. data/clips/fall_slump_02.mp4."),
+    out: Path = typer.Option(
+        None, help="Posture JSON to write. Default: data/postures/<clip>.json."
+    ),
+) -> None:
+    """Scrub a clip and mark posture segments -- a little video labeller.
+
+    Opens the clip in a window with a timeline. Scrub with a/d (+/-1s), ,/.
+    (+/-1 frame), [ / ] (+/-5s). Press 's' (or SPACE) to mark the START of a
+    hold, scrub to its end, press 'f', then a number to pick the posture
+    (1 upright, 2 sitting, 3 in_bed, 4 on_ground). 'u' undoes, 'w' saves, 'q'
+    saves and quits. Leave gaps between segments for transitions -- they are
+    excluded from training on purpose.
+
+    Only the label JSON is written; no frame is ever saved. Run it on the
+    laptop (it needs a display), not the headless Jetson.
+    """
+    from ahfd.annotate import run_labeler
+
+    if not clip.exists():
+        raise typer.BadParameter("clip not found: " + str(clip))
+    out_path = out or (Path("data/postures") / (clip.stem + ".json"))
+
+    typer.echo("labelling " + clip.stem + "  ->  " + str(out_path))
+    typer.echo("  s/SPACE=start  f=end  1-4=posture  u=undo  w=save  q=save+quit")
+    n = run_labeler(clip, out_path)
+    typer.echo("saved " + str(n) + " segment(s) to " + str(out_path))
+
+
+@app.command()
+def compare_posture(
+    calibration: Path = typer.Option(..., help="Calibration YAML (for the metric features)."),
+    labels: Path = typer.Option(Path("data/postures"), help="Dir of posture-label JSONs."),
+    tracks: Path = typer.Option(Path("data/tracks"), help="Dir of extracted <clip>.jsonl."),
+    show_rules: bool = typer.Option(
+        True, "--show-rules/--no-show-rules", help="Print the learned tree thresholds."
+    ),
+) -> None:
+    """Train the posture classifier several ways and rank them, honestly.
+
+    Compares flat 4-class models (tree / forest / logistic / naive-Bayes), the
+    coarse-to-fine cascade (upright -> sitting-vs-down -> ground-vs-bed) with a
+    tree or logistic model at each node, and a learning-free threshold rule.
+
+    Scoring is LEAVE-ONE-CLIP-OUT: each clip is predicted by a model that never
+    saw it. That is the honest test -- a random frame split leaks near-duplicate
+    frames and inflates the score. It is still optimistic while every clip is
+    one person at one camera; the number becomes trustworthy once several
+    people are labelled (the grouping is then leave-one-person-out, unchanged).
+    """
+    from ahfd.geometry.calibration import load_calibration
+    from ahfd.ml.compare import compare
+    from ahfd.ml.posture import build_dataset
+
+    calib = load_calibration(calibration)
+    rows, labels_list, groups, used, skipped = build_dataset(labels, tracks, calib)
+
+    if skipped:
+        typer.echo("WARNING: skipped label files that failed to parse (fix the JSON):")
+        for name, why in skipped:
+            typer.echo("  ! " + name + ": " + why)
+        typer.echo("")
+
+    typer.echo("clips used (each is one leave-one-out fold):")
+    for clip, n in used:
+        typer.echo("  " + clip.ljust(24) + str(n) + " labelled frames")
+    if not rows or len(set(groups)) < 2:
+        raise typer.BadParameter(
+            "need at least two labelled+extracted clips to leave one out; found "
+            + str(len(set(groups)))
+            + ". Label + extract more clips first."
+        )
+
+    from collections import Counter
+
+    dist = Counter(labels_list)
+    typer.echo(
+        "\nsamples per posture: "
+        + ", ".join(k + "=" + str(v) for k, v in sorted(dist.items()))
+    )
+
+    result = compare(rows, labels_list, groups)
+
+    typer.echo("")
+    typer.echo(
+        "leave-one-clip-out ranking (macro-F1 = balanced across postures; "
+        "bal-acc = mean recall):"
+    )
+    header = "  " + "model".ljust(18) + "macro-F1".rjust(9) + "bal-acc".rjust(9) + "  "
+    header += "".join(("R:" + c[:6]).rjust(10) for c in result.classes)
+    typer.echo(header)
+    for s in result.scores:
+        line = "  " + s.name.ljust(18)
+        line += format(s.macro_f1, ".3f").rjust(9) + format(s.balanced_accuracy, ".3f").rjust(9) + "  "
+        line += "".join(format(s.per_class_recall[c], ".2f").rjust(10) for c in result.classes)
+        typer.echo(line)
+    typer.echo("  (R:<posture> = recall = of all true frames of that posture, fraction caught)")
+
+    best = result.scores[0]
+    typer.echo("")
+    typer.echo("BEST: " + best.name + "  -- confusion (rows=true, cols=pred): " + "  ".join(result.classes))
+    for cls, row in zip(result.classes, best.confusion):
+        typer.echo("  " + cls.ljust(12) + " ".join(str(x).rjust(5) for x in row))
+    typer.echo("")
+    typer.echo("per-clip accuracy for " + best.name + ":")
+    for clip, acc in best.per_clip_acc:
+        typer.echo("  " + clip.ljust(24) + format(acc, ".3f"))
+
+    if show_rules:
+        typer.echo("")
+        typer.echo("how a tree decides -- learned thresholds (depth-3 flat tree on all data):")
+        typer.echo(result.tree_rules)
+
+    typer.echo(
+        "NOTE: still ONE person/camera -- even leave-one-clip-out mostly tests "
+        "cross-scenario, not cross-person. Label persons 02-04, extract, re-run: "
+        "this becomes leave-one-person-out with no code change."
+    )
 
 
 @app.command()
