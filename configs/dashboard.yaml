@@ -17,6 +17,12 @@
 
 source: "webcam://0"        # initial camera; pick another from the page's dropdown
 
+# Fallback calibration for a clip path typed into the source box (reviewing a
+# recording): those aren't listed cameras, so without this they'd run pose-only.
+# Clips are recorded on the RealSense at 1920x1080, matching calib/d435i.yaml.
+# (Listed cameras below keep their own calibration; this only fills the gap.)
+calibration: "calib/d435i.yaml"
+
 capture:
   width: 640                # webcam only; the RealSense streams its native 1920x1080
   height: 480

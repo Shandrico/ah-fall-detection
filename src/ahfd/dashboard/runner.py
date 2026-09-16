@@ -199,43 +199,60 @@ class PipelineRunner:
         """
         total = src.meta.frame_count
         self.state.announce_replay(total, self.gen)
-        interval = 1.0 / (src.meta.fps or 30.0)
+        fps = src.meta.fps or 30.0
+
+        def reset_state():
+            # A seek is a jump in time: motion continuity is gone, so clear
+            # EVERYTHING that carries per-track history across frames -- the
+            # tracker (else ids blend/confuse), the smoother (else the skeleton
+            # sticks halfway between the old and new frame), and the detector
+            # (else the time jump fabricates a huge velocity / phantom fall).
+            tracker.reset()
+            if smoother is not None:
+                smoother.retain_only(set())
+            if extractor is not None:
+                extractor.retain_only(set())
+            if machine is not None:
+                machine.retain_only(set())
 
         fps_ema: float | None = None
         frames_seen = 0
         cur = 0
         last = -1
+        anchor: tuple[float, int] | None = None  # (wall_time, frame) when playing
         while not self._stop.is_set():
-            paused, seek = self.state.take_replay_command()
+            paused, seek, speed = self.state.take_replay_command()
+
             if seek is not None:
                 cur = max(0, min(seek, total - 1))
-                if extractor is not None:
-                    extractor.retain_only(set())
-                if machine is not None:
-                    machine.retain_only(set())
+                reset_state()
+                anchor = None
 
-            proc = 0.0
+            if not paused:
+                # Play at real time (or speed x): the frame to show is derived
+                # from wall-clock, so if pose can't keep up the loop SKIPS frames
+                # to stay in sync -- exactly like a normal video player under
+                # load, instead of the previous slow-motion.
+                if anchor is None:
+                    anchor = (time.monotonic(), cur)
+                w0, f0 = anchor
+                cur = min(total - 1, f0 + int((time.monotonic() - w0) * fps * speed))
+            else:
+                anchor = None
+
             if cur != last:
                 frame = src.read_at(cur)
                 if frame is not None:
-                    t0 = time.perf_counter()
                     fps_ema = self._process_frame(
                         frame, estimator, tracker, smoother, extractor, machine, fps_ema
                     )
-                    proc = time.perf_counter() - t0
                     frames_seen += 1
                     last = cur
                     self.state.publish_replay_pos(cur, self.gen)
 
-            if paused:
-                time.sleep(0.04)  # idle on the held frame, waiting for a command
-            elif cur >= total - 1:
+            if not paused and cur >= total - 1:
                 self.state.replay_control("pause")  # reached the end -> stop
-            else:
-                cur += 1
-                slack = interval - proc  # pace forward playback to the clip's fps
-                if slack > 0:
-                    time.sleep(min(slack, 0.2))
+            time.sleep(0.005)  # yield; the wall-clock target sets the real pace
         return frames_seen
 
     def _process_frame(

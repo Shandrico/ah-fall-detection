@@ -97,6 +97,11 @@ class DashboardController:
         }
         if calib_path and self.source not in self._calib_by_uri:
             self._calib_by_uri[self.source] = calib_path
+        # Fallback calibration for a source typed in the box (a clip path) that
+        # is not one of the listed cameras -- so reviewing a recording gets
+        # detection instead of pose-only. Used only for file:// sources, where
+        # a wrong resolution surfaces as a clear error rather than bad metres.
+        self._default_calib = calib_path or cfg.calibration
         self.calib_path = self._calib_for(self.source)
         self.show_rgb = show_rgb
         # RGB can always be turned OFF from the page; turning it ON needs the
@@ -301,8 +306,23 @@ class DashboardController:
         return uri
 
     def _calib_for(self, uri: str) -> str | None:
-        """The calibration to use for a source, or None if it has none."""
-        return self._calib_by_uri.get(uri)
+        """The calibration for a source: its own, else the default for a clip.
+
+        A listed camera uses its own calibration. A file:// source typed in the
+        box (reviewing a recording) has none listed, so it falls back to the
+        default calibration -- otherwise the review would run pose-only.
+        """
+        listed = self._calib_by_uri.get(uri)
+        if listed is not None:
+            return listed
+        # A recording (file path, or .bag) typed in the box is not a listed
+        # camera; fall back to the default calibration so it gets detection. A
+        # live camera (webcam:// / rs://) without a listed calibration stays
+        # pose-only on purpose.
+        is_live = uri.startswith(("webcam://", "rs://"))
+        if not is_live and self._default_calib:
+            return self._default_calib
+        return None
 
     def _validate(self, source, backend) -> str | None:
         if backend is not None and backend not in self._backends:

@@ -68,6 +68,7 @@ class DashboardState:
         self._replay_cur = 0
         self._replay_paused = False
         self._replay_seek: int | None = None
+        self._replay_speed = 1.0
 
     # ---- producer side (pipeline thread) -------------------------------
 
@@ -120,6 +121,7 @@ class DashboardState:
             self._replay_cur = 0
             self._replay_paused = False
             self._replay_seek = None
+            self._replay_speed = 1.0
             return self._gen
 
     @property
@@ -156,6 +158,7 @@ class DashboardState:
             self._replay_cur = 0
             self._replay_paused = False
             self._replay_seek = None
+            self._replay_speed = 1.0
 
     def publish_replay_pos(self, cur: int, gen: int) -> None:
         """The pipeline reports which frame it is now showing (for the slider)."""
@@ -182,16 +185,18 @@ class DashboardState:
             elif action == "step" and value is not None:
                 self._replay_seek = self._replay_cur + int(value)
                 self._replay_paused = True
+            elif action == "speed" and value is not None:
+                self._replay_speed = max(0.1, min(4.0, float(value)))
             else:
                 return False
             return True
 
-    def take_replay_command(self) -> tuple[bool, int | None]:
-        """The pipeline reads (paused, pending seek target) and clears the seek."""
+    def take_replay_command(self) -> tuple[bool, int | None, float]:
+        """The pipeline reads (paused, pending seek target, speed); clears the seek."""
         with self._lock:
             seek = self._replay_seek
             self._replay_seek = None
-            return self._replay_paused, seek
+            return self._replay_paused, seek, self._replay_speed
 
     # ---- consumer side (web server threads) ----------------------------
 
@@ -250,6 +255,7 @@ class DashboardState:
                         "total": self._replay_total,
                         "cur": self._replay_cur,
                         "paused": self._replay_paused,
+                        "speed": self._replay_speed,
                     }
                     if self._replay_seekable
                     else None

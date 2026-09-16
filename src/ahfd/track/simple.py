@@ -67,6 +67,14 @@ class SimpleTracker:
     _tracks: list[Track] = field(default_factory=list, init=False)
     _next_id: int = field(default=0, init=False)
 
+    def reset(self) -> None:
+        """Drop all live tracks -- used when the source jumps in time (a scrub
+        seek). Motion continuity is broken across a jump, so old identities no
+        longer apply; the next frame's people start fresh. Ids keep counting up
+        so a new segment never silently reuses a stale number.
+        """
+        self._tracks = []
+
     def update(self, pose_frame: PoseFrame) -> PoseFrame:
         """Return the same frame with track ids attached."""
         # Detections we can actually match on: a person with too few confident

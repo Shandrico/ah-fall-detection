@@ -155,6 +155,13 @@ DASHBOARD_HTML = r"""<!doctype html>
       <button id="pl-fwd5" title="forward 1 second">&raquo;</button>
       <input type="range" id="pl-seek" min="0" max="0" value="0" step="1"/>
       <span class="pos" id="pl-pos">0 / 0</span>
+      <select id="pl-speed" title="playback speed">
+        <option value="0.25">0.25&times;</option>
+        <option value="0.5">0.5&times;</option>
+        <option value="1" selected>1&times;</option>
+        <option value="2">2&times;</option>
+        <option value="4">4&times;</option>
+      </select>
     </div>
   </div>
   <div>
@@ -225,6 +232,7 @@ function setupPlayer(){
   document.getElementById('pl-fwd').onclick   = ()=> replay('step',  1);
   document.getElementById('pl-back5').onclick = ()=> replay('step', -Math.max(1,Math.round(plFps)));
   document.getElementById('pl-fwd5').onclick  = ()=> replay('step',  Math.max(1,Math.round(plFps)));
+  document.getElementById('pl-speed').onchange = (e)=> replay('speed', parseFloat(e.target.value));
 }
 function renderPlayer(rp, srcFps){
   const player = document.getElementById('player');
@@ -240,6 +248,8 @@ function renderPlayer(rp, srcFps){
     document.getElementById('pl-pos').textContent = rp.cur + ' / ' + last;
   }
   document.getElementById('pl-play').textContent = rp.paused ? 'Play' : 'Pause';
+  const sp = document.getElementById('pl-speed');
+  if(rp.speed != null && sp !== document.activeElement) sp.value = String(rp.speed);
 }
 
 function fill(id, pairs){
