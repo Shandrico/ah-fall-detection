@@ -98,6 +98,14 @@ class FallThresholds:
     down_spread: tuple[float, float] = (0.9, 3.0)  # metres, ~a body length
     down_h_torso: float = 0.90
 
+    # Seated bodies keep a near-vertical torso even when floor_spread reads like
+    # a fallen one's; torso_tilt (image angle, calibration-free) tells them
+    # apart. A torso standing up in frame (tilt <= seated_tilt_max) within
+    # seated_h is SITTING -- decided *before* the down test, so sitting stops
+    # being swallowed as ON_GROUND without loosening the fall thresholds.
+    seated_tilt_max: float = 35.0
+    seated_h: tuple[float, float] = (0.70, 1.00)
+
     # --- trigger -------------------------------------------------------
     vz_trigger: float = -0.90  # m/s sustained
     vz_frames: int = 3
@@ -405,6 +413,21 @@ class FallStateMachine:
             ts.down_since = None
             return None
 
+        # A clearly seated body keeps a near-vertical torso even when its
+        # floor_spread reads like a fallen one's -- so recognise it BEFORE the
+        # down test, or sitting gets swallowed as ON_GROUND (the whole reason
+        # sitting never showed). torso_tilt is an image angle, calibration-free,
+        # so this holds even when the metric heights are off. The fall
+        # thresholds are untouched.
+        lo, hi = th.seated_h
+        if (
+            f.torso_tilt is not None
+            and f.torso_tilt <= th.seated_tilt_max
+            and lo <= f.h_torso <= hi
+        ):
+            ts.down_since = None
+            return self._enter_sitting(ts, f, now, zone)
+
         # Down without ever triggering: slow slump, or joined late.
         if down:
             if ts.down_since is None:
@@ -434,35 +457,11 @@ class FallStateMachine:
 
         ts.down_since = None
 
-        # Sitting on a bed edge is the highest-value precursor: preventing a
-        # fall beats detecting one, and this is far easier to detect.
+        # Sitting fallback: the height band alone, for frames where torso_tilt
+        # is unavailable (e.g. shoulders or hips not confident).
         lo, hi = th.sitting_h
         if lo <= f.h_torso <= hi:
-            self._set_state(ts, "SITTING", now)
-            if ts.sitting_since is None:
-                ts.sitting_since = now
-            near_bed = any("bed" in z.lower() for z in f.zones)
-            if (
-                near_bed
-                and not ts.bed_exit_emitted
-                and now - ts.sitting_since >= th.bed_exit_s
-            ):
-                ts.bed_exit_emitted = True
-                risk = f.bed_risk or "unknown"
-                return Event(
-                    type="BED_EXIT",
-                    track_id=f.track_id,
-                    t_trigger=ts.sitting_since,
-                    t_alert=now,
-                    zone=zone,
-                    severity_override=BED_EXIT_SEVERITY_BY_RISK.get(risk, 2),
-                    evidence={
-                        "bed_risk": risk,
-                        "h_torso": round(f.h_torso, 2),
-                        "seated_s": round(now - ts.sitting_since, 1),
-                    },
-                )
-            return None
+            return self._enter_sitting(ts, f, now, zone)
 
         ts.sitting_since = None
         ts.bed_exit_emitted = False
@@ -471,6 +470,40 @@ class FallStateMachine:
             self._set_state(ts, "UPRIGHT", now)
         else:
             self._set_state(ts, "UNKNOWN", now)
+        return None
+
+    def _enter_sitting(
+        self, ts: _TrackState, f: Features, now: float, zone: str | None
+    ) -> Event | None:
+        """Mark the track SITTING, emitting a graded BED_EXIT if it is a
+        prolonged sit on a bed edge -- the highest-value precursor, since
+        preventing a fall beats detecting one.
+        """
+        assert f.h_torso is not None
+        self._set_state(ts, "SITTING", now)
+        if ts.sitting_since is None:
+            ts.sitting_since = now
+        near_bed = any("bed" in z.lower() for z in f.zones)
+        if (
+            near_bed
+            and not ts.bed_exit_emitted
+            and now - ts.sitting_since >= self.th.bed_exit_s
+        ):
+            ts.bed_exit_emitted = True
+            risk = f.bed_risk or "unknown"
+            return Event(
+                type="BED_EXIT",
+                track_id=f.track_id,
+                t_trigger=ts.sitting_since,
+                t_alert=now,
+                zone=zone,
+                severity_override=BED_EXIT_SEVERITY_BY_RISK.get(risk, 2),
+                evidence={
+                    "bed_risk": risk,
+                    "h_torso": round(f.h_torso, 2),
+                    "seated_s": round(now - ts.sitting_since, 1),
+                },
+            )
         return None
 
     @staticmethod

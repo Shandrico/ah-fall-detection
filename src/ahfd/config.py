@@ -68,6 +68,14 @@ class DetectConfig(BaseModel):
     down_spread: tuple[float, float] = (0.9, 3.0)
     down_h_torso: float = 0.90
 
+    # A seated body has a near-vertical torso even when its floor_spread reads
+    # like a fallen one's. torso_tilt (an image angle, so calibration-free)
+    # rescues it: a torso standing up in frame (tilt below seated_tilt_max) and
+    # within seated_h is SITTING, decided before the "down" test -- so sitting is
+    # no longer swallowed as ON_GROUND, and the fall thresholds are untouched.
+    seated_tilt_max: float = 35.0
+    seated_h: tuple[float, float] = (0.70, 1.00)
+
     vz_trigger: float = -0.90
     vz_frames: int = 3
     drop_trigger: float = 0.45

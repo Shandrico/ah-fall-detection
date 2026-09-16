@@ -102,6 +102,12 @@ class Features:
     bed_top_m: float | None = None
     bed_risk: str | None = None  # risk level of the associated bed, if any
     in_excluded_zone: bool = False
+    # Angle of the shoulders->hips torso vector from image-vertical, degrees:
+    # ~0 upright/seated (torso stands up in frame), ~90 lying (torso flat). An
+    # image-space angle, so it does NOT depend on camera height or calibration
+    # -- which is why it can tell close-range sitting from lying even when the
+    # metric heights are ambiguous.
+    torso_tilt: float | None = None
 
     @property
     def height_spread(self) -> float | None:
@@ -289,6 +295,32 @@ class FeatureExtractor:
             return 0.0
         return float((t * (h - h.mean())).sum() / denom)
 
+    @staticmethod
+    def _torso_tilt(person: PersonPose, valid: np.ndarray) -> float | None:
+        """Angle of the hips->shoulders vector from image-vertical, in degrees.
+
+        0 means the torso points straight up the frame (standing or sitting),
+        90 means it lies flat (fallen / in bed). Computed in pixel space because
+        an angle is scale-free, so unlike the metric heights it survives a wrong
+        camera height -- which is what lets it separate seated from prone.
+        """
+
+        def mid(indices):
+            pts = [person.keypoints[i] for i in indices if valid[i]]
+            if not pts:
+                return None
+            a = np.mean(np.asarray(pts, dtype=float), axis=0)
+            return float(a[0]), float(a[1])
+
+        sh, hp = mid(SHOULDERS), mid(HIPS)
+        if sh is None or hp is None:
+            return None
+        dx, dy = sh[0] - hp[0], sh[1] - hp[1]  # image y grows downward
+        n = math.hypot(dx, dy)
+        if n < 1e-6:
+            return None
+        return math.degrees(math.acos(float(np.clip(-dy / n, -1.0, 1.0))))
+
     def _motion(self, history: _History, now: float) -> float:
         """Mean floor speed over the recent window, metres per second."""
         recent = [p for p in history.positions if now - p[0] <= MOTION_WINDOW_S]
@@ -398,6 +430,7 @@ class FeatureExtractor:
             bed_top_m=bed.top_m if bed else None,
             bed_risk=assoc_bed.risk_level if assoc_bed else None,
             in_excluded_zone=self.zones.is_excluded(contact),
+            torso_tilt=self._torso_tilt(person, valid),
         )
 
     def retain_only(self, live_ids: set[int]) -> None:

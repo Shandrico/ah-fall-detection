@@ -49,6 +49,7 @@ def feats(
     bed_risk: str | None = None,
     contact: tuple[float, float] | None = (0.0, 5.0),
     excluded: bool = False,
+    torso_tilt: float | None = None,
 ) -> Features:
     return Features(
         track_id=track_id,
@@ -70,6 +71,7 @@ def feats(
         bed_top_m=bed_top_m,
         bed_risk=bed_risk,
         in_excluded_zone=excluded,
+        torso_tilt=torso_tilt,
     )
 
 
@@ -92,6 +94,39 @@ def hold(start: float, seconds: float, **kwargs) -> list[Features]:
 
 def types_of(events: list[Event]) -> list[str]:
     return [e.type for e in events]
+
+
+class TestSeatedPosture:
+    """The torso_tilt rescue: a seated body whose floor_spread reads like a
+    fallen one's is SITTING, not ON_GROUND -- without loosening fall thresholds.
+    """
+
+    def test_seated_upright_torso_is_sitting_not_on_ground(self):
+        # h_torso 0.75 <= down_h_torso and floor_spread in the down band would,
+        # by height alone, read as ON_GROUND. A near-vertical torso rescues it.
+        m = FallStateMachine()
+        run(m, hold(0.0, 2.0, h_torso=0.75, floor_spread=SPREAD_DOWN, torso_tilt=20.0))
+        assert m.state_of(1) == "SITTING"
+
+    def test_flat_torso_is_still_on_ground(self):
+        # Same height/spread, but the torso lies flat -> genuinely down.
+        m = FallStateMachine()
+        run(m, hold(0.0, 2.0, h_torso=0.60, floor_spread=SPREAD_DOWN, torso_tilt=60.0))
+        assert m.state_of(1) == "ON_GROUND"
+
+    def test_no_tilt_data_falls_back_to_height_bands(self):
+        # torso_tilt unavailable (None) -> old behaviour, decided on height.
+        m = FallStateMachine()
+        run(m, hold(0.0, 2.0, h_torso=0.60, floor_spread=SPREAD_DOWN, torso_tilt=None))
+        assert m.state_of(1) == "ON_GROUND"
+
+    def test_seated_does_not_fire_a_fall(self):
+        # Sitting still for a long time must never raise PERSON_DOWN.
+        m = FallStateMachine()
+        events = run(
+            m, hold(0.0, 30.0, h_torso=0.75, floor_spread=SPREAD_DOWN, torso_tilt=18.0)
+        )
+        assert events == []
 
 
 def fall_sequence(
