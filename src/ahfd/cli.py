@@ -865,6 +865,175 @@ def train_posture(
 
 
 @app.command()
+def export_features(
+    calibration: Path = typer.Option(..., help="Calibration YAML (for the metric features)."),
+    tracks: Path = typer.Option(Path("data/tracks"), help="Dir of extracted <clip>.jsonl."),
+    postures: Path = typer.Option(Path("data/postures"), help="Dir of posture labels (fills the posture column)."),
+    out: Path = typer.Option(Path("data/features"), help="Dir to write <clip>.csv into."),
+    clip: str = typer.Option(None, help="Export only this clip."),
+    labelled_only: bool = typer.Option(False, help="Keep only rows inside a labelled segment."),
+) -> None:
+    """Extract and STORE the per-frame key-joint features from the tracks.
+
+    Writes one CSV per clip: t, frame, posture (your label, or blank in a gap),
+    then every feature the classifier uses -- torso_tilt, knee heights,
+    floor_spread, and the rest. The features come from the tracks, so NO labels
+    are needed; labels only fill the `posture` column where they exist. All
+    frames by default; --labelled-only keeps just the labelled ones. Only
+    coordinates are written -- no imagery.
+    """
+    import csv
+
+    from ahfd.annotate import load_existing_segments
+    from ahfd.features import FeatureExtractor
+    from ahfd.geometry.calibration import load_calibration
+    from ahfd.io import read_tracks
+    from ahfd.ml.posture import FEATURES, _main_person, _posture_at, features_row
+
+    calib = load_calibration(calibration)
+    out.mkdir(parents=True, exist_ok=True)
+    fields = ["t", "frame", "posture"] + list(FEATURES)
+
+    written = []
+    for track_path in sorted(Path(tracks).glob("*.jsonl")):
+        stem = track_path.stem
+        if clip and stem != clip:
+            continue
+
+        seg_path = Path(postures) / (stem + ".json")
+        segments: list[dict] = []
+        if seg_path.exists():
+            _cid, segments = load_existing_segments(seg_path)
+
+        ext = FeatureExtractor(calib.ground, zones=calib.zones)
+        rows = []
+        for pose in read_tracks(track_path):
+            person = _main_person(pose)
+            if person is None:
+                continue
+            feats = ext.extract(person, pose.t)  # keeps velocity history moving
+            posture = _posture_at(segments, pose.t) if segments else None
+            if labelled_only and posture is None:
+                continue
+            base = {"t": round(pose.t, 3), "frame": pose.index, "posture": posture or ""}
+            if feats is not None and feats.has_geometry():
+                fr = features_row(feats, person, ext.ground)
+                for f in FEATURES:
+                    v = fr.get(f)
+                    base[f] = "" if v is None else round(v, 4)
+            else:
+                for f in FEATURES:
+                    base[f] = ""
+            rows.append(base)
+
+        csv_path = out / (stem + ".csv")
+        with open(csv_path, "w", newline="", encoding="utf-8") as fh:
+            writer = csv.DictWriter(fh, fieldnames=fields)
+            writer.writeheader()
+            writer.writerows(rows)
+        n_lab = sum(1 for r in rows if r["posture"])
+        written.append((stem, len(rows), n_lab))
+
+    if not written:
+        raise typer.BadParameter("no track files found in " + str(tracks))
+    typer.echo("wrote per-frame features to " + str(out) + " (" + str(len(FEATURES)) + " features/row):")
+    for stem, n, n_lab in written:
+        typer.echo("  " + stem.ljust(24) + str(n).rjust(6) + " rows  (" + str(n_lab) + " labelled)")
+
+
+@app.command()
+def posture_check(
+    calibration: Path = typer.Option(..., help="Calibration YAML (for the metric features)."),
+    postures: Path = typer.Option(Path("data/postures"), help="Dir of posture-label JSONs."),
+    tracks: Path = typer.Option(Path("data/tracks"), help="Dir of extracted <clip>.jsonl."),
+    clip: str = typer.Option(None, help="Check only this clip."),
+) -> None:
+    """See what posture the LIVE detector assigns on your recordings vs labels.
+
+    Replays each labelled clip's extracted tracks through the exact same
+    features + state machine the dashboard uses, and compares the assigned
+    posture to your labels -- so you can check, with no camera, whether
+    sitting/upright/etc. classify correctly. It uses each recording's own
+    geometry, so it sidesteps a wrong live-camera height entirely.
+    """
+    from collections import Counter
+
+    from ahfd.annotate import POSTURE_CLASSES, load_existing_segments
+    from ahfd.detect import FallStateMachine
+    from ahfd.features import FeatureExtractor
+    from ahfd.geometry.calibration import load_calibration
+    from ahfd.io import read_tracks
+
+    calib = load_calibration(calibration)
+    state_to_posture = {
+        "UPRIGHT": "upright", "SITTING": "sitting", "IN_BED": "in_bed",
+        "ON_GROUND": "on_ground", "FALLING": "on_ground",
+    }
+    cols = list(POSTURE_CLASSES) + ["other"]
+
+    def posture_at(segs, t):
+        for a, b, p in segs:
+            if a <= t <= b:
+                return p
+        return None
+
+    overall = {r: Counter() for r in POSTURE_CLASSES}
+    per_clip = []
+    for path in sorted(Path(postures).glob("*.json")):
+        if clip and path.stem != clip:
+            continue
+        _cid, raw = load_existing_segments(path)
+        track_path = Path(tracks) / (path.stem + ".jsonl")
+        if not raw or not track_path.exists():
+            continue
+        segs = [(float(s["start_s"]), float(s["end_s"]), s["posture"]) for s in raw]
+        ext = FeatureExtractor(calib.ground, zones=calib.zones)
+        fsm = FallStateMachine()
+        conf = {r: Counter() for r in POSTURE_CLASSES}
+        for pose in read_tracks(track_path):
+            ids = {p.track_id for p in pose.people if p.track_id is not None}
+            for p in pose.people:
+                if p.track_id is None:
+                    continue
+                f = ext.extract(p, pose.t)
+                if f is None:
+                    continue
+                fsm.update(f)
+                truth = posture_at(segs, pose.t)
+                if truth in POSTURE_CLASSES and f.has_geometry():
+                    got = state_to_posture.get(fsm.state_of(p.track_id), "other")
+                    conf[truth][got] += 1
+                    overall[truth][got] += 1
+            ext.retain_only(ids)
+            fsm.retain_only(ids)
+        per_clip.append((path.stem, conf))
+
+    if not per_clip:
+        raise typer.BadParameter(
+            "no labelled clips with tracks found -- extract them first."
+        )
+
+    typer.echo("posture-check (system vs your labels) on " + str(len(per_clip)) + " clip(s):\n")
+    for cid, conf in per_clip:
+        parts = []
+        for r in POSTURE_CLASSES:
+            n = sum(conf[r].values())
+            if n:
+                parts.append(r + ":" + format(100 * conf[r][r] / n, ".0f") + "%")
+        typer.echo("  " + cid.ljust(22) + "  ".join(parts))
+
+    typer.echo("\noverall confusion (rows = your label, cols = system %):")
+    typer.echo("  " + "".ljust(11) + "".join(c[:9].rjust(10) for c in cols))
+    for r in POSTURE_CLASSES:
+        tot = sum(overall[r].values()) or 1
+        typer.echo(
+            "  " + r.ljust(11)
+            + "".join(format(100 * overall[r][c] / tot, ".0f").rjust(9) + "%" for c in cols)
+        )
+    typer.echo("  (each row sums to 100%; the diagonal is correct)")
+
+
+@app.command()
 def label_review(
     postures: Path = typer.Option(Path("data/postures"), help="Dir of posture-label JSONs."),
     posture: str = typer.Option(None, help="Show only segments of this posture (upright/sitting/in_bed/on_ground)."),
@@ -1056,6 +1225,11 @@ def compare_posture(
     calibration: Path = typer.Option(..., help="Calibration YAML (for the metric features)."),
     labels: Path = typer.Option(Path("data/postures"), help="Dir of posture-label JSONs."),
     tracks: Path = typer.Option(Path("data/tracks"), help="Dir of extracted <clip>.jsonl."),
+    by: str = typer.Option(
+        "clip",
+        help="Leave-one-out unit: 'clip' (cross-scenario, one person) or 'person' "
+        "(train on N-1 people, test on the held-out one -- the real generalisation test).",
+    ),
     show_rules: bool = typer.Option(
         True, "--show-rules/--no-show-rules", help="Print the learned tree thresholds."
     ),
@@ -1066,12 +1240,14 @@ def compare_posture(
     coarse-to-fine cascade (upright -> sitting-vs-down -> ground-vs-bed) with a
     tree or logistic model at each node, and a learning-free threshold rule.
 
-    Scoring is LEAVE-ONE-CLIP-OUT: each clip is predicted by a model that never
-    saw it. That is the honest test -- a random frame split leaks near-duplicate
-    frames and inflates the score. It is still optimistic while every clip is
-    one person at one camera; the number becomes trustworthy once several
-    people are labelled (the grouping is then leave-one-person-out, unchanged).
+    Scoring is LEAVE-ONE-OUT by clip (default) or by person (`--by person`): each
+    held-out unit is predicted by a model that never saw it. A random frame split
+    would leak near-duplicate frames and inflate the score. `--by person` is the
+    real generalisation test -- it needs at least two people labelled.
     """
+    if by not in ("clip", "person"):
+        raise typer.BadParameter("--by must be 'clip' or 'person'")
+
     from ahfd.geometry.calibration import load_calibration
     from ahfd.ml.compare import compare
     from ahfd.ml.posture import build_dataset
@@ -1079,20 +1255,35 @@ def compare_posture(
     calib = load_calibration(calibration)
     rows, labels_list, groups, used, skipped = build_dataset(labels, tracks, calib)
 
+    if by == "person":
+        def _person_of(clip_id):
+            tail = clip_id.rsplit("_", 1)[-1]
+            return "person_" + tail if tail.isdigit() else "person_?"
+
+        groups = [_person_of(g) for g in groups]
+    unit = by
+
     if skipped:
         typer.echo("WARNING: skipped label files that failed to parse (fix the JSON):")
         for name, why in skipped:
             typer.echo("  ! " + name + ": " + why)
         typer.echo("")
 
-    typer.echo("clips used (each is one leave-one-out fold):")
+    typer.echo("clips used:")
     for clip, n in used:
         typer.echo("  " + clip.ljust(24) + str(n) + " labelled frames")
-    if not rows or len(set(groups)) < 2:
+    n_groups = len(set(groups))
+    typer.echo("\nleave-one-" + unit + "-out: " + str(n_groups) + " " + unit + "(s) = " + str(n_groups) + " fold(s)")
+    if not rows or n_groups < 2:
+        hint = (
+            " -- only person 01 is labelled. Label + extract a few clips for "
+            "persons 02-04, then re-run with `--by person`."
+            if unit == "person"
+            else ". Label + extract more clips first."
+        )
         raise typer.BadParameter(
-            "need at least two labelled+extracted clips to leave one out; found "
-            + str(len(set(groups)))
-            + ". Label + extract more clips first."
+            "need at least two " + unit + "s to leave one out; found "
+            + str(n_groups) + hint
         )
 
     from collections import Counter

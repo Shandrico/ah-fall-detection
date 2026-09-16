@@ -72,6 +72,25 @@ def _finite_or_none(v):
     return v if math.isfinite(v) else None
 
 
+def features_row(feats, person, ground, min_keypoint_score: float = 0.3) -> dict:
+    """The FEATURES-keyed dict for one person-frame.
+
+    Shared by training (`build_dataset`) and export (`ahfd export-features`) so
+    the numbers a model trains on are exactly the numbers you can inspect. All
+    values are finite floats or None (non-finite coerced away).
+    """
+    row = {k: getattr(feats, k) for k in _AGG_FROM_FEATS}
+    ve = feats.height_spread
+    row["vertical_extent"] = ve
+    row["compactness"] = (
+        ve / (feats.floor_spread + _EPS)
+        if ve is not None and math.isfinite(feats.floor_spread)
+        else None
+    )
+    row.update(joint_features(person, ground, feats.contact_xy, min_keypoint_score))
+    return {k: _finite_or_none(v) for k, v in row.items()}
+
+
 def _posture_at(segments: list[dict], t: float) -> str | None:
     """The labelled posture at time ``t``, or None if ``t`` is in a gap.
 
@@ -129,11 +148,14 @@ class TrainResult:
 
 
 def build_dataset(labels_dir, tracks_dir, calib, min_keypoint_score: float = 0.3):
-    """Build (rows, labels, used) from posture labels + extracted tracks.
+    """Build (rows, labels, groups, used, skipped) from labels + extracted tracks.
 
     ``rows`` is a list of {feature: value} dicts, ``labels`` the matching
-    postures, ``used`` a list of (clip_id, n_frames) so the caller can report
-    coverage. A clip contributes only if it has real segments *and* a matching
+    postures, and ``groups`` the clip each row came from -- so an evaluator can
+    hold out a whole clip (frames within one recording are near-duplicates, and
+    splitting them across train/test leaks). ``used`` is a list of
+    (clip_id, n_frames) for coverage, ``skipped`` the label files that failed to
+    parse. A clip contributes only if it has real segments *and* a matching
     ``<clip>.jsonl`` in ``tracks_dir``.
     """
     from ahfd.features import FeatureExtractor
@@ -142,6 +164,7 @@ def build_dataset(labels_dir, tracks_dir, calib, min_keypoint_score: float = 0.3
     labels_dir, tracks_dir = Path(labels_dir), Path(tracks_dir)
     rows: list[dict] = []
     labels: list[str] = []
+    groups: list[str] = []
     used: list[tuple[str, int]] = []
     skipped: list[tuple[str, str]] = []  # (filename, why) -- e.g. a JSON typo
 
@@ -174,30 +197,18 @@ def build_dataset(labels_dir, tracks_dir, calib, min_keypoint_score: float = 0.3
             if feats is None or not feats.has_geometry():
                 continue
 
-            # Aggregate metric features straight off `Features`, plus the two
-            # cheap derived ratios, plus the full joint-level feature set.
-            row = {k: getattr(feats, k) for k in _AGG_FROM_FEATS}
-            ve = feats.height_spread
-            row["vertical_extent"] = ve
-            row["compactness"] = (
-                ve / (feats.floor_spread + _EPS)
-                if ve is not None and math.isfinite(feats.floor_spread)
-                else None
+            row = features_row(
+                feats, person, extractor.ground, min_keypoint_score
             )
-            row.update(
-                joint_features(
-                    person, extractor.ground, feats.contact_xy, min_keypoint_score
-                )
-            )
-            row = {k: _finite_or_none(v) for k, v in row.items()}
             if any(row.get(k) is None for k in REQUIRED):
                 continue
             rows.append(row)
             labels.append(posture)
+            groups.append(label_file.stem)
             n_clip += 1
         used.append((label_file.stem, n_clip))
 
-    return rows, labels, used, skipped
+    return rows, labels, groups, used, skipped
 
 
 def train(rows: list[dict], labels: list[str], *, test_size=0.3, max_depth=5, seed=0):
