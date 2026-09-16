@@ -1,0 +1,10 @@
+{
+  "clip_id": "fall_collapse_03",
+  "duration_s": 58.97,
+  "falls": [
+    { "t_impact": 7.83, "t_start": 6.1, "notes": "derived from postures: sitting -> on_ground" },
+    { "t_impact": 23.5, "t_start": 20.93, "notes": "derived from postures: sitting -> on_ground" },
+    { "t_impact": 36.13, "t_start": 33.97, "notes": "derived from postures: sitting -> on_ground" },
+    { "t_impact": 56.5, "t_start": 53.63, "notes": "derived from postures: sitting -> on_ground" }
+  ]
+}
