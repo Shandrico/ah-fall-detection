@@ -2,11 +2,17 @@
   "clip_id": "bedexit_safe_03",
   "duration_s": 102.2,
   "segments": [
-    { "start_s": 0.0, "end_s": 0.0, "posture": "in_bed" },
-    { "start_s": 0.0, "end_s": 0.0, "posture": "sitting" },
-    { "start_s": 0.0, "end_s": 0.0, "posture": "upright" },
-    { "start_s": 0.0, "end_s": 0.0, "posture": "in_bed" },
-    { "start_s": 0.0, "end_s": 0.0, "posture": "sitting" },
-    { "start_s": 0.0, "end_s": 0.0, "posture": "upright" }
+    { "start_s": 8, "end_s": 11.07, "posture": "upright" },
+    { "start_s": 13.67, "end_s": 19.27, "posture": "in_bed" },
+    { "start_s": 21.23, "end_s": 22.77, "posture": "sitting" },
+    { "start_s": 24.17, "end_s": 29.37, "posture": "upright" },
+    { "start_s": 31.4, "end_s": 36.43, "posture": "in_bed" },
+    { "start_s": 39.77, "end_s": 46.37, "posture": "upright" },
+    { "start_s": 49.93, "end_s": 57.1, "posture": "in_bed" },
+    { "start_s": 61, "end_s": 68.67, "posture": "upright" },
+    { "start_s": 71.57, "end_s": 75.07, "posture": "in_bed" },
+    { "start_s": 79.57, "end_s": 86.63, "posture": "upright" },
+    { "start_s": 89.9, "end_s": 95.4, "posture": "in_bed" },
+    { "start_s": 98.77, "end_s": 102.17, "posture": "upright" }
   ]
 }
