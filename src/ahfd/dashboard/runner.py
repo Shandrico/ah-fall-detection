@@ -169,9 +169,13 @@ class PipelineRunner:
                 src.close()
 
     def _loop(self, src, estimator, tracker, smoother, extractor, machine) -> int:
-        """Run until the source ends or a stop is asked. Returns frames processed."""
-        cfg = self.cfg
-        from ahfd.viz import render_overlay, render_skeleton
+        """Run until the source ends or a stop is asked. Returns frames processed.
+
+        A seekable file gets the player loop (scrub / play / pause / step); a
+        live camera streams straight through.
+        """
+        if getattr(src, "seekable", False) and src.meta.frame_count:
+            return self._loop_replay(src, estimator, tracker, smoother, extractor, machine)
 
         fps_ema: float | None = None
         frames_seen = 0
@@ -179,6 +183,73 @@ class PipelineRunner:
             if self._stop.is_set():
                 break
             frames_seen += 1
+            fps_ema = self._process_frame(
+                frame, estimator, tracker, smoother, extractor, machine, fps_ema
+            )
+        return frames_seen
+
+    def _loop_replay(self, src, estimator, tracker, smoother, extractor, machine) -> int:
+        """Player loop for a recording: obey scrub / play / pause / step commands.
+
+        Pose only runs when the shown frame changes, so pausing costs nothing.
+        A seek is a jump in time, which would otherwise fabricate a huge
+        velocity and a phantom fall, so the detector's per-track history is
+        cleared on every seek -- fall EVENTS are therefore meaningful only while
+        playing forward, which is the honest contract for a scrub tool.
+        """
+        total = src.meta.frame_count
+        self.state.announce_replay(total, self.gen)
+        interval = 1.0 / (src.meta.fps or 30.0)
+
+        fps_ema: float | None = None
+        frames_seen = 0
+        cur = 0
+        last = -1
+        while not self._stop.is_set():
+            paused, seek = self.state.take_replay_command()
+            if seek is not None:
+                cur = max(0, min(seek, total - 1))
+                if extractor is not None:
+                    extractor.retain_only(set())
+                if machine is not None:
+                    machine.retain_only(set())
+
+            proc = 0.0
+            if cur != last:
+                frame = src.read_at(cur)
+                if frame is not None:
+                    t0 = time.perf_counter()
+                    fps_ema = self._process_frame(
+                        frame, estimator, tracker, smoother, extractor, machine, fps_ema
+                    )
+                    proc = time.perf_counter() - t0
+                    frames_seen += 1
+                    last = cur
+                    self.state.publish_replay_pos(cur, self.gen)
+
+            if paused:
+                time.sleep(0.04)  # idle on the held frame, waiting for a command
+            elif cur >= total - 1:
+                self.state.replay_control("pause")  # reached the end -> stop
+            else:
+                cur += 1
+                slack = interval - proc  # pace forward playback to the clip's fps
+                if slack > 0:
+                    time.sleep(min(slack, 0.2))
+        return frames_seen
+
+    def _process_frame(
+        self, frame, estimator, tracker, smoother, extractor, machine, fps_ema
+    ) -> float:
+        """Pose -> track -> detect -> encode -> publish for one frame.
+
+        Returns the updated fps EMA. Shared by the live and replay loops so both
+        annotate and publish identically.
+        """
+        cfg = self.cfg
+        from ahfd.viz import render_overlay, render_skeleton
+
+        if True:
             t0 = time.perf_counter()
 
             pose = estimator.estimate(frame)
@@ -270,4 +341,4 @@ class PipelineRunner:
                     gen=self.gen,
                 )
 
-        return frames_seen
+        return fps_ema if fps_ema is not None else 0.0

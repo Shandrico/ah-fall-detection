@@ -124,9 +124,9 @@ def make_handler(state: DashboardState, controller=None):
         def do_POST(self) -> None:  # noqa: N802
             path = self.path.split("?", 1)[0]
             same_origin = self._same_origin()
-            # Only the switch handler parses a body; every other route has to
-            # discard one before replying. See _drain.
-            if path != "/api/switch" or not same_origin:
+            # The switch and replay handlers parse a body; every other route
+            # has to discard one before replying. See _drain.
+            if path not in ("/api/switch", "/api/replay") or not same_origin:
                 self._drain()
 
             if not same_origin:
@@ -139,6 +139,8 @@ def make_handler(state: DashboardState, controller=None):
                 self._send(200, "application/json", b'{"ok":true}')
             elif path == "/api/switch":
                 self._switch()
+            elif path == "/api/replay":
+                self._replay()
             elif path == "/api/rescan":
                 if controller is None:
                     self._json(503, {"ok": False, "error": "controls unavailable"})
@@ -165,6 +167,16 @@ def make_handler(state: DashboardState, controller=None):
                 show_rgb=rgb if isinstance(rgb, bool) else None,
             )
             self._json(code, result)
+
+        def _replay(self) -> None:
+            """Video-player command for a seekable recording: play/pause/seek/step."""
+            body = self._body()
+            if body is None:
+                self._json(400, {"ok": False, "error": "expected a small JSON object"})
+                return
+            action = _clean(body.get("action"))
+            ok = state.replay_control(action, body.get("value")) if action else False
+            self._json(200 if ok else 400, {"ok": ok})
 
         def _stream(self) -> None:
             """MJPEG multipart stream of the latest annotated frame."""

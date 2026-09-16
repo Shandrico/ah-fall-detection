@@ -58,6 +58,14 @@ DASHBOARD_HTML = r"""<!doctype html>
   @media (max-width:1100px){ .wrap{ grid-template-columns:1fr; } }
   .feed { background:#000; border:1px solid var(--line); border-radius:12px; overflow:hidden; position:relative; }
   .feed img { width:100%; display:block; image-rendering:auto; }
+  .player { display:flex; gap:8px; align-items:center; margin-top:8px; padding:8px 10px;
+            background:var(--panel); border:1px solid var(--line); border-radius:10px; }
+  .player[hidden] { display:none; }
+  .player input[type=range] { flex:1; cursor:pointer; padding:0; accent-color:var(--accent); }
+  .player .pos { color:var(--muted); font-size:12px; min-width:96px; text-align:right;
+                 font-variant-numeric:tabular-nums; }
+  .player button { min-width:34px; }
+  .player button.play { min-width:64px; }
   .feed .tag { position:absolute; left:12px; bottom:12px; background:rgba(0,0,0,.6);
                border:1px solid var(--line); border-radius:999px; padding:4px 10px; font-size:12px; }
   .feed .full { position:absolute; right:12px; top:12px; }
@@ -131,10 +139,23 @@ DASHBOARD_HTML = r"""<!doctype html>
 </section>
 
 <div class="wrap">
-  <div class="feed">
-    <img id="stream" src="/stream.mjpg" alt="live view"/>
-    <div class="tag" id="feedtag">live</div>
-    <button class="full" id="full">Fullscreen</button>
+  <div>
+    <div class="feed">
+      <img id="stream" src="/stream.mjpg" alt="live view"/>
+      <div class="tag" id="feedtag">live</div>
+      <button class="full" id="full">Fullscreen</button>
+    </div>
+    <!-- Video-player controls: shown only when replaying a recording (a
+         seekable file), hidden for a live camera. -->
+    <div class="player" id="player" hidden>
+      <button id="pl-back5" title="back 1 second">&laquo;</button>
+      <button id="pl-back" title="back 1 frame">&lsaquo;</button>
+      <button id="pl-play" class="play" title="play / pause">Play</button>
+      <button id="pl-fwd" title="forward 1 frame">&rsaquo;</button>
+      <button id="pl-fwd5" title="forward 1 second">&raquo;</button>
+      <input type="range" id="pl-seek" min="0" max="0" value="0" step="1"/>
+      <span class="pos" id="pl-pos">0 / 0</span>
+    </div>
   </div>
   <div>
     <div class="panel">
@@ -188,6 +209,37 @@ async function switchTo(patch){
   const r = await post('/api/switch', patch);
   if(!r.ok) hint(r.error || 'switch failed');
   refresh();
+}
+
+// --- Video player (recording replay only) ---------------------------------
+let plDragging = false;              // don't fight the user while they scrub
+let plPaused = false, plFps = 30;
+async function replay(action, value){ await post('/api/replay', {action, value}); }
+function setupPlayer(){
+  const seek = document.getElementById('pl-seek');
+  seek.addEventListener('input', ()=>{ plDragging = true;
+    document.getElementById('pl-pos').textContent = seek.value + ' / ' + seek.max; });
+  seek.addEventListener('change', ()=>{ replay('seek', parseInt(seek.value,10)); plDragging = false; });
+  document.getElementById('pl-play').onclick  = ()=> replay(plPaused ? 'play' : 'pause');
+  document.getElementById('pl-back').onclick  = ()=> replay('step', -1);
+  document.getElementById('pl-fwd').onclick   = ()=> replay('step',  1);
+  document.getElementById('pl-back5').onclick = ()=> replay('step', -Math.max(1,Math.round(plFps)));
+  document.getElementById('pl-fwd5').onclick  = ()=> replay('step',  Math.max(1,Math.round(plFps)));
+}
+function renderPlayer(rp, srcFps){
+  const player = document.getElementById('player');
+  if(!rp){ player.hidden = true; return; }
+  player.hidden = false;
+  plPaused = rp.paused;
+  plFps = srcFps || plFps;
+  const last = Math.max(0, rp.total - 1);
+  const seek = document.getElementById('pl-seek');
+  seek.max = last;
+  if(!plDragging){
+    seek.value = rp.cur;
+    document.getElementById('pl-pos').textContent = rp.cur + ' / ' + last;
+  }
+  document.getElementById('pl-play').textContent = rp.paused ? 'Play' : 'Pause';
 }
 
 function fill(id, pairs){
@@ -247,6 +299,7 @@ async function refresh(){
   document.getElementById('q-count').textContent = s.open_count;
 
   const rt = s.runtime || {};
+  renderPlayer(s.replay, rt.source_fps);
   const busy = rt.status === 'switching' || rt.status === 'starting';
   const pill = document.getElementById('rt-status');
   pill.className = 'pill ' + (rt.status || '');
@@ -335,6 +388,7 @@ document.getElementById('rgb').addEventListener('click', async function(){
   else hint(r.error || 'could not change the view');
 });
 
+setupPlayer();
 loadOptions();
 refresh();
 setInterval(refresh, 1000);

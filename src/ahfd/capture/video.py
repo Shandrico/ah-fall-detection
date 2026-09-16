@@ -60,6 +60,27 @@ class VideoSource:
     def meta(self) -> SourceMeta:
         return self._meta
 
+    @property
+    def seekable(self) -> bool:
+        """A recorded file with a known length can be scrubbed; a camera cannot."""
+        return not self._live and self._meta.frame_count is not None
+
+    def read_at(self, index: int) -> Frame | None:
+        """Random access for scrubbing a file: the frame at `index`, or None.
+
+        Uses the file timebase (index / fps), so a scrubbed frame carries the
+        same timestamp it would have in sequential playback -- which keeps the
+        detector's velocity maths consistent when playing forward from a seek.
+        """
+        if not self.seekable:
+            return None
+        index = max(0, min(index, self._meta.frame_count - 1))
+        self._cap.set(cv2.CAP_PROP_POS_FRAMES, index)
+        ok, bgr = self._cap.read()
+        if not ok:
+            return None
+        return Frame(index=index, t=index / self._meta.fps, bgr=bgr)
+
     def __iter__(self) -> Iterator[Frame]:
         index = 0
         start = time.monotonic()

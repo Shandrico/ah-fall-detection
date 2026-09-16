@@ -60,6 +60,14 @@ class DashboardState:
         self._status_since = time.time()
         self._error: str | None = None
         self._runtime: dict[str, Any] = {}
+        # Replay control plane: on only for a seekable file source, so the page
+        # can show a scrub bar and play/pause/step. A live camera leaves this
+        # off (there is nothing to seek). Small scalars, same short-held lock.
+        self._replay_seekable = False
+        self._replay_total = 0
+        self._replay_cur = 0
+        self._replay_paused = False
+        self._replay_seek: int | None = None
 
     # ---- producer side (pipeline thread) -------------------------------
 
@@ -105,6 +113,13 @@ class DashboardState:
             self._status_since = time.time()
             self._error = None
             self._runtime = dict(switching_to)
+            # The new source might not be seekable; clear the player until it
+            # announces itself. Otherwise stale controls would drive a camera.
+            self._replay_seekable = False
+            self._replay_total = 0
+            self._replay_cur = 0
+            self._replay_paused = False
+            self._replay_seek = None
             return self._gen
 
     @property
@@ -130,6 +145,53 @@ class DashboardState:
             if gen != self._gen:
                 return
             self._runtime.update(info)
+
+    def announce_replay(self, total: int, gen: int) -> None:
+        """A seekable-file pipeline turns the player on and reports its length."""
+        with self._lock:
+            if gen != self._gen:
+                return
+            self._replay_seekable = True
+            self._replay_total = int(total)
+            self._replay_cur = 0
+            self._replay_paused = False
+            self._replay_seek = None
+
+    def publish_replay_pos(self, cur: int, gen: int) -> None:
+        """The pipeline reports which frame it is now showing (for the slider)."""
+        with self._lock:
+            if gen != self._gen:
+                return
+            self._replay_cur = int(cur)
+
+    def replay_control(self, action: str | None, value: Any = None) -> bool:
+        """A player command from the web server. Returns whether it was applied.
+
+        `step` and `seek` set a pending target frame the pipeline picks up on
+        its next tick; `step` also pauses, so the frame it lands on stays put.
+        """
+        with self._lock:
+            if not self._replay_seekable:
+                return False
+            if action == "pause":
+                self._replay_paused = True
+            elif action == "play":
+                self._replay_paused = False
+            elif action == "seek" and value is not None:
+                self._replay_seek = int(value)
+            elif action == "step" and value is not None:
+                self._replay_seek = self._replay_cur + int(value)
+                self._replay_paused = True
+            else:
+                return False
+            return True
+
+    def take_replay_command(self) -> tuple[bool, int | None]:
+        """The pipeline reads (paused, pending seek target) and clears the seek."""
+        with self._lock:
+            seek = self._replay_seek
+            self._replay_seek = None
+            return self._replay_paused, seek
 
     # ---- consumer side (web server threads) ----------------------------
 
@@ -181,6 +243,17 @@ class DashboardState:
                     "error": self._error,
                     "switch_seq": self._switch_seq,
                 },
+                # Only present for a seekable file, so the page shows the player
+                # for recordings and nothing for a live camera.
+                "replay": (
+                    {
+                        "total": self._replay_total,
+                        "cur": self._replay_cur,
+                        "paused": self._replay_paused,
+                    }
+                    if self._replay_seekable
+                    else None
+                ),
             }
 
     def acknowledge(self, event_id: str) -> None:
