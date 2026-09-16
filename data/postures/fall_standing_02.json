@@ -1,16 +1,13 @@
 {
   "clip_id": "fall_standing_02",
-  "duration_s": 47.1,
+  "duration_s": 47.07,
   "segments": [
-    { "start_s": 0.0, "end_s": 0.0, "posture": "upright" },
-    { "start_s": 0.0, "end_s": 0.0, "posture": "on_ground" },
-    { "start_s": 0.0, "end_s": 0.0, "posture": "upright" },
-    { "start_s": 0.0, "end_s": 0.0, "posture": "on_ground" },
-    { "start_s": 0.0, "end_s": 0.0, "posture": "upright" },
-    { "start_s": 0.0, "end_s": 0.0, "posture": "on_ground" },
-    { "start_s": 0.0, "end_s": 0.0, "posture": "upright" },
-    { "start_s": 0.0, "end_s": 0.0, "posture": "on_ground" },
-    { "start_s": 0.0, "end_s": 0.0, "posture": "upright" },
-    { "start_s": 0.0, "end_s": 0.0, "posture": "on_ground" }
+    { "start_s": 0, "end_s": 15, "posture": "upright" },
+    { "start_s": 15, "end_s": 21, "posture": "on_ground" },
+    { "start_s": 21, "end_s": 25, "posture": "upright" },
+    { "start_s": 25, "end_s": 31, "posture": "on_ground" },
+    { "start_s": 31, "end_s": 36, "posture": "upright" },
+    { "start_s": 36, "end_s": 42, "posture": "on_ground" },
+    { "start_s": 42, "end_s": 47.03, "posture": "upright" }
   ]
 }

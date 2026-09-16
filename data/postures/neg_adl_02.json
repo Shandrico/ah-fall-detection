@@ -1,8 +1,6 @@
 {
   "clip_id": "neg_adl_02",
-  "duration_s": 87.9,
+  "duration_s": 87.93,
   "segments": [
-    { "start_s": 0.0, "end_s": 0.0, "posture": "upright" },
-    { "start_s": 0.0, "end_s": 0.0, "posture": "upright" }
   ]
 }

@@ -1,12 +1,23 @@
 {
   "clip_id": "neg_fastsit_02",
-  "duration_s": 69.7,
+  "duration_s": 69.73,
   "segments": [
-    { "start_s": 0.0, "end_s": 0.0, "posture": "upright" },
-    { "start_s": 0.0, "end_s": 0.0, "posture": "sitting" },
-    { "start_s": 0.0, "end_s": 0.0, "posture": "upright" },
-    { "start_s": 0.0, "end_s": 0.0, "posture": "sitting" },
-    { "start_s": 0.0, "end_s": 0.0, "posture": "upright" },
-    { "start_s": 0.0, "end_s": 0.0, "posture": "sitting" }
+    { "start_s": 0, "end_s": 5, "posture": "upright" },
+    { "start_s": 5, "end_s": 8, "posture": "sitting" },
+    { "start_s": 8, "end_s": 12, "posture": "upright" },
+    { "start_s": 12, "end_s": 16, "posture": "sitting" },
+    { "start_s": 16, "end_s": 19, "posture": "upright" },
+    { "start_s": 19, "end_s": 24, "posture": "sitting" },
+    { "start_s": 24, "end_s": 29, "posture": "upright" },
+    { "start_s": 29, "end_s": 31, "posture": "sitting" },
+    { "start_s": 31, "end_s": 41, "posture": "upright" },
+    { "start_s": 41, "end_s": 46, "posture": "sitting" },
+    { "start_s": 46, "end_s": 49, "posture": "upright" },
+    { "start_s": 49, "end_s": 53, "posture": "sitting" },
+    { "start_s": 53, "end_s": 57, "posture": "upright" },
+    { "start_s": 57, "end_s": 59, "posture": "sitting" },
+    { "start_s": 59, "end_s": 63, "posture": "upright" },
+    { "start_s": 63, "end_s": 66, "posture": "sitting" },
+    { "start_s": 66, "end_s": 69.7, "posture": "upright" }
   ]
 }
