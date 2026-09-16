@@ -98,10 +98,16 @@ def _num(x: float) -> str:
 _ARROWS = {2424832: "left", 2555904: "right", 2490368: "up", 2621440: "down"}
 
 _HELP_LINES = (
-    "a / <- : -1s     d / -> : +1s     , : -1 frame   . : +1 frame",
-    "[ : -5s   ] : +5s     0 : start     g : end",
-    "s / SPACE : mark START     f : mark END     u : undo     w : save     q : save+quit",
+    "click / drag the bar below to seek     a <- -1s   d -> +1s   , . 1frame   [ ] 5s",
+    "s / SPACE mark START     f mark END (then 1-4)     c cancel mark     r remove seg here",
+    "0 start   g end     u undo last     w save     q save+quit",
 )
+
+# Timeline ribbon geometry, shared by the drawer and the click-to-seek handler
+# so a click lands on exactly the bar that is drawn.
+_BAR_MARGIN = 12
+_BAR_H = 14
+_BAR_BOTTOM = 28  # ribbon top sits at (display height - _BAR_BOTTOM)
 
 
 def run_labeler(clip_path: Path, out_path: Path, *, max_display_width: int = 1280) -> int:
@@ -141,6 +147,24 @@ def run_labeler(clip_path: Path, out_path: Path, *, max_display_width: int = 128
     win = "ahfd label-postures  [" + clip_id + "]"
     cv2.namedWindow(win, cv2.WINDOW_AUTOSIZE)
 
+    # Click or drag on the timeline ribbon to seek there, like a normal video
+    # scrubber. The callback runs during waitKey; it only records the requested
+    # frame, and the loop applies it -- no shared-state gymnastics with `cur`.
+    ui: dict = {"geom": None, "seek_frame": None}
+
+    def on_mouse(event, x, y, flags, param):
+        geom = ui["geom"]
+        if geom is None:
+            return
+        bar_top, bar_bot, left, right = geom
+        pressed = event == cv2.EVENT_LBUTTONDOWN
+        dragging = event == cv2.EVENT_MOUSEMOVE and (flags & cv2.EVENT_FLAG_LBUTTON)
+        if (pressed or dragging) and bar_top - 10 <= y <= bar_bot + 10:
+            frac = min(1.0, max(0.0, (x - left) / float(max(1, right - left))))
+            ui["seek_frame"] = int(round(frac * (n_frames - 1)))
+
+    cv2.setMouseCallback(win, on_mouse)
+
     def t_now() -> float:
         return round(cur / fps, 2)
 
@@ -162,6 +186,8 @@ def run_labeler(clip_path: Path, out_path: Path, *, max_display_width: int = 128
             break
 
         disp = cv2.resize(frame, None, fx=scale, fy=scale) if scale < 1.0 else frame.copy()
+        dh, dw = disp.shape[:2]
+        ui["geom"] = (dh - _BAR_BOTTOM, dh - _BAR_BOTTOM + _BAR_H, _BAR_MARGIN, dw - _BAR_MARGIN)
         _draw_overlay(
             cv2, disp, t_now(), duration_s, cur, n_frames, start_mark,
             pending, segments, status,
@@ -169,6 +195,10 @@ def run_labeler(clip_path: Path, out_path: Path, *, max_display_width: int = 128
         cv2.imshow(win, disp)
 
         code = cv2.waitKeyEx(20)
+        if ui["seek_frame"] is not None:  # a click/drag landed on the ribbon
+            cur = min(max(0, ui["seek_frame"]), n_frames - 1)
+            need_read = True
+            ui["seek_frame"] = None
         if code == -1:
             continue
         arrow = _ARROWS.get(code)
@@ -226,6 +256,25 @@ def run_labeler(clip_path: Path, out_path: Path, *, max_display_width: int = 128
                 )
             else:
                 status = "nothing to undo"
+        elif key == ord("c"):
+            if start_mark is not None:
+                start_mark = None
+                status = "cleared START -- mark a new one"
+            else:
+                status = "no START to cancel"
+        elif key == ord("r"):
+            t = t_now()
+            hit = next(
+                (i for i, s in enumerate(segments) if s["start_s"] <= t <= s["end_s"]),
+                None,
+            )
+            if hit is not None:
+                gone = segments.pop(hit)
+                status = "removed %s %.2f-%.2fs" % (
+                    gone["posture"], gone["start_s"], gone["end_s"]
+                )
+            else:
+                status = "no segment at %.2fs (scrub onto one to remove it)" % t
         elif key == ord("w"):
             _write(out_path, clip_id, duration_s, segments)
             status = "saved %d segment(s) -> %s" % (len(segments), out_path.name)
@@ -274,7 +323,7 @@ def _draw_overlay(
         text(status, 12, h - 46, (180, 220, 255), 0.55, 1)
 
     # Timeline ribbon along the bottom: labelled spans in colour, a cursor line.
-    margin, bar_y, bar_h = 12, h - 28, 14
+    margin, bar_y, bar_h = _BAR_MARGIN, h - _BAR_BOTTOM, _BAR_H
 
     def x_of(sec):
         return int(margin + (w - 2 * margin) * (sec / duration if duration else 0))

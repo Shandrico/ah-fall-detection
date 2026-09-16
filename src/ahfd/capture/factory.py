@@ -35,14 +35,15 @@ def _as_bool(value: str) -> bool:
     return value.strip().lower() not in ("0", "false", "no", "off", "")
 
 
-def parse_realsense_uri(
-    uri: str, width: int | None = None, height: int | None = None
-) -> dict:
+def parse_realsense_uri(uri: str) -> dict:
     """Parse a ``rs://`` URI into keyword arguments for ``RealSenseSource``.
 
     Pure and hardware-free so it can be unit-tested without a camera or
-    pyrealsense2. ``width``/``height`` are a fallback for the resolution when
-    the query string does not carry ``w``/``h``.
+    pyrealsense2. The RealSense uses its OWN stream profile (1920x1080 colour,
+    1280x720 IR by default) to match its calibration -- it deliberately ignores
+    any generic capture size a caller passes (that size is for webcams). Set the
+    resolution explicitly only with ``w``/``h`` in the query string, e.g.
+    ``rs://ir?w=848&h=480``.
     """
     from urllib.parse import parse_qs
 
@@ -64,10 +65,9 @@ def parse_realsense_uri(
         "emitter": emitter,
     }
 
-    w = int(q["w"]) if "w" in q else width
-    h = int(q["h"]) if "h" in q else height
-    if w and h:
-        kwargs["ir_size" if infrared else "color_size"] = (w, h)
+    # Only an explicit w/h in the URI overrides the device's default profile.
+    if "w" in q and "h" in q:
+        kwargs["ir_size" if infrared else "color_size"] = (int(q["w"]), int(q["h"]))
     return kwargs
 
 
@@ -90,7 +90,9 @@ def open_source(
     if uri.startswith("rs://"):
         from ahfd.capture.realsense import RealSenseSource
 
-        return RealSenseSource(**parse_realsense_uri(uri, width, height))
+        # width/height are webcam capture hints; the RealSense uses its own
+        # calibrated profile, so they are intentionally not forwarded here.
+        return RealSenseSource(**parse_realsense_uri(uri))
 
     if uri.startswith("bag://"):
         from ahfd.capture.realsense import BagSource

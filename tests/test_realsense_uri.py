@@ -40,6 +40,9 @@ class TestParseRealsenseUri:
         kw = parse_realsense_uri("rs://?w=1280&h=720")
         assert kw["color_size"] == (1280, 720)
 
-    def test_resolution_fallback_args(self):
-        kw = parse_realsense_uri("rs://", width=640, height=480)
-        assert kw["color_size"] == (640, 480)
+    def test_no_size_uses_device_default(self):
+        # The RealSense ignores any generic capture size -- without an explicit
+        # w/h it carries no size and RealSenseSource picks its own profile
+        # (1920x1080 colour, 1280x720 IR) to match the calibration.
+        assert "color_size" not in parse_realsense_uri("rs://")
+        assert "ir_size" not in parse_realsense_uri("rs://ir")

@@ -1,16 +1,20 @@
 {
   "clip_id": "fall_collapse_02",
-  "duration_s": 82.9,
+  "duration_s": 82.87,
   "segments": [
-    { "start_s": 0.0, "end_s": 0.0, "posture": "sitting" },
-    { "start_s": 0.0, "end_s": 0.0, "posture": "on_ground" },
-    { "start_s": 0.0, "end_s": 0.0, "posture": "sitting" },
-    { "start_s": 0.0, "end_s": 0.0, "posture": "on_ground" },
-    { "start_s": 0.0, "end_s": 0.0, "posture": "sitting" },
-    { "start_s": 0.0, "end_s": 0.0, "posture": "on_ground" },
-    { "start_s": 0.0, "end_s": 0.0, "posture": "sitting" },
-    { "start_s": 0.0, "end_s": 0.0, "posture": "on_ground" },
-    { "start_s": 0.0, "end_s": 0.0, "posture": "sitting" },
-    { "start_s": 0.0, "end_s": 0.0, "posture": "on_ground" }
+    { "start_s": 0, "end_s": 16, "posture": "upright" },
+    { "start_s": 16, "end_s": 20, "posture": "sitting" },
+    { "start_s": 20, "end_s": 26, "posture": "on_ground" },
+    { "start_s": 26, "end_s": 31, "posture": "upright" },
+    { "start_s": 31, "end_s": 39, "posture": "sitting" },
+    { "start_s": 39, "end_s": 42, "posture": "on_ground" },
+    { "start_s": 42, "end_s": 53, "posture": "sitting" },
+    { "start_s": 53, "end_s": 57, "posture": "on_ground" },
+    { "start_s": 57, "end_s": 62, "posture": "upright" },
+    { "start_s": 62, "end_s": 68, "posture": "sitting" },
+    { "start_s": 68, "end_s": 74, "posture": "on_ground" },
+    { "start_s": 74, "end_s": 79, "posture": "sitting" },
+    { "start_s": 79, "end_s": 80.83, "posture": "on_ground" },
+    { "start_s": 80.83, "end_s": 82.83, "posture": "upright" }
   ]
 }

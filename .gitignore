@@ -24,6 +24,7 @@ models/
 # Recorded data (keypoints only, but still not source)
 data/tracks/
 data/events/
+data/features/          # derived per-frame feature CSVs, regenerable via `ahfd export-features`
 debug_captures/
 
 # Python

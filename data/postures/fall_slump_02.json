@@ -1,16 +1,13 @@
 {
   "clip_id": "fall_slump_02",
-  "duration_s": 42.7,
+  "duration_s": 42.73,
   "segments": [
-    { "start_s": 0.0, "end_s": 0.0, "posture": "sitting" },
-    { "start_s": 0.0, "end_s": 0.0, "posture": "on_ground" },
-    { "start_s": 0.0, "end_s": 0.0, "posture": "sitting" },
-    { "start_s": 0.0, "end_s": 0.0, "posture": "on_ground" },
-    { "start_s": 0.0, "end_s": 0.0, "posture": "sitting" },
-    { "start_s": 0.0, "end_s": 0.0, "posture": "on_ground" },
-    { "start_s": 0.0, "end_s": 0.0, "posture": "sitting" },
-    { "start_s": 0.0, "end_s": 0.0, "posture": "on_ground" },
-    { "start_s": 0.0, "end_s": 0.0, "posture": "sitting" },
-    { "start_s": 0.0, "end_s": 0.0, "posture": "on_ground" }
+    { "start_s": 0, "end_s": 10, "posture": "sitting" },
+    { "start_s": 10, "end_s": 16, "posture": "on_ground" },
+    { "start_s": 16, "end_s": 20, "posture": "sitting" },
+    { "start_s": 20, "end_s": 26, "posture": "on_ground" },
+    { "start_s": 26, "end_s": 35, "posture": "sitting" },
+    { "start_s": 35, "end_s": 39, "posture": "on_ground" },
+    { "start_s": 39, "end_s": 42.7, "posture": "upright" }
   ]
 }
