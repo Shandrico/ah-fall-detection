@@ -353,6 +353,74 @@ class TestRgbGate:
         assert ctl.switch(show_rgb=True)[0] == 403
         assert len(ctl.made) == 1
 
+    def test_rgb_off_replaces_cached_pixels_while_replay_is_paused(self):
+        ctl = controller(show_rgb=True)
+        ctl.start()
+        state, gen = ctl.state, ctl.state.generation
+        state.announce_replay(300, gen)
+        state.replay_control("pause")
+        state.publish_frame(b"private RGB pixels", [], 30.0, gen, show_rgb=True)
+        _, previous_seq = state.latest_frame()
+
+        assert ctl.set_rgb(False)[0] == 200
+        jpeg, seq = state.latest_frame()
+        assert seq > previous_seq  # existing MJPEG viewers receive a replacement
+        image = cv2.imdecode(np.frombuffer(jpeg, np.uint8), cv2.IMREAD_COLOR)
+        assert image is not None and not image.any()
+        assert state.snapshot()["replay"]["paused"] is True
+        assert state.snapshot()["runtime"]["show_rgb"] is False
+
+    def test_rgb_off_rejects_a_late_rgb_publication_from_stalled_capture(self):
+        ctl = controller(show_rgb=True)
+        ctl.start()
+        state, gen = ctl.state, ctl.state.generation
+        state.publish_frame(b"old RGB", [], 30.0, gen, show_rgb=True)
+        ctl.set_rgb(False)
+        safe_frame = state.latest_frame()
+
+        state.publish_frame(b"late RGB", [], 30.0, gen, show_rgb=True)
+        assert state.latest_frame() == safe_frame
+        # Late startup/status reports cannot advertise RGB as enabled again.
+        state.publish_status(gen, "running", show_rgb=True)
+        assert state.snapshot()["runtime"]["show_rgb"] is False
+        state.publish_frame(b"skeleton", [], 30.0, gen, show_rgb=False)
+        assert state.latest_frame()[0] == b"skeleton"
+        ctl.set_rgb(True)
+        state.publish_frame(b"authorised RGB", [], 30.0, gen, show_rgb=True)
+        assert state.latest_frame()[0] == b"authorised RGB"
+
+    def test_rgb_render_in_flight_cannot_restore_pixels_after_off(self, monkeypatch):
+        from ahfd.capture.base import Frame
+        from ahfd.track import SimpleTracker
+        from ahfd.types import PoseFrame
+
+        monkeypatch.setattr(PipelineRunner, "start", lambda self: None)
+        state = DashboardState()
+        ctl = DashboardController(
+            make_cfg(), None, state, show_rgb=True, probe=lambda: NO_DEVICES,
+        )
+        ctl.start()
+        runner = ctl._runner
+        state.publish_frame(b"old RGB", [], 30.0, runner.gen, show_rgb=True)
+
+        class EmptyEstimator:
+            def estimate(self, frame):
+                return PoseFrame(t=frame.t, index=frame.index, width=64, height=48, people=())
+
+        def in_flight_overlay(*args, **kwargs):
+            # Deterministically interleave the request with an actual frame
+            # render, after the renderer has selected the RGB branch.
+            ctl.set_rgb(False)
+            return np.full((48, 64, 3), 100, np.uint8)
+
+        monkeypatch.setattr("ahfd.viz.render_overlay", in_flight_overlay)
+        frame = Frame(index=0, t=0.0, bgr=np.zeros((48, 64, 3), np.uint8))
+        runner._process_frame(frame, EmptyEstimator(), SimpleTracker(), None, None, None, None)
+        jpeg, _ = state.latest_frame()
+        image = cv2.imdecode(np.frombuffer(jpeg, np.uint8), cv2.IMREAD_COLOR)
+        assert image.shape == (1, 1, 3) and not image.any()
+        assert runner.show_rgb is False
+
 
 class TestOptions:
     def test_options_report_the_picker(self):

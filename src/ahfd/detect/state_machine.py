@@ -182,6 +182,16 @@ class FallStateMachine:
             ts.state = state
             ts.state_since = now
 
+    def _clearly_seated(self, f: Features) -> bool:
+        """The same seated exclusion must apply before and after a trigger."""
+        lo, hi = self.th.seated_h
+        return (
+            f.h_torso is not None
+            and f.torso_tilt is not None
+            and f.torso_tilt <= self.th.seated_tilt_max
+            and lo <= f.h_torso <= hi
+        )
+
     def _is_down(self, f: Features) -> bool:
         """Is this body horizontal and on the floor?
 
@@ -191,6 +201,8 @@ class FallStateMachine:
         the floor metres past their feet, or misses it, giving a spread far
         outside the band.
         """
+        if self._clearly_seated(f):
+            return False
         lo, hi = self.th.down_spread
         if not (lo <= f.floor_spread <= hi):
             return False
@@ -239,11 +251,12 @@ class FallStateMachine:
             or f.mean_conf < self.th.min_mean_conf
             or not f.has_geometry()
         ):
+            self._interrupt_observation(ts)
             self._set_state(ts, "LOW_CONFIDENCE", now)
-            ts.vz_streak = 0
             return None
 
         if f.in_excluded_zone:
+            self._interrupt_observation(ts)
             self._set_state(ts, "UNKNOWN", now)
             return None
 
@@ -281,7 +294,12 @@ class FallStateMachine:
         far_enough = self._height_lost(ts, now, f.h_torso) >= self.th.drop_trigger
         old_enough = ts.age(now) >= self.th.min_track_age_s
 
-        if (fast_enough or far_enough) and old_enough and not on_bed:
+        if (
+            (fast_enough or far_enough)
+            and old_enough
+            and not on_bed
+            and not self._clearly_seated(f)
+        ):
             ts.trigger_t = now
             ts.trigger_h = max(
                 (h for (_, h) in ts.height_log), default=f.h_torso
@@ -307,6 +325,13 @@ class FallStateMachine:
         zone: str | None,
     ) -> Event | None:
         assert f.h_torso is not None
+
+        # Fast sitting can trigger the drop test, but a seated landing is not
+        # a floor rest or a recovered fall. In particular, do not start a
+        # NEAR_MISS cooldown that could hide a subsequent genuine fall.
+        if not on_bed and self._clearly_seated(f):
+            self._reset_fall(ts)
+            return self._enter_sitting(ts, f, now, zone)
 
         # Got back up: a near miss, and free training data.
         if f.h_torso >= self.th.recover_h and not down:
@@ -419,12 +444,7 @@ class FallStateMachine:
         # sitting never showed). torso_tilt is an image angle, calibration-free,
         # so this holds even when the metric heights are off. The fall
         # thresholds are untouched.
-        lo, hi = th.seated_h
-        if (
-            f.torso_tilt is not None
-            and f.torso_tilt <= th.seated_tilt_max
-            and lo <= f.h_torso <= hi
-        ):
+        if self._clearly_seated(f):
             ts.down_since = None
             return self._enter_sitting(ts, f, now, zone)
 
@@ -514,6 +534,17 @@ class FallStateMachine:
         ts.down_since = None
         ts.suspected = False
         ts.vz_streak = 0
+
+    def _interrupt_observation(self, ts: _TrackState) -> None:
+        """Unobserved time proves neither continuous floor rest nor bed exit.
+
+        Keep track identity and alert cooldown, but discard evidence that
+        cannot be connected to the next usable frame.
+        """
+        self._reset_fall(ts)
+        ts.height_log.clear()
+        ts.sitting_since = None
+        ts.bed_exit_emitted = False
 
     def retain_only(self, live_ids: set[int]) -> None:
         for tid in list(self._tracks):

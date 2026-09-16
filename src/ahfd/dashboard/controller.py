@@ -104,6 +104,8 @@ class DashboardController:
         self._default_calib = calib_path or cfg.calibration
         self.calib_path = self._calib_for(self.source)
         self.show_rgb = show_rgb
+        self._rgb_lock = threading.Lock()
+        self.state.set_rgb(show_rgb)
         # RGB can always be turned OFF from the page; turning it ON needs the
         # process to have been started with the authorisation. See set_rgb.
         self._rgb_authorised = rgb_authorised or show_rgb
@@ -212,13 +214,14 @@ class DashboardController:
                 "with --allow-rgb (or --rgb to start in it). Needs AH/DPO "
                 "sign-off.",
             }
-        self.show_rgb = on
-        if self._runner is not None:
-            self._runner.show_rgb = on  # read per frame; takes effect on the next one
+        with self._rgb_lock:
+            self.show_rgb = on
+            self.state.set_rgb(on)
+            if self._runner is not None:
+                self._runner.show_rgb = on  # read per frame; takes effect on the next one
         self._log(
             "RGB view ON -- live video is shown" if on else "RGB view off -- skeleton only"
         )
-        self.state.update_runtime(self.state.generation, show_rgb=on)
         return 200, {"ok": True, "show_rgb": on}
 
     # ---- internals ------------------------------------------------------
@@ -232,7 +235,7 @@ class DashboardController:
             if backend:
                 cfg.pose.backend = backend
             if show_rgb is not None and (self._rgb_authorised or not show_rgb):
-                self.show_rgb = show_rgb
+                self.set_rgb(show_rgb)
 
             gen = self.state.begin_generation(
                 source=uri,
@@ -289,15 +292,16 @@ class DashboardController:
                 "no calibration for " + str(self.source) + "; detection off for "
                 "this camera (pose only)"
             )
-        self._runner = self._runner_factory(
-            self.source,
-            cfg,
-            self.calib_path,
-            self.state,
-            show_rgb=self.show_rgb,
-            gen=gen,
-        )
-        self._runner.start()
+        with self._rgb_lock:
+            self._runner = self._runner_factory(
+                self.source,
+                cfg,
+                self.calib_path,
+                self.state,
+                show_rgb=self.show_rgb,
+                gen=gen,
+            )
+            self._runner.start()
 
     def _label(self, uri: str) -> str:
         for s in self._sources:

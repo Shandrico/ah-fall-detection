@@ -71,6 +71,38 @@ class TestDashboardState:
         assert snap["counts"]["bed_exit"] == 1
         assert len(snap["events"]) == 3
 
+    def test_outstanding_alert_survives_recent_history_rollover(self):
+        s = DashboardState(max_events=3)
+        s.publish_event({"event_id": "fall", "type": "FALL_CONFIRMED", "severity": 4})
+        for i in range(3):
+            s.publish_event({"event_id": f"b{i}", "type": "BED_EXIT", "severity": 1})
+        snap = s.snapshot()
+        assert len(snap["events"]) == 3
+        assert all(e["event_id"] != "fall" for e in snap["events"])
+        assert snap["open_count"] == 1
+        assert snap["open_alerts"][0]["event_id"] == "fall"
+        assert snap["open_alerts"][0]["acknowledged"] is False
+        s.acknowledge("fall")
+        assert s.snapshot()["open_count"] == 0
+        assert s.snapshot()["counts"]["fall_confirmed"] == 1
+
+    def test_all_outstanding_alerts_survive_a_small_log_cap(self):
+        s = DashboardState(max_events=1)
+        for event_id, kind in (("fall", "FALL_CONFIRMED"), ("down", "PERSON_DOWN")):
+            s.publish_event({"event_id": event_id, "type": kind, "severity": 4})
+        snap = s.snapshot()
+        assert len(snap["events"]) == 1
+        assert [e["event_id"] for e in snap["open_alerts"]] == ["down", "fall"]
+        s.acknowledge("fall")
+        assert [e["event_id"] for e in s.snapshot()["open_alerts"]] == ["down"]
+
+    def test_acked_alert_does_not_reappear_after_history_rollover(self):
+        s = DashboardState(max_events=1)
+        s.publish_event({"event_id": "fall", "type": "FALL_CONFIRMED", "severity": 4})
+        s.acknowledge("fall")
+        s.publish_event({"event_id": "b", "type": "BED_EXIT", "severity": 1})
+        assert s.snapshot()["open_alerts"] == []
+
     def test_open_alerts_lists_only_unacked_alerting(self):
         s = DashboardState()
         s.publish_event({"event_id": "a", "type": "FALL_CONFIRMED", "severity": 4})
@@ -177,3 +209,31 @@ class TestServer:
         time.sleep(0.1)
         status, _ = _get(base + "/api/state")
         assert status == 200
+
+    def test_rgb_off_replaces_pixels_for_existing_and_new_stream_viewers(self, server):
+        import cv2
+        import numpy as np
+
+        state, base = server
+        state.set_rgb(True)
+        old_jpeg = b"\xff\xd8" + b"private pixels" * 100 + b"\xff\xd9"
+        state.publish_frame(old_jpeg, [], 30.0, show_rgb=True)
+
+        def read_part(response):
+            assert response.readline() == b"--ahfdframe\r\n"
+            assert response.readline() == b"Content-Type: image/jpeg\r\n"
+            length = int(response.readline().split(b":", 1)[1])
+            assert response.readline() == b"\r\n"
+            jpeg = response.read(length)
+            assert response.read(2) == b"\r\n"
+            return jpeg
+
+        with urllib.request.urlopen(base + "/stream.mjpg", timeout=2.0) as existing:
+            assert read_part(existing) == old_jpeg
+            state.set_rgb(False)  # no pipeline running to supply a next frame
+            replacement = read_part(existing)
+            assert replacement != old_jpeg
+            image = cv2.imdecode(np.frombuffer(replacement, np.uint8), cv2.IMREAD_COLOR)
+            assert image is not None and not image.any()
+        with urllib.request.urlopen(base + "/stream.mjpg", timeout=2.0) as new_viewer:
+            assert read_part(new_viewer) == replacement

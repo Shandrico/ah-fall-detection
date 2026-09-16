@@ -337,7 +337,11 @@ class PipelineRunner:
             inst = 1.0 / dt if dt > 0 else 0.0
             fps_ema = inst if fps_ema is None else 0.9 * fps_ema + 0.1 * inst
 
-            if self.show_rgb:
+            # Tag the actual render, not a flag re-read after encoding. An off
+            # request can arrive while rendering, and the store rejects that
+            # in-flight RGB publication even if the runner flag has changed.
+            rendered_rgb = self.show_rgb
+            if rendered_rgb:
                 canvas = render_overlay(
                     frame, pose,
                     min_keypoint_score=cfg.pose.min_keypoint_score,
@@ -355,7 +359,7 @@ class PipelineRunner:
             if ok:
                 self.state.publish_frame(
                     buf.tobytes(), list(track_info.values()), fps_ema or 0.0,
-                    gen=self.gen,
+                    gen=self.gen, show_rgb=rendered_rgb,
                 )
 
         return fps_ema if fps_ema is not None else 0.0

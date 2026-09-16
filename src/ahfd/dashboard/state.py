@@ -21,9 +21,8 @@ nobody is looking at any more. Losing one frame period of real events is the
 better half of that trade.
 
 Session totals are kept as running counters that only increment, separate from
-the bounded recent-events log. The log is capped so memory is bounded over a
-long shift; the counters are not, so "falls today" stays correct even after the
-log has scrolled past them.
+the bounded recent-events log. The history is capped over a long shift; the
+counters survive rollover, and outstanding alerts remain until acknowledged.
 """
 
 from __future__ import annotations
@@ -31,11 +30,24 @@ from __future__ import annotations
 import threading
 import time
 from collections import deque
+from functools import cache
 from typing import Any
 
 # Which event types are a standing alert a nurse must clear, versus
 # informational. Drives the triage queue and the "open alerts" count.
 ALERTING_TYPES = frozenset({"FALL_CONFIRMED", "PERSON_DOWN"})
+
+
+@cache
+def _privacy_frame() -> bytes:
+    """One safe replacement, encoded once rather than once per viewer."""
+    import cv2
+    import numpy as np
+
+    ok, jpeg = cv2.imencode(".jpg", np.zeros((1, 1, 3), dtype=np.uint8))
+    if not ok:
+        raise RuntimeError("could not encode privacy frame")
+    return jpeg.tobytes()
 
 
 class DashboardState:
@@ -48,7 +60,13 @@ class DashboardState:
         self._tracks: list[dict[str, Any]] = []
         self._people = 0
         self._events: deque[dict[str, Any]] = deque(maxlen=max_events)
+        # Outstanding alerts are not history: scrolling the log must never
+        # silently clear an alert that still needs a human acknowledgement.
+        self._outstanding_alerts: dict[str, dict[str, Any]] = {}
         self._acked: set[str] = set()
+        # None preserves direct producer use; the controller explicitly sets
+        # the session's view policy before starting any pipeline.
+        self._rgb_enabled: bool | None = None
         self._counts: dict[str, int] = {}  # cumulative per event type
         self._fps = 0.0
         self._started = time.time()
@@ -73,11 +91,14 @@ class DashboardState:
     # ---- producer side (pipeline thread) -------------------------------
 
     def publish_frame(
-        self, jpeg: bytes, tracks: list[dict[str, Any]], fps: float, gen: int = 0
+        self, jpeg: bytes, tracks: list[dict[str, Any]], fps: float, gen: int = 0,
+        *, show_rgb: bool = False,
     ) -> None:
         with self._lock:
             if gen != self._gen:
                 return  # a retired pipeline; see the module docstring
+            if show_rgb and self._rgb_enabled is False:
+                return  # RGB rendered before an off request must not reappear
             self._jpeg = jpeg
             self._seq += 1
             self._tracks = list(tracks)
@@ -92,8 +113,25 @@ class DashboardState:
             self._counts[event["type"]] = self._counts.get(event["type"], 0) + 1
             if event.get("type") in ALERTING_TYPES:
                 self._last_alert_ts = time.time()
+                if event["event_id"] not in self._acked:
+                    self._outstanding_alerts[event["event_id"]] = event
 
     # ---- control plane (controller thread) ------------------------------
+
+    def set_rgb(self, on: bool) -> None:
+        """Change the publication policy and replace cached RGB immediately.
+
+        A paused recording or disconnected camera may never publish another
+        frame. Sending a new safe JPEG (not just None) also replaces the last
+        RGB part already displayed by existing MJPEG viewers.
+        """
+        replacement = _privacy_frame() if not on else None
+        with self._lock:
+            self._rgb_enabled = on
+            self._runtime["show_rgb"] = on
+            if not on and self._jpeg is not None:
+                self._jpeg = replacement
+                self._seq += 1
 
     def begin_generation(self, **switching_to: Any) -> int:
         """Claim the publishing slot for a new pipeline, fencing out the old.
@@ -211,9 +249,8 @@ class DashboardState:
             acked = set(self._acked)
             counts = dict(self._counts)
             open_alerts = [
-                {**e, "acknowledged": e.get("event_id") in acked}
-                for e in reversed(events)
-                if e.get("type") in ALERTING_TYPES and e.get("event_id") not in acked
+                {**e, "acknowledged": False}
+                for e in reversed(list(self._outstanding_alerts.values()))
             ]
             return {
                 "fps": round(self._fps, 1),
@@ -243,6 +280,12 @@ class DashboardState:
                 # _runtime can never shadow them.
                 "runtime": {
                     **self._runtime,
+                    # A pipeline may have read its flag before an off request;
+                    # the control-plane policy is authoritative, not that read.
+                    **(
+                        {"show_rgb": self._rgb_enabled}
+                        if self._rgb_enabled is not None else {}
+                    ),
                     "status": self._status,
                     "since_s": round(time.time() - self._status_since, 1),
                     "error": self._error,
@@ -265,7 +308,13 @@ class DashboardState:
     def acknowledge(self, event_id: str) -> None:
         with self._lock:
             self._acked.add(event_id)
+            self._outstanding_alerts.pop(event_id, None)
 
     def unacknowledge(self, event_id: str) -> None:
         with self._lock:
             self._acked.discard(event_id)
+            for event in reversed(self._events):
+                if event.get("event_id") == event_id:
+                    if event.get("type") in ALERTING_TYPES:
+                        self._outstanding_alerts[event_id] = event
+                    break

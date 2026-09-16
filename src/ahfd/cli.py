@@ -765,10 +765,10 @@ def train_posture(
     metric features -> posture, and fits a small decision tree -- reporting
     accuracy, a confusion matrix, and which features matter most.
 
-    Retraining is just re-running this on more labelled+extracted clips; the
-    code never changes, only the data grows. On a single recording session the
-    accuracy is NOT meaningful (it overfits) -- this is a plumbing/coverage
-    check until you have several people and sessions.
+    Retraining is just re-running this on more labelled+extracted clips. Test
+    scores hold out whole people (numeric clip suffixes) or recordings, never
+    random frames from the same recording. Without an honest group hold-out,
+    only training accuracy is reported, not a generalisation score.
     """
     from collections import Counter
 
@@ -776,7 +776,7 @@ def train_posture(
     from ahfd.ml.posture import build_dataset, train
 
     calib = load_calibration(calibration)
-    rows, labels_list, _groups, used, skipped = build_dataset(labels, tracks, calib)
+    rows, labels_list, groups, used, skipped = build_dataset(labels, tracks, calib)
 
     if skipped:
         typer.echo("WARNING: skipped label files that failed to parse (fix the JSON):")
@@ -804,19 +804,22 @@ def train_posture(
     )
     typer.echo("total samples: " + str(len(rows)))
 
-    result = train(rows, labels_list, max_depth=max_depth)
+    result = train(rows, labels_list, groups=groups, max_depth=max_depth)
 
     typer.echo("")
     if result.split_done:
         typer.echo(
-            "train/test split: " + str(result.n_train) + " train, "
+            "group-held-out split (" + result.split_unit + "): "
+            + str(result.n_train) + " train, "
             + str(result.n_test) + " test"
         )
+        typer.echo("training groups: " + ", ".join(result.train_groups))
+        typer.echo("held-out groups: " + ", ".join(result.test_groups))
         typer.echo("TEST accuracy: " + format(result.accuracy, ".3f"))
     else:
         typer.echo(
-            "too few samples for a held-out test -- trained on all, reporting "
-            "TRAINING accuracy (not a real score)"
+            "no honest group-held-out test: " + result.split_reason
+            + " -- trained on all, reporting TRAINING accuracy (not a real score)"
         )
         typer.echo("TRAINING accuracy: " + format(result.accuracy, ".3f"))
 
@@ -852,9 +855,9 @@ def train_posture(
     typer.echo("")
     typer.echo(result.report)
     typer.echo(
-        "NOTE: on one session this OVERFITS -- the number is a plumbing check, "
-        "not a real accuracy. Retrain on more people/sessions by labelling + "
-        "extracting more clips and re-running this exact command."
+        "NOTE: reliable evaluation needs varied people and sessions. The saved "
+        "model is trained on all labelled rows; any TEST score above comes from "
+        "a separate group-held-out fit."
     )
 
     if out:

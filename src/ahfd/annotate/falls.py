@@ -117,10 +117,11 @@ def derive_annotations(
 
     Posture labels are the single source of truth. For each clip's posture file:
 
-    * real segments -> derive falls (elevated -> floor transitions; may be empty);
-    * no segments but a negative-by-name clip (``neg_*`` / ``bedexit_*``) ->
-      write an empty-falls negative from its duration, so negatives stay correct
-      without hand-maintenance;
+    * a negative-by-name clip (``neg_*`` / ``bedexit_*``) -> write an empty-falls
+      negative from its duration, even if its posture labels include deliberate
+      floor activity;
+    * real segments in other clips -> derive falls (elevated -> floor transitions;
+      may be empty);
     * no segments and a fall clip -> left *unlabelled* (we cannot invent impacts).
 
     Returns (written, unlabelled, pruned): ``written`` is (clip_id, n_falls) for
@@ -142,10 +143,12 @@ def derive_annotations(
         duration_s = float(data.get("duration_s", 0.0))
         out = annotations_dir / (stem + ".json")
 
-        if segs:
+        if stem.startswith(NEGATIVE_PREFIXES):
+            # Posture training still uses these labels, but intentional floor
+            # activity in a known negative must never hide a false alarm.
+            falls = []
+        elif segs:
             falls = derive_falls(segs, elevated=elevated, floor=floor)
-        elif stem.startswith(NEGATIVE_PREFIXES):
-            falls = []  # a known negative needs no labels, just its duration
         else:
             # An unlabelled fall clip: we must not fabricate impacts. Leave it
             # out of the ground truth (optionally removing a stale placeholder

@@ -144,6 +144,10 @@ class TrainResult:
     # e.g. knee_angle ~95 deg sitting vs ~172 deg upright.
     class_means: dict[str, dict[str, float]]
     split_done: bool
+    split_unit: str = "none"
+    train_groups: list[str] = field(default_factory=list)
+    test_groups: list[str] = field(default_factory=list)
+    split_reason: str = ""
     model: object = field(default=None, repr=False)
 
 
@@ -211,13 +215,71 @@ def build_dataset(labels_dir, tracks_dir, calib, min_keypoint_score: float = 0.3
     return rows, labels, groups, used, skipped
 
 
-def train(rows: list[dict], labels: list[str], *, test_size=0.3, max_depth=5, seed=0):
+def _evaluation_groups(groups: list[str]) -> tuple[list[str], str]:
+    """Use the repository's final numeric clip suffix as the person identity.
+
+    For example, fall_standing_03 and neg_inbed_03 must stay together. Names
+    without this convention retain their supplied recording-group identity.
+    """
+    result = []
+    all_people = True
+    for group in groups:
+        head, separator, tail = str(group).rpartition("_")
+        if separator and head and tail.isdigit():
+            result.append("person_" + tail)
+        else:
+            result.append(str(group))
+            all_people = False
+    return result, "person" if all_people else "clip"
+
+
+def _group_holdout(y, groups, test_size: float, seed: int):
+    """Find a group-disjoint holdout containing every class on both sides.
+
+    Exhaust small group sets so a valid split cannot be missed by chance. For
+    larger datasets, try a bounded number of reproducible group splits.
+    """
+    from itertools import combinations
+
+    import numpy as np
+    from sklearn.model_selection import GroupShuffleSplit
+
+    unique = np.unique(groups)
+    if len(unique) < 2:
+        return None
+    n_test = min(len(unique) - 1, max(1, math.ceil(test_size * len(unique))))
+    classes = set(y)
+    if math.comb(len(unique), n_test) <= 1024:
+        choices = list(combinations(unique, n_test))
+        np.random.RandomState(seed).shuffle(choices)
+        candidates = (
+            (np.flatnonzero(~mask), np.flatnonzero(mask))
+            for mask in (np.isin(groups, choice) for choice in choices)
+        )
+    else:
+        candidates = GroupShuffleSplit(
+            n_splits=64, test_size=n_test, random_state=seed
+        ).split(np.zeros((len(y), 1)), y, groups)
+    for train_idx, test_idx in candidates:
+        if set(y[train_idx]) == classes and set(y[test_idx]) == classes:
+            return train_idx, test_idx
+    return None
+
+
+def train(
+    rows: list[dict], labels: list[str], *, groups: list[str] | None = None,
+    test_size=0.3, max_depth=5, seed=0,
+):
     """Fit a small decision tree on the feature table and report on it.
 
     Missing optional features are median-imputed; the tree is kept shallow so it
-    stays interpretable and its ``feature_importances_`` are meaningful. When
-    there are too few samples to hold out a stratified test set, it trains on
-    everything and reports training-set accuracy -- flagged via ``split_done``.
+    stays interpretable and its ``feature_importances_`` are meaningful. Score
+    on whole held-out people (numeric clip suffixes), or recording groups for
+    other names, never random frames. Both sides must contain every posture.
+    Missing groups or insufficient coverage gives explicitly flagged training
+    accuracy, not a pretend test score. ``test_size`` is the fraction of groups
+    held out. The returned inference model is then fitted on ALL available rows;
+    held-out metrics are calculated first with a separate training-only model.
     """
     import warnings
 
@@ -225,9 +287,15 @@ def train(rows: list[dict], labels: list[str], *, test_size=0.3, max_depth=5, se
     from sklearn.feature_selection import f_classif, mutual_info_classif
     from sklearn.impute import SimpleImputer
     from sklearn.metrics import accuracy_score, classification_report, confusion_matrix
-    from sklearn.model_selection import train_test_split
     from sklearn.pipeline import Pipeline
     from sklearn.tree import DecisionTreeClassifier
+
+    if not rows or len(rows) != len(labels):
+        raise ValueError("rows and labels must be nonempty and have matching lengths")
+    if groups is not None and len(groups) != len(rows):
+        raise ValueError("groups must have one entry per row")
+    if not 0 < test_size < 1:
+        raise ValueError("test_size must be a fraction strictly between 0 and 1")
 
     X = np.array(
         [[np.nan if r.get(k) is None else float(r[k]) for k in FEATURES] for r in rows],
@@ -250,26 +318,45 @@ def train(rows: list[dict], labels: list[str], *, test_size=0.3, max_depth=5, se
             ]
         )
 
-    # A stratified hold-out needs at least 2 of every class; otherwise the split
-    # is not meaningful, so train on all and report on the training set.
-    import numpy as _np
-
-    counts = {c: int((_np.array(labels) == c).sum()) for c in classes}
-    split_done = len(classes) >= 2 and min(counts.values()) >= 2 and len(rows) >= 8
-
-    model = make_model()
-    if split_done:
-        X_tr, X_te, y_tr, y_te = train_test_split(
-            X, y, test_size=test_size, stratify=y, random_state=seed
-        )
-        model.fit(X_tr, y_tr)
-        y_pred = model.predict(X_te)
-        acc = float(accuracy_score(y_te, y_pred))
-        report = classification_report(y_te, y_pred, zero_division=0)
-        conf = confusion_matrix(y_te, y_pred, labels=classes)
-        n_tr, n_te = len(y_tr), len(y_te)
+    counts = {c: int((y == c).sum()) for c in classes}
+    split_unit = "none"
+    group_ids = np.array([], dtype=str)
+    split = None
+    if groups is None:
+        split_reason = "no recording/person groups supplied"
     else:
-        model.fit(X, y)
+        evaluation_groups, split_unit = _evaluation_groups(groups)
+        group_ids = np.asarray(evaluation_groups)
+        if len(np.unique(group_ids)) < 2:
+            split_reason = "need at least two independent " + split_unit + " groups"
+        elif len(classes) < 2:
+            split_reason = "need at least two posture classes for a held-out score"
+        else:
+            split = _group_holdout(y, group_ids, test_size, seed)
+            split_reason = (
+                "group-disjoint holdout with every posture represented"
+                if split is not None else
+                "no class-complete group-disjoint holdout found"
+            )
+
+    split_done = split is not None
+    test_groups: list[str] = []
+    if split is not None:
+        train_idx, test_idx = split
+        score_model = make_model().fit(X[train_idx], y[train_idx])
+        y_pred = score_model.predict(X[test_idx])
+        acc = float(accuracy_score(y[test_idx], y_pred))
+        report = classification_report(y[test_idx], y_pred, zero_division=0)
+        conf = confusion_matrix(y[test_idx], y_pred, labels=classes)
+        n_tr, n_te = len(train_idx), len(test_idx)
+        train_groups = sorted(set(group_ids[train_idx]))
+        test_groups = sorted(set(group_ids[test_idx]))
+    else:
+        train_groups = sorted(set(group_ids))
+
+    # Save/export the model trained on all available data, not the holdout fold.
+    model = make_model().fit(X, y)
+    if not split_done:
         y_pred = model.predict(X)
         acc = float(accuracy_score(y, y_pred))
         report = classification_report(y, y_pred, zero_division=0)
@@ -291,7 +378,7 @@ def train(rows: list[dict], labels: list[str], *, test_size=0.3, max_depth=5, se
     # need at least two samples per class to be defined, so skip them on the
     # degenerate tiny-data path (where the number is meaningless anyway).
     separability: list[tuple[str, float, float]] = []
-    if min(counts.values()) >= 2 and len(rows) >= 4:
+    if len(classes) >= 2 and min(counts.values()) >= 2 and len(rows) >= 4:
         X_imp = SimpleImputer(
             strategy="median", keep_empty_features=True
         ).fit_transform(X)
@@ -330,5 +417,9 @@ def train(rows: list[dict], labels: list[str], *, test_size=0.3, max_depth=5, se
         separability=separability,
         class_means=class_means,
         split_done=split_done,
+        split_unit=split_unit,
+        train_groups=train_groups,
+        test_groups=test_groups,
+        split_reason=split_reason,
         model=model,
     )

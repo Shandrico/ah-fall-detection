@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import json
 
+import pytest
+
 from ahfd.annotate import derive_annotations, derive_falls, dump_annotation_json
 from ahfd.eval import GroundTruth
 
@@ -72,6 +74,29 @@ def _write_posture(pdir, stem, duration, segments):
 
 
 class TestDeriveDirectory:
+    @pytest.mark.parametrize("stem", ["neg_adl_x", "neg_postures_x", "bedexit_safe_x"])
+    @pytest.mark.parametrize("elevated", ["upright", "sitting"])
+    def test_labelled_negative_floor_activity_stays_negative(self, tmp_path, stem, elevated):
+        pdir, adir = tmp_path / "postures", tmp_path / "annotations"
+        segments = [_seg(0, 5, elevated), _seg(8, 15, "on_ground")]
+        _write_posture(pdir, stem, 30.0, segments)
+        adir.mkdir()
+        # Re-deriving also repairs an annotation produced by the old ordering.
+        (adir / (stem + ".json")).write_text(
+            dump_annotation_json(stem, 30.0, derive_falls(segments)), encoding="utf-8"
+        )
+
+        written, unlabelled, pruned = derive_annotations(pdir, adir)
+
+        assert written == [(stem, 0)]
+        assert unlabelled == []
+        assert pruned == []
+        truth = GroundTruth.load(adir / (stem + ".json"))
+        assert truth.is_negative
+        assert truth.duration_s == 30.0
+        # Keep the manual posture labels intact for classifier training.
+        assert json.loads((pdir / (stem + ".json")).read_text())["segments"] == segments
+
     def test_labelled_fall_negative_and_unlabelled(self, tmp_path):
         pdir, adir = tmp_path / "postures", tmp_path / "annotations"
         _write_posture(pdir, "fall_x", 40.0, [_seg(0, 10, "upright"), _seg(12, 20, "on_ground")])

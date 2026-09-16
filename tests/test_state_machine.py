@@ -128,6 +128,55 @@ class TestSeatedPosture:
         )
         assert events == []
 
+    @pytest.mark.parametrize("initial_h", [1.15, 1.40])
+    def test_fast_sit_does_not_confirm_or_start_a_near_miss_cooldown(self, initial_h):
+        # The taller initial height triggers while still outside the seated
+        # band, exercising both trigger prevention and active-fall cancellation.
+        m = FallStateMachine()
+        frames = hold(0.0, 2.0, h_torso=initial_h)
+        for i in range(6):
+            frames.append(
+                feats(
+                    2.0 + i * DT,
+                    h_torso=initial_h - (initial_h - 0.75) * (i + 1) / 6,
+                    v_z=-1.5,
+                    floor_spread=SPREAD_DOWN,
+                    torso_tilt=20.0,
+                )
+            )
+        frames += hold(2.4, 12.0, h_torso=0.75,
+                       floor_spread=SPREAD_DOWN, torso_tilt=20.0)
+
+        assert run(m, frames) == []
+        assert m.state_of(1) == "SITTING"
+        assert m._tracks[1].trigger_t is None
+        assert m._tracks[1].last_alert_t is None
+
+        # A genuine fall immediately after the sit must still be detected.
+        frames = [
+            feats(14.4 + i * DT, h_torso=0.75 - 0.55 * (i + 1) / 6,
+                  v_z=-1.5, floor_spread=SPREAD_DOWN, torso_tilt=60.0)
+            for i in range(6)
+        ]
+        frames += hold(14.8, 12.0, h_torso=0.20,
+                       floor_spread=SPREAD_DOWN, torso_tilt=60.0)
+        assert "FALL_CONFIRMED" in types_of(run(m, frames))
+
+    @pytest.mark.parametrize("rest_h, tilt", [(0.75, 60.0), (0.60, 20.0)])
+    def test_seated_guard_keeps_flat_or_low_fallen_bodies(self, rest_h, tilt):
+        # A flat torso in the seated height band, or an end-on prone body below
+        # it, must not be discarded just because an image angle is ambiguous.
+        m = FallStateMachine()
+        frames = hold(0.0, 2.0)
+        frames += [
+            feats(2.0 + i * DT, h_torso=1.15 - (1.15 - rest_h) * (i + 1) / 6,
+                  v_z=-1.5, floor_spread=SPREAD_DOWN, torso_tilt=tilt)
+            for i in range(6)
+        ]
+        frames += hold(2.4, 12.0, h_torso=rest_h,
+                       floor_spread=SPREAD_DOWN, torso_tilt=tilt)
+        assert "FALL_CONFIRMED" in types_of(run(m, frames))
+
 
 def fall_sequence(
     *,
@@ -293,6 +342,65 @@ class TestNothingFiresWhenItShouldNot:
         m = FallStateMachine()
         frames = fall_sequence(down_s=20.0, down_motion=0.6)
         assert "FALL_CONFIRMED" not in types_of(run(m, frames))
+
+
+class TestInterruptedObservations:
+    INTERRUPTIONS = [
+        {"n_valid_kp": 4},
+        {"mean_conf": 0.2},
+        {"h_torso": None, "contact_xy": None},
+        {"in_excluded_zone": True},
+    ]
+
+    @pytest.mark.parametrize("interruption", INTERRUPTIONS)
+    def test_person_down_wait_restarts_after_unusable_frames(self, interruption):
+        m = FallStateMachine()
+        run(m, hold(0.0, 2.0, h_torso=0.20, floor_spread=SPREAD_DOWN))
+        bad = [
+            Features(**{**f.__dict__, **interruption})
+            for f in hold(2.0, 20.0, h_torso=0.20, floor_spread=SPREAD_DOWN)
+        ]
+        assert run(m, bad) == []
+        assert run(m, hold(22.0, 20.0, h_torso=0.20,
+                           floor_spread=SPREAD_DOWN)) == []
+        event = m.update(feats(42.0, h_torso=0.20, floor_spread=SPREAD_DOWN))
+        assert event is not None and event.type == "PERSON_DOWN"
+        assert event.t_trigger == 22.0
+        assert event.evidence["down_s"] == 20.0
+
+    @pytest.mark.parametrize("interruption", INTERRUPTIONS)
+    def test_interrupted_impact_is_not_reused_on_reacquisition(self, interruption):
+        m = FallStateMachine()
+        run(m, fall_sequence(down_s=1.0))
+        assert m._tracks[1].trigger_t is not None
+        m.update(Features(**{**feats(3.4).__dict__, **interruption}))
+        assert m._tracks[1].trigger_t is None
+        assert m._tracks[1].height_log == []
+        assert not m._tracks[1].suspected
+        assert run(m, hold(4.0, 20.0, h_torso=0.20,
+                           floor_spread=SPREAD_DOWN)) == []
+        event = m.update(feats(24.0, h_torso=0.20, floor_spread=SPREAD_DOWN))
+        assert event is not None and event.type == "PERSON_DOWN"
+        assert event.t_trigger == 4.0
+
+    @pytest.mark.parametrize("interruption", INTERRUPTIONS)
+    def test_bed_exit_wait_restarts_after_unusable_frames(self, interruption):
+        m = FallStateMachine()
+        run(m, hold(0.0, 2.0, h_torso=0.55, zones=("bed_2",)))
+        m.update(Features(**{**feats(2.0).__dict__, **interruption}))
+        assert run(m, hold(10.0, 3.0, h_torso=0.55, zones=("bed_2",))) == []
+        event = m.update(feats(13.0, h_torso=0.55, zones=("bed_2",)))
+        assert event is not None and event.type == "BED_EXIT"
+        assert event.t_trigger == 10.0
+
+    def test_interruption_preserves_an_existing_alert_cooldown(self):
+        m = FallStateMachine()
+        run(m, hold(0.0, 21.0, h_torso=0.20, floor_spread=SPREAD_DOWN))
+        assert m._tracks[1].last_alert_t == 20.0
+        m.update(feats(21.0, n_valid_kp=4))
+        assert m._tracks[1].last_alert_t == 20.0
+        assert run(m, hold(22.0, 30.0, h_torso=0.20,
+                           floor_spread=SPREAD_DOWN)) == []
 
 
 # ---------------------------------------------------------------- positives
