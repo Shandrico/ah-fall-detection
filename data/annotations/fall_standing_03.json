@@ -1,0 +1,9 @@
+{
+  "clip_id": "fall_standing_03",
+  "duration_s": 40.63,
+  "falls": [
+    { "t_impact": 6, "t_start": 4.67, "notes": "derived from postures: upright -> on_ground" },
+    { "t_impact": 19.13, "t_start": 18.1, "notes": "derived from postures: upright -> on_ground" },
+    { "t_impact": 32.73, "t_start": 31.1, "notes": "derived from postures: upright -> on_ground" }
+  ]
+}

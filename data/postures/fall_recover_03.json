@@ -2,11 +2,12 @@
   "clip_id": "fall_recover_03",
   "duration_s": 41.7,
   "segments": [
-    { "start_s": 0.0, "end_s": 0.0, "posture": "upright" },
-    { "start_s": 0.0, "end_s": 0.0, "posture": "on_ground" },
-    { "start_s": 0.0, "end_s": 0.0, "posture": "upright" },
-    { "start_s": 0.0, "end_s": 0.0, "posture": "on_ground" },
-    { "start_s": 0.0, "end_s": 0.0, "posture": "upright" },
-    { "start_s": 0.0, "end_s": 0.0, "posture": "on_ground" }
+    { "start_s": 0, "end_s": 11.8, "posture": "upright" },
+    { "start_s": 13.33, "end_s": 14.23, "posture": "on_ground" },
+    { "start_s": 16.17, "end_s": 24.17, "posture": "upright" },
+    { "start_s": 25.47, "end_s": 28.3, "posture": "on_ground" },
+    { "start_s": 29.9, "end_s": 34.97, "posture": "upright" },
+    { "start_s": 36.23, "end_s": 38.37, "posture": "on_ground" },
+    { "start_s": 40.3, "end_s": 41.67, "posture": "upright" }
   ]
 }
