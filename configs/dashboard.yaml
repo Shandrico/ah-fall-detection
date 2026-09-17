@@ -28,9 +28,10 @@ capture:
   height: 480
 
 pose:
-  backend: "rtmpose"        # top-down: better at range than rtmo (your pick)
-  mode: "performance"       # rtmpose: performance / balanced / lightweight
-  model_size: "s"           # used by rtmo if you switch to it
+  backend: "rtmo"           # deployment pick: Apache-2.0, best sitting in the bake-off,
+                            # and what the posture model was trained on (persons 01-03)
+  model_size: "s"           # rtmo model size
+  mode: "performance"       # rtmpose-only knob; rtmo ignores it (kept if you switch back)
   runtime: "openvino"       # Intel iGPU; falls back to onnxruntime/cpu if openvino is absent
   device: "gpu"
   min_score: 0.5            # raised from 0.30 to cut flicker / objects-as-people
