@@ -1298,7 +1298,7 @@ def compare_posture(
 
     typer.echo("")
     typer.echo(
-        "leave-one-clip-out ranking (macro-F1 = balanced across postures; "
+        "leave-one-" + unit + "-out ranking (macro-F1 = balanced across postures; "
         "bal-acc = mean recall):"
     )
     header = "  " + "model".ljust(18) + "macro-F1".rjust(9) + "bal-acc".rjust(9) + "  "
@@ -1317,7 +1317,7 @@ def compare_posture(
     for cls, row in zip(result.classes, best.confusion):
         typer.echo("  " + cls.ljust(12) + " ".join(str(x).rjust(5) for x in row))
     typer.echo("")
-    typer.echo("per-clip accuracy for " + best.name + ":")
+    typer.echo("per-" + unit + " accuracy for " + best.name + ":")
     for clip, acc in best.per_clip_acc:
         typer.echo("  " + clip.ljust(24) + format(acc, ".3f"))
 
@@ -1326,11 +1326,17 @@ def compare_posture(
         typer.echo("how a tree decides -- learned thresholds (depth-3 flat tree on all data):")
         typer.echo(result.tree_rules)
 
-    typer.echo(
-        "NOTE: still ONE person/camera -- even leave-one-clip-out mostly tests "
-        "cross-scenario, not cross-person. Label persons 02-04, extract, re-run: "
-        "this becomes leave-one-person-out with no code change."
-    )
+    if unit == "clip":
+        typer.echo(
+            "\nNOTE: leave-one-CLIP-out is cross-scenario, still one body/camera. "
+            "Once >=2 people are labelled, `--by person` is the real cross-person test."
+        )
+    else:
+        typer.echo(
+            "\nNOTE: leave-one-PERSON-out -- each score is on a person the model "
+            "never trained on. This is the honest generalisation number. More "
+            "people tightens it further."
+        )
 
 
 @app.command()

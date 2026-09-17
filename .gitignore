@@ -47,3 +47,5 @@ env/
 Thumbs.db
 .idea/
 .vscode/
+data/tracks_rtmpose/
+data/tracks_yolo/

@@ -1,0 +1,9 @@
+{
+  "clip_id": "fall_slump_02",
+  "duration_s": 42.73,
+  "falls": [
+    { "t_impact": 10, "t_start": 10, "notes": "derived from postures: sitting -> on_ground" },
+    { "t_impact": 20, "t_start": 20, "notes": "derived from postures: sitting -> on_ground" },
+    { "t_impact": 35, "t_start": 35, "notes": "derived from postures: sitting -> on_ground" }
+  ]
+}
