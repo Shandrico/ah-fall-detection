@@ -86,6 +86,7 @@ def run_depth_viewer(
         "pane_x0": 0,             # x offset of the depth pane in the composite
         "scale": 1.0,             # displayed / full-res ratio
         "pose_txt": None,         # per-joint depth-height readout, when --pose
+        "numbers": False,         # overlay a grid of depth values instead of colour
     }
 
     win = "ahfd depth viewer"
@@ -223,6 +224,36 @@ def run_depth_viewer(
         img[~valid] = (0, 0, 0)
         return img
 
+    def _numbers_overlay(img, depth_m):
+        """Print a grid of raw depth values (metres) across the depth pane.
+
+        The number under each grid point is the median depth in a small window
+        (zeros ignored). '--' means no depth there (a hole). This is the depth
+        matrix made legible -- the actual distances behind the colours.
+        """
+        h, w = depth_m.shape[:2]
+        scale = st["scale"]
+        x0 = st["pane_x0"]
+        cols, rows = 12, 8
+
+        def _val(oy, ox):
+            y0, y1 = max(0, oy - 1), min(h, oy + 2)
+            x1, x2 = max(0, ox - 1), min(w, ox + 2)
+            patch = depth_m[y0:y1, x1:x2]
+            good = patch[patch > 0]
+            return float(np.median(good)) if good.size else 0.0
+
+        for j in range(rows):
+            oy = int((j + 0.5) / rows * h)
+            dy = int(oy * scale)
+            for i in range(cols):
+                ox = int((i + 0.5) / cols * w)
+                dx = int((x0 + ox) * scale)
+                d = _val(oy, ox)
+                txt = ("%.2f" % d) if d > 0 else "--"
+                cv2.putText(img, txt, (dx - 15, dy + 4), cv2.FONT_HERSHEY_SIMPLEX, 0.42, (0, 0, 0), 3, cv2.LINE_AA)
+                cv2.putText(img, txt, (dx - 15, dy + 4), cv2.FONT_HERSHEY_SIMPLEX, 0.42, (255, 255, 255), 1, cv2.LINE_AA)
+
     def _hud(img, frame, valid_depth_m):
         lines = []
         if st["mode"] == "height":
@@ -251,7 +282,7 @@ def run_depth_viewer(
             cv2.putText(img, ln, (14, y), cv2.FONT_HERSHEY_SIMPLEX, 0.62, (0, 0, 0), 4, cv2.LINE_AA)
             cv2.putText(img, ln, (14, y), cv2.FONT_HERSHEY_SIMPLEX, 0.62, (255, 255, 255), 1, cv2.LINE_AA)
             y += 30
-        help_ln = "f mode  c colormap  i invert  a auto  [ ] max  , . min  h holes  v color  space pause  q quit"
+        help_ln = "f mode  n numbers  c colormap  i invert  a auto  [ ] max  , . min  h holes  v color  space pause  q quit"
         cv2.putText(img, help_ln, (14, img.shape[0] - 16), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 0), 4, cv2.LINE_AA)
         cv2.putText(img, help_ln, (14, img.shape[0] - 16), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 0), 1, cv2.LINE_AA)
 
@@ -308,6 +339,10 @@ def run_depth_viewer(
             if estimator is not None and frame.bgr is not None:
                 _pose_overlay(vis, depth_m, frame)
 
+            if st["numbers"]:
+                # dim the colour so the overlaid numbers stay legible
+                vis = (vis.astype(np.float32) * 0.4).astype(np.uint8)
+
             st["pane_x0"] = 0
             if st["color"] and frame.bgr is not None and frame.bgr.shape[:2] == vis.shape[:2]:
                 vis = np.hstack([frame.bgr, vis])
@@ -321,6 +356,8 @@ def run_depth_viewer(
                 st["scale"] = 1.0
 
             _hud(vis, frame, depth_m)
+            if st["numbers"]:
+                _numbers_overlay(vis, depth_m)
             cv2.imshow(win, vis)
 
             k = cv2.waitKey(1) & 0xFF
@@ -328,6 +365,8 @@ def run_depth_viewer(
                 break
             elif k == ord("f"):
                 st["mode"] = "height" if st["mode"] == "depth" else "depth"
+            elif k == ord("n"):
+                st["numbers"] = not st["numbers"]
             elif k == ord("c"):
                 ci = (ci + 1) % len(cmaps)
             elif k == ord("i"):
