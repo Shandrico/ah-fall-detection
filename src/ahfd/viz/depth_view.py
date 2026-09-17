@@ -36,12 +36,15 @@ def _colormaps(cv2):
     ]
 
 
-def _open_source(source: str, max_laser: bool = False, max_range_m: float = 6.0):
+def _open_source(source: str, max_laser: bool = False, max_range_m: float = 6.0, smooth: int = 2):
     from ahfd.capture.realsense import BagSource, RealSenseSource
 
     if str(source).lower().endswith(".bag"):
-        return BagSource(str(source))  # a recording's laser power is fixed
-    return RealSenseSource(with_depth=True, max_laser=max_laser, max_range_m=max_range_m)
+        return BagSource(str(source))  # a recording's filtering is fixed
+    return RealSenseSource(
+        with_depth=True, max_laser=max_laser, max_range_m=max_range_m,
+        spatial_magnitude=smooth,
+    )
 
 
 def run_depth_viewer(
@@ -55,6 +58,7 @@ def run_depth_viewer(
     show_color: bool = False,
     long_range: bool = False,
     max_range_m: float = 6.0,
+    smooth: int = 2,
     pose: bool = False,
     backend: str = "rtmo",
     runtime: str = "openvino",
@@ -126,7 +130,7 @@ def run_depth_viewer(
             "rh": region_height, "cp": coarse_posture,
         }
 
-    src = _open_source(source, max_laser=long_range, max_range_m=max_range_m)
+    src = _open_source(source, max_laser=long_range, max_range_m=max_range_m, smooth=smooth)
     it = iter(src)
 
     # Cached per-resolution pixel-direction grids for the height projection.

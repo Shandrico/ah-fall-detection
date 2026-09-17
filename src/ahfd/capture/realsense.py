@@ -68,6 +68,7 @@ class _RealSenseBase:
         emitter=None,
         max_laser=False,
         max_range_m=6.0,
+        spatial_magnitude=2,
     ):
         # with_depth defaults OFF: nothing downstream consumes depth (the
         # geometry is homography-based), but capturing + filtering + aligning it
@@ -94,6 +95,7 @@ class _RealSenseBase:
         self._emitter = emitter
         self._max_laser = max_laser
         self._max_range_m = max_range_m
+        self._spatial_magnitude = spatial_magnitude
         self._pipeline = self._rs.pipeline()
         self._config = self._rs.config()
         self._align = None
@@ -112,7 +114,9 @@ class _RealSenseBase:
 
         to_disparity = rs.disparity_transform(True)
         spatial = rs.spatial_filter()
-        spatial.set_option(rs.option.filter_magnitude, 2)
+        # filter_magnitude = number of smoothing passes (1-5). More = less
+        # spatial noise, at the cost of rounding off the person's edges.
+        spatial.set_option(rs.option.filter_magnitude, float(max(1, min(5, self._spatial_magnitude))))
         spatial.set_option(rs.option.filter_smooth_alpha, 0.5)
         spatial.set_option(rs.option.filter_smooth_delta, 20)
         temporal = rs.temporal_filter()
@@ -372,11 +376,12 @@ class RealSenseSource(_RealSenseBase):
         emitter=None,
         max_laser=False,
         max_range_m=6.0,
+        spatial_magnitude=2,
     ):
         super().__init__(
             color_size, depth_size, fps, with_depth=with_depth,
             infrared=infrared, ir_index=ir_index, ir_size=ir_size, emitter=emitter,
-            max_laser=max_laser, max_range_m=max_range_m,
+            max_laser=max_laser, max_range_m=max_range_m, spatial_magnitude=spatial_magnitude,
         )
         rs = self._rs
         if infrared:
