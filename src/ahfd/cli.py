@@ -1230,6 +1230,12 @@ def compare_posture(
         help="Leave-one-out unit: 'clip' (cross-scenario, one person) or 'person' "
         "(train on N-1 people, test on the held-out one -- the real generalisation test).",
     ),
+    test_person: str = typer.Option(
+        None,
+        help="Fixed holdout instead of leave-one-out: train on every OTHER person, "
+        "test on just this one (e.g. '--test-person 03' = train 01+02, test 03). "
+        "Implies '--by person'. Use this for a clean train/validate/test split.",
+    ),
     show_rules: bool = typer.Option(
         True, "--show-rules/--no-show-rules", help="Print the learned tree thresholds."
     ),
@@ -1244,6 +1250,9 @@ def compare_posture(
     held-out unit is predicted by a model that never saw it. A random frame split
     would leak near-duplicate frames and inflate the score. `--by person` is the
     real generalisation test -- it needs at least two people labelled.
+
+    Pass `--test-person NN` for a single fixed holdout instead: train on every
+    other person and test on that one only (the plain train/validate/test split).
     """
     if by not in ("clip", "person"):
         raise typer.BadParameter("--by must be 'clip' or 'person'")
@@ -1254,6 +1263,16 @@ def compare_posture(
 
     calib = load_calibration(calibration)
     rows, labels_list, groups, used, skipped = build_dataset(labels, tracks, calib)
+
+    # A fixed test person forces person-level grouping (you can't hold out a
+    # single person while grouping by clip).
+    holdout = None
+    if test_person is not None:
+        by = "person"
+        digits = "".join(ch for ch in test_person if ch.isdigit())
+        if not digits:
+            raise typer.BadParameter("--test-person must contain a person number, e.g. '03'")
+        holdout = "person_" + digits.zfill(2)
 
     if by == "person":
         def _person_of(clip_id):
@@ -1272,8 +1291,22 @@ def compare_posture(
     typer.echo("clips used:")
     for clip, n in used:
         typer.echo("  " + clip.ljust(24) + str(n) + " labelled frames")
-    n_groups = len(set(groups))
-    typer.echo("\nleave-one-" + unit + "-out: " + str(n_groups) + " " + unit + "(s) = " + str(n_groups) + " fold(s)")
+    group_set = set(groups)
+    n_groups = len(group_set)
+    if holdout is not None:
+        if holdout not in group_set:
+            raise typer.BadParameter(
+                "--test-person resolves to " + repr(holdout) + " but that person "
+                "has no labelled+extracted clips; found: "
+                + ", ".join(sorted(group_set))
+            )
+        train_people = sorted(group_set - {holdout})
+        typer.echo(
+            "\nfixed holdout: train on " + ", ".join(train_people)
+            + "  ->  test on " + holdout
+        )
+    else:
+        typer.echo("\nleave-one-" + unit + "-out: " + str(n_groups) + " " + unit + "(s) = " + str(n_groups) + " fold(s)")
     if not rows or n_groups < 2:
         hint = (
             " -- only person 01 is labelled. Label + extract a few clips for "
@@ -1294,13 +1327,19 @@ def compare_posture(
         + ", ".join(k + "=" + str(v) for k, v in sorted(dist.items()))
     )
 
-    result = compare(rows, labels_list, groups)
+    result = compare(rows, labels_list, groups, holdout=holdout)
 
     typer.echo("")
-    typer.echo(
-        "leave-one-" + unit + "-out ranking (macro-F1 = balanced across postures; "
-        "bal-acc = mean recall):"
-    )
+    if holdout is not None:
+        typer.echo(
+            "train(" + ", ".join(train_people) + ") -> test(" + holdout + ") ranking "
+            "(macro-F1 = balanced across postures; bal-acc = mean recall):"
+        )
+    else:
+        typer.echo(
+            "leave-one-" + unit + "-out ranking (macro-F1 = balanced across postures; "
+            "bal-acc = mean recall):"
+        )
     header = "  " + "model".ljust(18) + "macro-F1".rjust(9) + "bal-acc".rjust(9) + "  "
     header += "".join(("R:" + c[:6]).rjust(10) for c in result.classes)
     typer.echo(header)
@@ -1316,17 +1355,26 @@ def compare_posture(
     typer.echo("BEST: " + best.name + "  -- confusion (rows=true, cols=pred): " + "  ".join(result.classes))
     for cls, row in zip(result.classes, best.confusion):
         typer.echo("  " + cls.ljust(12) + " ".join(str(x).rjust(5) for x in row))
-    typer.echo("")
-    typer.echo("per-" + unit + " accuracy for " + best.name + ":")
-    for clip, acc in best.per_clip_acc:
-        typer.echo("  " + clip.ljust(24) + format(acc, ".3f"))
+    if holdout is None:
+        typer.echo("")
+        typer.echo("per-" + unit + " accuracy for " + best.name + ":")
+        for clip, acc in best.per_clip_acc:
+            typer.echo("  " + clip.ljust(24) + format(acc, ".3f"))
 
     if show_rules:
         typer.echo("")
         typer.echo("how a tree decides -- learned thresholds (depth-3 flat tree on all data):")
         typer.echo(result.tree_rules)
 
-    if unit == "clip":
+    if holdout is not None:
+        typer.echo(
+            "\nNOTE: fixed holdout -- trained on " + ", ".join(train_people)
+            + " and scored ONLY on " + holdout + " (frames the model never saw). "
+            "This is your train/validate split. When you add person 4, re-run with "
+            "`--test-person 04` for the final held-out test; the deployed model is "
+            "trained on ALL labelled people (`ahfd train-posture`)."
+        )
+    elif unit == "clip":
         typer.echo(
             "\nNOTE: leave-one-CLIP-out is cross-scenario, still one body/camera. "
             "Once >=2 people are labelled, `--by person` is the real cross-person test."

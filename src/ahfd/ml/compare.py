@@ -273,8 +273,19 @@ class CompareResult:
     tree_rules: str = field(default="")  # export_text of a flat tree on all data
 
 
-def compare(rows, labels, groups, *, seed: int = 0) -> CompareResult:
-    """Leave-one-clip-out evaluation of every model in the zoo, ranked."""
+def compare(rows, labels, groups, *, seed: int = 0, holdout: str | None = None) -> CompareResult:
+    """Evaluate every model in the zoo on held-out groups, ranked.
+
+    Two protocols, depending on `holdout`:
+
+    * ``holdout=None`` (default) -- leave-one-group-out cross-validation: every
+      group takes a turn as the test set and the scores are pooled over all
+      folds. The data-efficient estimate; every frame is tested exactly once.
+    * ``holdout=<group>`` -- a single fixed split: train on every group *except*
+      the named one, test on that one only. This is the plain train/test
+      holdout ("train on persons 01+02, test on 03"); scores are computed on
+      the held-out group's frames alone.
+    """
     from sklearn.metrics import (
         balanced_accuracy_score,
         confusion_matrix,
@@ -287,31 +298,48 @@ def compare(rows, labels, groups, *, seed: int = 0) -> CompareResult:
     y = np.asarray(labels)
     g = np.asarray(groups)
     classes = sorted(set(labels))
-    logo = LeaveOneGroupOut()
+
+    if holdout is not None and holdout not in set(groups):
+        raise ValueError(
+            "holdout group " + repr(holdout) + " not found; groups are: "
+            + ", ".join(sorted(set(map(str, groups))))
+        )
 
     scores: list[ModelScore] = []
     for name, factory in _model_zoo(seed).items():
-        oof = np.empty(len(y), dtype=object)
-        per_clip: list[tuple[str, float]] = []
-        for tr, te in logo.split(X, y, g):
+        if holdout is None:
+            # Pooled out-of-fold predictions across every leave-one-group-out fold.
+            logo = LeaveOneGroupOut()
+            oof = np.empty(len(y), dtype=object)
+            per_clip: list[tuple[str, float]] = []
+            for tr, te in logo.split(X, y, g):
+                model = factory().fit(X[tr], y[tr])
+                pred = model.predict(X[te])
+                oof[te] = pred
+                per_clip.append((g[te][0], float((pred == y[te]).mean())))
+            y_eval, pred_eval = y, oof
+        else:
+            # Single fixed split: train on the rest, score on the held-out group.
+            te = np.where(g == holdout)[0]
+            tr = np.where(g != holdout)[0]
             model = factory().fit(X[tr], y[tr])
-            pred = model.predict(X[te])
-            oof[te] = pred
-            per_clip.append((g[te][0], float((pred == y[te]).mean())))
+            pred_eval = model.predict(X[te])
+            y_eval = y[te]
+            per_clip = [(str(holdout), float((pred_eval == y_eval).mean()))]
 
         scores.append(
             ModelScore(
                 name=name,
-                balanced_accuracy=float(balanced_accuracy_score(y, oof)),
-                macro_f1=float(f1_score(y, oof, labels=classes, average="macro", zero_division=0)),
+                balanced_accuracy=float(balanced_accuracy_score(y_eval, pred_eval)),
+                macro_f1=float(f1_score(y_eval, pred_eval, labels=classes, average="macro", zero_division=0)),
                 per_class_recall={
                     c: float(r)
                     for c, r in zip(
                         classes,
-                        recall_score(y, oof, labels=classes, average=None, zero_division=0),
+                        recall_score(y_eval, pred_eval, labels=classes, average=None, zero_division=0),
                     )
                 },
-                confusion=[[int(x) for x in r] for r in confusion_matrix(y, oof, labels=classes)],
+                confusion=[[int(x) for x in r] for r in confusion_matrix(y_eval, pred_eval, labels=classes)],
                 per_clip_acc=sorted(per_clip),
             )
         )
