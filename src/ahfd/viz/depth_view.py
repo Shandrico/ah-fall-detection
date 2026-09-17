@@ -87,6 +87,7 @@ def run_depth_viewer(
         "scale": 1.0,             # displayed / full-res ratio
         "pose_txt": None,         # per-joint depth-height readout, when --pose
         "numbers": False,         # overlay a grid of depth values instead of colour
+        "equalize": False,        # histogram-equalise the ramp (more contrast where the pixels are)
     }
 
     win = "ahfd depth viewer"
@@ -217,6 +218,19 @@ def run_depth_viewer(
     def _colorize(field, lo, hi, valid):
         rng = max(hi - lo, 1e-6)
         norm = np.clip((field - lo) / rng, 0.0, 1.0)
+        if st["equalize"]:
+            # Allocate colours by how many pixels sit at each depth, not by
+            # linear distance: the person's body (a dense band) then spans a big
+            # slice of the colormap and stands out, even inside a wide 3-6 m
+            # window where a linear ramp would render it near-flat.
+            vals = field[valid]
+            vals = vals[(vals >= lo) & (vals <= hi)]
+            if vals.size > 64:
+                hist, _ = np.histogram(vals, bins=256, range=(lo, hi))
+                cdf = np.cumsum(hist).astype(np.float32)
+                if cdf[-1] > 0:
+                    cdf /= cdf[-1]
+                    norm = cdf[(norm * 255).astype(np.int32)]
         if st["invert"]:
             norm = 1.0 - norm
         u8 = (norm * 255).astype(np.uint8)
@@ -260,8 +274,9 @@ def run_depth_viewer(
             lines.append("MODE height-above-floor  range %.2f-%.2f m  mount %.2f m" % (st["hmin"], st["hmax"], ground["h"]))
         else:
             lines.append("MODE depth  range %.2f-%.2f m%s" % (st["dmin"], st["dmax"], "  (AUTO)" if st["auto"] else ""))
-        lines.append("colormap %s%s  |  %s  |  %.0f fps" % (
+        lines.append("colormap %s%s%s  |  %s  |  %.0f fps" % (
             cmaps[ci][0], " (inv)" if st["invert"] else "",
+            " (EQ)" if st["equalize"] else "",
             "hole-filled" if st["hole"] else "raw (holes visible)", fps))
         v = valid_depth_m[valid_depth_m > 0]
         if v.size:
@@ -282,7 +297,7 @@ def run_depth_viewer(
             cv2.putText(img, ln, (14, y), cv2.FONT_HERSHEY_SIMPLEX, 0.62, (0, 0, 0), 4, cv2.LINE_AA)
             cv2.putText(img, ln, (14, y), cv2.FONT_HERSHEY_SIMPLEX, 0.62, (255, 255, 255), 1, cv2.LINE_AA)
             y += 30
-        help_ln = "f mode  n numbers  c colormap  i invert  a auto  [ ] max  , . min  h holes  v color  space pause  q quit"
+        help_ln = "f mode  n numbers  e equalize  c colormap  i invert  a auto  [ ] max  , . min  h holes  v color  space pause  q quit"
         cv2.putText(img, help_ln, (14, img.shape[0] - 16), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 0), 4, cv2.LINE_AA)
         cv2.putText(img, help_ln, (14, img.shape[0] - 16), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 0), 1, cv2.LINE_AA)
 
@@ -367,6 +382,8 @@ def run_depth_viewer(
                 st["mode"] = "height" if st["mode"] == "depth" else "depth"
             elif k == ord("n"):
                 st["numbers"] = not st["numbers"]
+            elif k == ord("e"):
+                st["equalize"] = not st["equalize"]
             elif k == ord("c"):
                 ci = (ci + 1) % len(cmaps)
             elif k == ord("i"):
