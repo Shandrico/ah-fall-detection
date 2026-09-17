@@ -1388,6 +1388,42 @@ def compare_posture(
 
 
 @app.command()
+def depth_view(
+    source: str = typer.Option("rs://", help="rs:// for the live D435i, or a path to a .bag recording."),
+    height: float = typer.Option(2.5, help="Camera mount height above the floor (m) -- used by the height-above-floor colour mode."),
+    dmin: float = typer.Option(1.5, help="Near clip for the depth colour ramp (m)."),
+    dmax: float = typer.Option(3.5, help="Far clip for the depth colour ramp (m)."),
+    colormap: str = typer.Option("turbo", help="turbo | jet | viridis | inferno | magma."),
+    raw: bool = typer.Option(False, "--raw", help="Show measurement depth (holes visible) instead of the hole-filled display depth."),
+    color: bool = typer.Option(False, "--color", help="Show the RGB image beside the depth."),
+) -> None:
+    """Live depth viewer for tuning: denoised RealSense depth with a clamped colour ramp.
+
+    Reuses the capture filter chain (disparity -> spatial -> temporal -> hole
+    fill), so what you see is the same denoised depth the feature pipeline would
+    consume. Clamping the colour ramp to the band the scene occupies (--dmin /
+    --dmax) makes the head, torso and floor land on clearly different colours.
+
+    Press 'f' in the window to switch to a height-above-floor colouring, built
+    live from the IMU gravity vector and --height: it separates standing from
+    on-ground even directly beneath the camera, where the image-only geometry
+    breaks down. Keys: f mode, c colormap, i invert, a auto-range, [ ] far,
+    , . near, h holes, v RGB, space pause, q quit.
+    """
+    from ahfd.viz.depth_view import run_depth_viewer
+
+    run_depth_viewer(
+        source,
+        dmin=dmin,
+        dmax=dmax,
+        height_m=height,
+        colormap=colormap,
+        hole_filled=not raw,
+        show_color=color,
+    )
+
+
+@app.command()
 def dashboard(
     source: str = typer.Option(None, help="Source URI. Defaults to the config's source."),
     config: Path = typer.Option(None, help="Path to a YAML config."),
