@@ -40,6 +40,20 @@ def build_estimator(cfg) -> PoseEstimator:
     """
     backend = cfg.backend.lower()
 
+    # onnxruntime on CUDA needs the CUDA/cuDNN runtime DLLs (installed as
+    # nvidia-* pip packages) loaded first; on Windows it does not find them on
+    # its own and silently falls back to the CPU. preload_dlls() locates and
+    # loads them from the installed wheels. Best-effort and only on the CUDA
+    # path, so the CPU / openvino-iGPU paths are untouched.
+    if getattr(cfg, "runtime", None) == "onnxruntime" and getattr(cfg, "device", "") in ("cuda", "tensorrt"):
+        try:
+            import onnxruntime as ort
+
+            if hasattr(ort, "preload_dlls"):
+                ort.preload_dlls()
+        except Exception:  # pragma: no cover - best-effort DLL discovery
+            pass
+
     if backend == "rtmo":
         from ahfd.pose.rtmo import RTMOEstimator
 
