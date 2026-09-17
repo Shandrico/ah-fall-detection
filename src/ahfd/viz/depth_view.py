@@ -88,6 +88,8 @@ def run_depth_viewer(
         "pose_txt": None,         # per-joint depth-height readout, when --pose
         "numbers": False,         # overlay a grid of depth values instead of colour
         "equalize": False,        # histogram-equalise the ramp (more contrast where the pixels are)
+        "gauge": False,           # centre-ROI quality readout (fill %, mean, noise)
+        "gauge_txt": None,
     }
 
     win = "ahfd depth viewer"
@@ -268,6 +270,31 @@ def run_depth_viewer(
                 cv2.putText(img, txt, (dx - 15, dy + 4), cv2.FONT_HERSHEY_SIMPLEX, 0.42, (0, 0, 0), 3, cv2.LINE_AA)
                 cv2.putText(img, txt, (dx - 15, dy + 4), cv2.FONT_HERSHEY_SIMPLEX, 0.42, (255, 255, 255), 1, cv2.LINE_AA)
 
+    def _gauge(vis, depth_m):
+        """Measure depth quality in a centre box: fill %, mean, noise spread.
+
+        To find the max usable range, aim this box at a flat wall (or a standing
+        person) and step back: watch fill % fall and the spread grow. The
+        distance where fill drops below ~85% or the spread exceeds your
+        tolerance (~5-10 cm for posture) is the practical limit at that mount.
+        """
+        h, w = depth_m.shape[:2]
+        rw, rh = int(w * 0.06), int(h * 0.06)
+        cx, cy = w // 2, h // 2
+        x0, y0, x1, y1 = cx - rw, cy - rh, cx + rw, cy + rh
+        cv2.rectangle(vis, (x0, y0), (x1, y1), (255, 255, 255), 2)
+        roi = depth_m[y0:y1, x0:x1]
+        good = roi[roi > 0]
+        fill = 100.0 * good.size / max(roi.size, 1)
+        if good.size:
+            st["gauge_txt"] = (
+                "GAUGE centre box: mean %.2f m   fill %.0f%%   spread +/-%.1f cm"
+                "  (aim at a flat wall for true noise)"
+                % (float(np.median(good)), fill, float(np.std(good)) * 100.0)
+            )
+        else:
+            st["gauge_txt"] = "GAUGE centre box: no depth here (fill 0%)"
+
     def _hud(img, frame, valid_depth_m):
         lines = []
         if st["mode"] == "height":
@@ -283,6 +310,8 @@ def run_depth_viewer(
             lines.append("valid depth  min %.2f  median %.2f  max %.2f m" % (v.min(), np.median(v), v.max()))
         if st.get("pose_txt"):
             lines.extend(st["pose_txt"])
+        if st["gauge"] and st.get("gauge_txt"):
+            lines.append(st["gauge_txt"])
         # cursor readout
         if st["mouse"] is not None:
             mx, my = st["mouse"]
@@ -297,7 +326,7 @@ def run_depth_viewer(
             cv2.putText(img, ln, (14, y), cv2.FONT_HERSHEY_SIMPLEX, 0.62, (0, 0, 0), 4, cv2.LINE_AA)
             cv2.putText(img, ln, (14, y), cv2.FONT_HERSHEY_SIMPLEX, 0.62, (255, 255, 255), 1, cv2.LINE_AA)
             y += 30
-        help_ln = "f mode  n numbers  e equalize  c colormap  i invert  a auto  [ ] max  , . min  h holes  v color  space pause  q quit"
+        help_ln = "f mode  n numbers  e equalize  g gauge  c colormap  i invert  a auto  [ ] max  , . min  h holes  v color  space pause  q quit"
         cv2.putText(img, help_ln, (14, img.shape[0] - 16), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 0), 4, cv2.LINE_AA)
         cv2.putText(img, help_ln, (14, img.shape[0] - 16), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 0), 1, cv2.LINE_AA)
 
@@ -354,6 +383,9 @@ def run_depth_viewer(
             if estimator is not None and frame.bgr is not None:
                 _pose_overlay(vis, depth_m, frame)
 
+            if st["gauge"]:
+                _gauge(vis, depth_m)
+
             if st["numbers"]:
                 # dim the colour so the overlaid numbers stay legible
                 vis = (vis.astype(np.float32) * 0.4).astype(np.uint8)
@@ -384,6 +416,8 @@ def run_depth_viewer(
                 st["numbers"] = not st["numbers"]
             elif k == ord("e"):
                 st["equalize"] = not st["equalize"]
+            elif k == ord("g"):
+                st["gauge"] = not st["gauge"]
             elif k == ord("c"):
                 ci = (ci + 1) % len(cmaps)
             elif k == ord("i"):
