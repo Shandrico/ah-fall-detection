@@ -1396,6 +1396,7 @@ def depth_view(
     colormap: str = typer.Option("turbo", help="turbo | jet | viridis | inferno | magma."),
     raw: bool = typer.Option(False, "--raw", help="Show measurement depth (holes visible) instead of the hole-filled display depth."),
     color: bool = typer.Option(False, "--color", help="Show the RGB image beside the depth."),
+    long_range: bool = typer.Option(False, "--long-range", help="Max the projector power for denser depth at 4-6 m, and point the colour ramp there. Live camera only."),
 ) -> None:
     """Live depth viewer for tuning: denoised RealSense depth with a clamped colour ramp.
 
@@ -1420,6 +1421,7 @@ def depth_view(
         colormap=colormap,
         hole_filled=not raw,
         show_color=color,
+        long_range=long_range,
     )
 
 

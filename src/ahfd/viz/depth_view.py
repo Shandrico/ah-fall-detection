@@ -36,12 +36,12 @@ def _colormaps(cv2):
     ]
 
 
-def _open_source(source: str):
+def _open_source(source: str, max_laser: bool = False):
     from ahfd.capture.realsense import BagSource, RealSenseSource
 
     if str(source).lower().endswith(".bag"):
-        return BagSource(str(source))
-    return RealSenseSource(with_depth=True)
+        return BagSource(str(source))  # a recording's laser power is fixed
+    return RealSenseSource(with_depth=True, max_laser=max_laser)
 
 
 def run_depth_viewer(
@@ -53,6 +53,7 @@ def run_depth_viewer(
     colormap: str = "turbo",
     hole_filled: bool = True,
     show_color: bool = False,
+    long_range: bool = False,
     max_width: int = 1280,
 ) -> None:
     """Open the live depth viewer. See the module docstring for the keys."""
@@ -60,6 +61,11 @@ def run_depth_viewer(
 
     cmaps = _colormaps(cv2)
     ci = next((i for i, (n, _) in enumerate(cmaps) if n == colormap), 0)
+
+    # --long-range maxes the projector for denser far depth, and (unless the
+    # ramp was set explicitly) points the colour ramp at the 4-6 m band.
+    if long_range and (dmin, dmax) == (1.5, 3.5):
+        dmin, dmax = 4.0, 6.0
 
     st = {
         "dmin": float(dmin),
@@ -85,7 +91,7 @@ def run_depth_viewer(
 
     cv2.setMouseCallback(win, _on_mouse)
 
-    src = _open_source(source)
+    src = _open_source(source, max_laser=long_range)
     it = iter(src)
 
     # Cached per-resolution pixel-direction grids for the height projection.
@@ -177,6 +183,14 @@ def run_depth_viewer(
                 except StopIteration:
                     print("source ended.")
                     break
+                except Exception as exc:  # noqa: BLE001 - disconnect / USB stall
+                    # A mid-stream unplug (or another program grabbing the camera)
+                    # raises out of wait_for_frames. Exit cleanly instead of
+                    # dumping a traceback and orphaning the window.
+                    first = str(exc).splitlines()[0] if str(exc) else exc.__class__.__name__
+                    print("\ncamera stopped: " + first)
+                    print("(device disconnected or held by another program) -- closing viewer.")
+                    break
                 last_frame = frame
                 now = time.monotonic()
                 dt = now - t_prev
@@ -257,8 +271,12 @@ def run_depth_viewer(
                 key = "hmin" if st["mode"] == "height" else "dmin"
                 st[key] = max(st[key] - 0.1, -1.0 if key == "hmin" else 0.1)
     finally:
-        cv2.destroyAllWindows()
         try:
             src.close()
         except Exception:
             pass
+        cv2.destroyAllWindows()
+        # On Windows a destroyed window only actually closes once the GUI event
+        # loop is pumped -- without this the window can linger as "not responding".
+        for _ in range(5):
+            cv2.waitKey(1)

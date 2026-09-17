@@ -66,6 +66,7 @@ class _RealSenseBase:
         ir_index=1,
         ir_size=(1280, 720),
         emitter=None,
+        max_laser=False,
     ):
         # with_depth defaults OFF: nothing downstream consumes depth (the
         # geometry is homography-based), but capturing + filtering + aligning it
@@ -90,6 +91,7 @@ class _RealSenseBase:
         self._ir_index = ir_index
         self._ir_size = ir_size
         self._emitter = emitter
+        self._max_laser = max_laser
         self._pipeline = self._rs.pipeline()
         self._config = self._rs.config()
         self._align = None
@@ -144,7 +146,21 @@ class _RealSenseBase:
 
         if self._with_depth:
             self._align = rs.align(rs.stream.color)
-            self._depth_scale = float(device.first_depth_sensor().get_depth_scale())
+            depth_sensor = device.first_depth_sensor()
+            self._depth_scale = float(depth_sensor.get_depth_scale())
+
+            # Maxing the projector power puts more IR light on far surfaces, so
+            # depth stays dense out to 4-6 m instead of dropping to sparse
+            # speckle. Best-effort: not every firmware exposes laser_power, and
+            # it only matters when the emitter is on (which it is, by default,
+            # whenever depth is streamed). Near-range accuracy is unaffected.
+            if self._max_laser:
+                try:
+                    if depth_sensor.supports(rs.option.laser_power):
+                        rng = depth_sensor.get_option_range(rs.option.laser_power)
+                        depth_sensor.set_option(rs.option.laser_power, rng.max)
+                except Exception:  # pragma: no cover - best-effort hardware option
+                    pass
 
     def _reset_device(self) -> None:
         """Hardware-reset the device and wait for it to re-enumerate.
@@ -350,10 +366,12 @@ class RealSenseSource(_RealSenseBase):
         ir_index=1,
         ir_size=(1280, 720),
         emitter=None,
+        max_laser=False,
     ):
         super().__init__(
             color_size, depth_size, fps, with_depth=with_depth,
             infrared=infrared, ir_index=ir_index, ir_size=ir_size, emitter=emitter,
+            max_laser=max_laser,
         )
         rs = self._rs
         if infrared:
