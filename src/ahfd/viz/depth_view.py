@@ -54,6 +54,10 @@ def run_depth_viewer(
     hole_filled: bool = True,
     show_color: bool = False,
     long_range: bool = False,
+    pose: bool = False,
+    backend: str = "rtmo",
+    runtime: str = "openvino",
+    device: str = "gpu",
     max_width: int = 1280,
 ) -> None:
     """Open the live depth viewer. See the module docstring for the keys."""
@@ -81,6 +85,7 @@ def run_depth_viewer(
         "mouse": None,            # (x, y) in the displayed image
         "pane_x0": 0,             # x offset of the depth pane in the composite
         "scale": 1.0,             # displayed / full-res ratio
+        "pose_txt": None,         # per-joint depth-height readout, when --pose
     }
 
     win = "ahfd depth viewer"
@@ -91,12 +96,50 @@ def run_depth_viewer(
 
     cv2.setMouseCallback(win, _on_mouse)
 
+    # Optional pose overlay: run the estimator on the colour frame, then read
+    # each joint's height from the aligned depth. Loaded here so the plain
+    # viewer keeps no pose dependency.
+    estimator = None
+    ph = None
+    if pose:
+        from ahfd.config import PoseConfig
+        from ahfd.geometry.depth_height import (
+            coarse_posture,
+            keypoint_heights_from_depth,
+            region_height,
+        )
+        from ahfd.pose import build_estimator
+        from ahfd.pose.skeleton import ANKLES, EDGES, HEAD, HIPS, KNEES, SHOULDERS
+
+        print("loading pose model (" + backend + " / " + runtime + ") ...")
+        estimator = build_estimator(
+            PoseConfig(backend=backend, runtime=runtime, device=device)
+        )
+        ph = {
+            "EDGES": EDGES, "HEAD": HEAD, "SHOULDERS": SHOULDERS, "HIPS": HIPS,
+            "KNEES": KNEES, "ANKLES": ANKLES, "kh": keypoint_heights_from_depth,
+            "rh": region_height, "cp": coarse_posture,
+        }
+
     src = _open_source(source, max_laser=long_range)
     it = iter(src)
 
     # Cached per-resolution pixel-direction grids for the height projection.
     grid = {"shape": None, "xg": None, "yg": None}
-    ground = {"R": None, "h": float(height_m)}
+    ground = {"gp": None, "h": float(height_m)}
+
+    def _get_ground(frame):
+        """Latest GroundPlane from the IMU gravity + mount height, or None."""
+        from ahfd.geometry.ground import GroundPlane
+
+        if frame.gravity is not None and frame.intrinsics is not None:
+            try:
+                ground["gp"] = GroundPlane.from_gravity(
+                    frame.intrinsics, ground["h"], np.asarray(frame.gravity)
+                )
+            except Exception:
+                pass
+        return ground["gp"]
 
     last_frame = None
     t_prev = time.monotonic()
@@ -114,25 +157,61 @@ def run_depth_viewer(
 
     def _height_map(depth_m, frame):
         """Metres above the floor for every pixel, or None if unavailable."""
-        from ahfd.geometry.ground import GroundPlane
-
-        if frame.intrinsics is None:
-            return None
-        if frame.gravity is not None:
-            try:
-                gp = GroundPlane.from_gravity(frame.intrinsics, ground["h"], np.asarray(frame.gravity))
-                ground["R"] = gp.rotation
-            except Exception:
-                pass
-        if ground["R"] is None:
+        gp = _get_ground(frame)
+        if gp is None or frame.intrinsics is None:
             return None
         _ensure_grid(frame.intrinsics, depth_m.shape)
-        R = ground["R"]
+        R = gp.rotation
         px = depth_m * grid["xg"]
         py = depth_m * grid["yg"]
         pz = depth_m
         world_z = R[2, 0] * px + R[2, 1] * py + R[2, 2] * pz
         return ground["h"] + world_z
+
+    def _pose_overlay(vis, depth_m, frame):
+        """Draw the skeleton on the depth pane and read each joint's height."""
+        st["pose_txt"] = None
+        try:
+            people = estimator.estimate(frame).people
+        except Exception:
+            return
+        if not people:
+            return
+        # Largest confident bounding box = the person of interest.
+        def _area(p):
+            m = p.scores >= 0.3
+            if not m.any():
+                return 0.0
+            pts = p.keypoints[m]
+            return float((pts[:, 0].ptp()) * (pts[:, 1].ptp()))
+
+        person = max(people, key=_area)
+        kp, sc = person.keypoints, person.scores
+        for a, b in ph["EDGES"]:
+            if sc[a] >= 0.3 and sc[b] >= 0.3:
+                cv2.line(vis, (int(kp[a][0]), int(kp[a][1])),
+                         (int(kp[b][0]), int(kp[b][1])), (255, 255, 255), 2, cv2.LINE_AA)
+        for i in range(len(kp)):
+            if sc[i] >= 0.3:
+                p = (int(kp[i][0]), int(kp[i][1]))
+                cv2.circle(vis, p, 4, (0, 0, 0), -1, cv2.LINE_AA)
+                cv2.circle(vis, p, 3, (60, 220, 60), -1, cv2.LINE_AA)
+
+        gp = _get_ground(frame)
+        if gp is None or frame.intrinsics is None:
+            return
+        h = ph["kh"](kp, sc, depth_m, frame.intrinsics, gp, min_score=0.4, patch=2)
+        rh = ph["rh"]
+
+        def f(x):
+            return ("%.2f" % x) if np.isfinite(x) else "--"
+
+        st["pose_txt"] = [
+            "POSE height (m):  head %s  shoulder %s  hip %s  knee %s  ankle %s" % (
+                f(rh(h, ph["HEAD"])), f(rh(h, ph["SHOULDERS"])), f(rh(h, ph["HIPS"])),
+                f(rh(h, ph["KNEES"])), f(rh(h, ph["ANKLES"]))),
+            "depth posture guess:  " + ph["cp"](h),
+        ]
 
     def _colorize(field, lo, hi, valid):
         rng = max(hi - lo, 1e-6)
@@ -156,6 +235,8 @@ def run_depth_viewer(
         v = valid_depth_m[valid_depth_m > 0]
         if v.size:
             lines.append("valid depth  min %.2f  median %.2f  max %.2f m" % (v.min(), np.median(v), v.max()))
+        if st.get("pose_txt"):
+            lines.extend(st["pose_txt"])
         # cursor readout
         if st["mouse"] is not None:
             mx, my = st["mouse"]
@@ -223,6 +304,9 @@ def run_depth_viewer(
                 field, lo, hi = depth_m, st["dmin"], st["dmax"]
 
             vis = _colorize(field, lo, hi, valid)
+
+            if estimator is not None and frame.bgr is not None:
+                _pose_overlay(vis, depth_m, frame)
 
             st["pane_x0"] = 0
             if st["color"] and frame.bgr is not None and frame.bgr.shape[:2] == vis.shape[:2]:

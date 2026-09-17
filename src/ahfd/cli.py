@@ -1397,6 +1397,10 @@ def depth_view(
     raw: bool = typer.Option(False, "--raw", help="Show measurement depth (holes visible) instead of the hole-filled display depth."),
     color: bool = typer.Option(False, "--color", help="Show the RGB image beside the depth."),
     long_range: bool = typer.Option(False, "--long-range", help="Max the projector power for denser depth at 4-6 m, and point the colour ramp there. Live camera only."),
+    pose: bool = typer.Option(False, "--pose", help="Overlay the skeleton + each joint's depth-measured height above the floor, and a coarse posture guess. Validates depth for posture before wiring it into detection."),
+    backend: str = typer.Option("rtmo", help="Pose backend for --pose: rtmo | rtmpose | yolo."),
+    runtime: str = typer.Option("openvino", help="Pose runtime for --pose: openvino (iGPU) | onnxruntime."),
+    device: str = typer.Option("gpu", help="Pose device for --pose: gpu (iGPU) | cpu | cuda."),
 ) -> None:
     """Live depth viewer for tuning: denoised RealSense depth with a clamped colour ramp.
 
@@ -1422,6 +1426,10 @@ def depth_view(
         hole_filled=not raw,
         show_color=color,
         long_range=long_range,
+        pose=pose,
+        backend=backend,
+        runtime=runtime,
+        device=device,
     )
 
 
