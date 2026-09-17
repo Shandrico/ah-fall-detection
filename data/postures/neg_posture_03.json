@@ -1,11 +1,11 @@
 {
   "clip_id": "neg_posture_03",
-  "duration_s": 55.9,
+  "duration_s": 55.87,
   "segments": [
-    { "start_s": 0.0, "end_s": 0.0, "posture": "upright" },
-    { "start_s": 0.0, "end_s": 0.0, "posture": "sitting" },
-    { "start_s": 0.0, "end_s": 0.0, "posture": "in_bed" },
-    { "start_s": 0.0, "end_s": 0.0, "posture": "sitting" },
-    { "start_s": 0.0, "end_s": 0.0, "posture": "upright" }
+    { "start_s": 0.7, "end_s": 8.43, "posture": "upright" },
+    { "start_s": 10.4, "end_s": 13.9, "posture": "sitting" },
+    { "start_s": 15.77, "end_s": 18.77, "posture": "upright" },
+    { "start_s": 20.77, "end_s": 25.57, "posture": "sitting" },
+    { "start_s": 27.33, "end_s": 55.8, "posture": "in_bed" }
   ]
 }
