@@ -1397,6 +1397,7 @@ def depth_view(
     raw: bool = typer.Option(False, "--raw", help="Show measurement depth (holes visible) instead of the hole-filled display depth."),
     color: bool = typer.Option(False, "--color", help="Show the RGB image beside the depth."),
     long_range: bool = typer.Option(False, "--long-range", help="Max the projector power for denser depth at 4-6 m, and point the colour ramp there. Live camera only."),
+    max_range: float = typer.Option(6.0, help="Far depth cut in metres (the threshold filter). Raise it (e.g. 10) to see past 6 m; farther = noisier. Live camera only."),
     pose: bool = typer.Option(False, "--pose", help="Overlay the skeleton + each joint's depth-measured height above the floor, and a coarse posture guess. Validates depth for posture before wiring it into detection."),
     backend: str = typer.Option("rtmo", help="Pose backend for --pose: rtmo | rtmpose | yolo."),
     runtime: str = typer.Option("openvino", help="Pose runtime for --pose: openvino (iGPU) | onnxruntime."),
@@ -1426,6 +1427,7 @@ def depth_view(
         hole_filled=not raw,
         show_color=color,
         long_range=long_range,
+        max_range_m=max_range,
         pose=pose,
         backend=backend,
         runtime=runtime,
@@ -1619,6 +1621,53 @@ def record(
 
     typer.echo("saved " + str(recorder.count) + " frames to " + str(out))
     typer.echo("next: ahfd extract file://" + str(out) + " data/tracks/<clip>.jsonl  (then delete the .mp4)")
+
+
+@app.command()
+def record_depth(
+    out: Path = typer.Argument(..., help="Output .bag path (stores colour + depth + IMU)."),
+    seconds: float = typer.Option(0.0, help="Auto-stop after N seconds. 0 = until you press q."),
+    consent: bool = typer.Option(
+        False,
+        "--i-understand-raw-capture",
+        help="Required. Confirms this session is consented raw capture.",
+    ),
+) -> None:
+    """Record a depth `.bag` for a consented staged-fall session.
+
+    Like `record`, but saves a RealSense `.bag` holding colour + DEPTH + IMU
+    together -- the colour-only `record` (.mp4) path cannot carry depth. This is
+    how you collect data for the depth-vs-RGB comparison: one `.bag` yields both
+    the monocular and the depth features from the *same* frames, so the only
+    difference between the two feature sets is depth itself.
+
+    Raw capture: staged, consented volunteers only -- never patients, never a
+    live ward. Delete the `.bag` once features are extracted.
+    """
+    import os
+
+    from ahfd.debug.bag_writer import record_bag
+    from ahfd.privacy import ENV_VAR
+
+    if not consent:
+        raise typer.BadParameter(
+            "raw recording is off unless you pass --i-understand-raw-capture. "
+            "This writes colour+depth video to disk; use it only for consented "
+            "staged sessions with volunteers, never patients or a live ward."
+        )
+    if out.suffix.lower() != ".bag":
+        raise typer.BadParameter(
+            "output must be a .bag file (it stores depth + IMU); got "
+            + repr(out.suffix or out.name)
+        )
+
+    # The explicit flag IS the consent, matching `record`.
+    os.environ[ENV_VAR] = "1"
+    typer.echo("RECORDING depth .bag -> " + str(out) + "  (colour + depth + IMU)")
+    typer.echo("press q in the window to stop; the projector is on for depth.")
+    n = record_bag(out, seconds=seconds)
+    typer.echo("saved ~" + str(n) + " framesets to " + str(out))
+    typer.echo("next: ahfd depth-view --pose --source " + str(out) + "  (verify), then extract features + DELETE the .bag")
 
 
 @app.command(name="eval")

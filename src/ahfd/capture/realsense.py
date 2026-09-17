@@ -67,6 +67,7 @@ class _RealSenseBase:
         ir_size=(1280, 720),
         emitter=None,
         max_laser=False,
+        max_range_m=6.0,
     ):
         # with_depth defaults OFF: nothing downstream consumes depth (the
         # geometry is homography-based), but capturing + filtering + aligning it
@@ -92,6 +93,7 @@ class _RealSenseBase:
         self._ir_size = ir_size
         self._emitter = emitter
         self._max_laser = max_laser
+        self._max_range_m = max_range_m
         self._pipeline = self._rs.pipeline()
         self._config = self._rs.config()
         self._align = None
@@ -104,7 +106,9 @@ class _RealSenseBase:
         rs = self._rs
         threshold = rs.threshold_filter()
         threshold.set_option(rs.option.min_distance, 0.3)
-        threshold.set_option(rs.option.max_distance, 6.0)  # was 3.0: clipped far beds
+        # The far cut. 6 m was the default (3 m clipped far beds); raise it to see
+        # further, at the cost of noisier depth -- the D435i can report ~10 m.
+        threshold.set_option(rs.option.max_distance, float(self._max_range_m))
 
         to_disparity = rs.disparity_transform(True)
         spatial = rs.spatial_filter()
@@ -367,11 +371,12 @@ class RealSenseSource(_RealSenseBase):
         ir_size=(1280, 720),
         emitter=None,
         max_laser=False,
+        max_range_m=6.0,
     ):
         super().__init__(
             color_size, depth_size, fps, with_depth=with_depth,
             infrared=infrared, ir_index=ir_index, ir_size=ir_size, emitter=emitter,
-            max_laser=max_laser,
+            max_laser=max_laser, max_range_m=max_range_m,
         )
         rs = self._rs
         if infrared:
