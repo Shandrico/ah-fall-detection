@@ -1,5 +1,5 @@
 {
-  "clip_id": "neg_postures_01",
+  "clip_id": "neg_posture_01",
   "duration_s": 147.5,
   "segments": [
     { "start_s": 36.0, "end_s": 49.0, "posture": "sitting" },

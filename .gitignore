@@ -24,7 +24,8 @@ models/
 # Recorded data (keypoints only, but still not source)
 data/tracks/
 data/events/
-data/features/          # derived per-frame feature CSVs, regenerable via `ahfd export-features`
+# derived per-frame feature CSVs, regenerable via `ahfd export-features`
+data/features/
 debug_captures/
 
 # Python
@@ -47,3 +48,5 @@ env/
 Thumbs.db
 .idea/
 .vscode/
+data/tracks_rtmpose/
+data/tracks_yolo/

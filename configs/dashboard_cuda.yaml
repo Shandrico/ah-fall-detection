@@ -28,13 +28,11 @@ capture:
   height: 480
 
 pose:
-  backend: "rtmo"           # deployment pick: Apache-2.0, best sitting in the bake-off,
-                            # and what the posture model was trained on (persons 01-03)
-  model_size: "s"           # rtmo model size
-  mode: "performance"       # rtmpose-only knob; rtmo ignores it (kept if you switch back)
-  runtime: "openvino"       # Intel iGPU; falls back to onnxruntime/cpu if openvino is absent
-  device: "gpu"
-  min_score: 0.5            # raised from 0.30 to cut flicker / objects-as-people
+  backend: "rtmo"           # rtmo on the RTX 5070 (your deployment pick, on CUDA)
+  model_size: "s"
+  runtime: "onnxruntime"    # CUDA path; DLLs auto-preloaded (see build_estimator)
+  device: "cuda"            # RTX 5070 -- note: measured SLOWER than the iGPU for this
+  min_score: 0.5
   min_keypoint_score: 0.45
 
 smoothing:

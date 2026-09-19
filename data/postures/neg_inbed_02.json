@@ -2,6 +2,6 @@
   "clip_id": "neg_inbed_02",
   "duration_s": 136.7,
   "segments": [
-    { "start_s": 0, "end_s": 133, "posture": "in_bed" }
+    { "start_s": 1, "end_s": 135.67, "posture": "in_bed" }
   ]
 }

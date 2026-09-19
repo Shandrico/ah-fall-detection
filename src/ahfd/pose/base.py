@@ -40,6 +40,41 @@ def build_estimator(cfg) -> PoseEstimator:
     """
     backend = cfg.backend.lower()
 
+    # onnxruntime on CUDA needs the CUDA/cuDNN runtime DLLs (installed as
+    # nvidia-* pip packages); on Windows it does not find them on its own and
+    # silently falls back to the CPU. Two steps are needed: cuDNN 9 loads its
+    # sub-libraries (cudnn_engines_*_9.dll, ...) lazily by name at first use, so
+    # every nvidia/*/bin folder must be on the DLL search path -- preload_dlls()
+    # alone is not enough. Best-effort and only on the CUDA path, so the CPU /
+    # openvino-iGPU paths are untouched.
+    if getattr(cfg, "runtime", None) == "onnxruntime" and getattr(cfg, "device", "") in ("cuda", "tensorrt"):
+        try:
+            import glob
+            import os
+            import sysconfig
+
+            paths = sysconfig.get_paths()
+            for base in {paths.get("purelib"), paths.get("platlib")}:
+                if not base:
+                    continue
+                for bindir in glob.glob(os.path.join(base, "nvidia", "*", "bin")):
+                    if not os.path.isdir(bindir):
+                        continue
+                    # PATH is what cuDNN's own lazy sub-library loads consult;
+                    # add_dll_directory only covers DLLs loaded with the user-dir
+                    # search flag, which cuDNN does not use -- so set both.
+                    os.environ["PATH"] = bindir + os.pathsep + os.environ.get("PATH", "")
+                    try:
+                        os.add_dll_directory(bindir)
+                    except (OSError, AttributeError):
+                        pass
+            import onnxruntime as ort
+
+            if hasattr(ort, "preload_dlls"):
+                ort.preload_dlls()
+        except Exception:  # pragma: no cover - best-effort DLL discovery
+            pass
+
     if backend == "rtmo":
         from ahfd.pose.rtmo import RTMOEstimator
 

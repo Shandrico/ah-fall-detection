@@ -10,14 +10,14 @@
     { "start_s": 19, "end_s": 24, "posture": "sitting" },
     { "start_s": 24, "end_s": 29, "posture": "upright" },
     { "start_s": 29, "end_s": 31, "posture": "sitting" },
-    { "start_s": 31, "end_s": 41, "posture": "upright" },
-    { "start_s": 41, "end_s": 46, "posture": "sitting" },
-    { "start_s": 46, "end_s": 49, "posture": "upright" },
+    { "start_s": 32, "end_s": 41, "posture": "upright" },
+    { "start_s": 42, "end_s": 45, "posture": "sitting" },
+    { "start_s": 46, "end_s": 48, "posture": "upright" },
     { "start_s": 49, "end_s": 53, "posture": "sitting" },
-    { "start_s": 53, "end_s": 57, "posture": "upright" },
+    { "start_s": 54, "end_s": 55, "posture": "upright" },
     { "start_s": 57, "end_s": 59, "posture": "sitting" },
-    { "start_s": 59, "end_s": 63, "posture": "upright" },
-    { "start_s": 63, "end_s": 66, "posture": "sitting" },
+    { "start_s": 60, "end_s": 62, "posture": "upright" },
+    { "start_s": 63, "end_s": 65, "posture": "sitting" },
     { "start_s": 66, "end_s": 69.7, "posture": "upright" }
   ]
 }
