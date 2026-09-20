@@ -727,7 +727,10 @@ def calibrate_zones(
                         default="0.4",
                     )
                 )
-                risk = typer.prompt("  risk_level (none/low/medium/high)", default="high")
+                risk = typer.prompt(
+                    "  risk_level -- Morse Fall Scale band: low (0-24) / moderate (25-44) / high (>=45)",
+                    default="high",
+                )
                 plane_z = top_m
             else:
                 top_m, risk, plane_z = None, "unknown", 0.0
@@ -1255,9 +1258,14 @@ def derive_falls(
 
 @app.command()
 def label_postures(
-    clip: Path = typer.Argument(..., help="Video clip to label, e.g. data/clips/fall_slump_02.mp4."),
+    clip: Path = typer.Argument(..., help="Clip to label: an .mp4, or a depth .db3/.bag (auto colour-exported)."),
     out: Path = typer.Option(
         None, help="Posture JSON to write. Default: data/postures/<clip>.json."
+    ),
+    consent: bool = typer.Option(
+        False,
+        "--i-understand-raw-capture",
+        help="Required to label a .db3/.bag directly (it writes a temp colour mp4).",
     ),
 ) -> None:
     """Scrub a clip and mark posture segments -- a little video labeller.
@@ -1269,8 +1277,12 @@ def label_postures(
     saves and quits. Leave gaps between segments for transitions -- they are
     excluded from training on purpose.
 
-    Only the label JSON is written; no frame is ever saved. Run it on the
-    laptop (it needs a display), not the headless Jetson.
+    A depth .db3/.bag can be labelled directly: the colour stream is exported to
+    a temporary .mp4 (the labeller cannot scrub a .db3), labelled, then deleted.
+    The label's <clip>.json stem matches the <clip>.jsonl tracks either way.
+
+    Only the label JSON is kept; any temp mp4 is removed. Run it on the laptop
+    (it needs a display), not the headless Jetson.
     """
     from ahfd.annotate import run_labeler
 
@@ -1278,10 +1290,38 @@ def label_postures(
         raise typer.BadParameter("clip not found: " + str(clip))
     out_path = out or (Path("data/postures") / (clip.stem + ".json"))
 
+    # A depth recording is not a video the labeller can open, so colour-export
+    # it to a temp .mp4 first (transparently) and remove it afterwards.
+    tmp_mp4 = None
+    label_src = clip
+    if clip.suffix.lower() in (".db3", ".bag"):
+        if not consent:
+            raise typer.BadParameter(
+                "labelling a .db3/.bag writes a temporary colour mp4; pass "
+                "--i-understand-raw-capture (consented staged data only)."
+            )
+        import os
+        import tempfile
+
+        from ahfd.debug.color_export import export_color
+        from ahfd.privacy import ENV_VAR
+
+        os.environ[ENV_VAR] = "1"
+        tmp_mp4 = Path(tempfile.gettempdir()) / (clip.stem + "_label.mp4")
+        typer.echo("colour-exporting " + clip.name + " -> temp mp4 for labelling ...")
+        frames = export_color(clip, tmp_mp4)
+        typer.echo("exported " + str(frames) + " frames; opening labeller ...")
+        label_src = tmp_mp4
+
     typer.echo("labelling " + clip.stem + "  ->  " + str(out_path))
     typer.echo("  s/SPACE=start  f=end  1-4=posture  u=undo  w=save  q=save+quit")
     typer.echo("  click/drag the timeline to seek   c=cancel mark   r=remove segment here")
-    n = run_labeler(clip, out_path)
+    try:
+        n = run_labeler(label_src, out_path)
+    finally:
+        if tmp_mp4 is not None and tmp_mp4.exists():
+            tmp_mp4.unlink()
+            typer.echo("removed temp colour mp4")
     typer.echo("saved " + str(n) + " segment(s) to " + str(out_path))
 
 
@@ -1303,6 +1343,11 @@ def compare_posture(
     ),
     show_rules: bool = typer.Option(
         True, "--show-rules/--no-show-rules", help="Print the learned tree thresholds."
+    ),
+    rgb_only: bool = typer.Option(
+        False, "--rgb-only",
+        help="Ignore the depth (dh_*) features. Run with and without this on the "
+        "same clips to isolate what depth adds (paired RGB vs RGB+depth).",
     ),
 ) -> None:
     """Train the posture classifier several ways and rank them, honestly.
@@ -1392,7 +1437,9 @@ def compare_posture(
         + ", ".join(k + "=" + str(v) for k, v in sorted(dist.items()))
     )
 
-    result = compare(rows, labels_list, groups, holdout=holdout)
+    result = compare(rows, labels_list, groups, holdout=holdout, rgb_only=rgb_only)
+    if rgb_only:
+        typer.echo("(RGB-only: depth dh_* features masked out)")
 
     typer.echo("")
     if holdout is not None:
@@ -1450,6 +1497,48 @@ def compare_posture(
             "never trained on. This is the honest generalisation number. More "
             "people tightens it further."
         )
+
+
+@app.command()
+def classify_view(
+    source: str = typer.Argument(..., help="Depth recording to replay: bag://<clip>.db3 or the path."),
+    calibration: Path = typer.Option(Path("calib/d435i.yaml"), help="Calibration YAML (ground + zones)."),
+    height: float = typer.Option(2.5, help="Camera mount height above the floor (m)."),
+    labels: Path = typer.Option(Path("data/postures_depth"), help="Dir of posture-label JSONs (for ground truth + training)."),
+    tracks: Path = typer.Option(Path("data/tracks_depth"), help="Dir of extracted depth tracks (for training)."),
+    backend: str = typer.Option("rtmo", help="Pose backend: rtmo | rtmpose | yolo."),
+    runtime: str = typer.Option("openvino", help="Pose runtime: openvino (iGPU) | onnxruntime."),
+    device: str = typer.Option("gpu", help="Pose device: gpu (iGPU) | cpu | cuda."),
+    dmin: float = typer.Option(2.5, help="Near clip for the depth colour ramp (m)."),
+    dmax: float = typer.Option(5.5, help="Far clip for the depth colour ramp (m)."),
+    rebuild: bool = typer.Option(
+        False, "--rebuild",
+        help="Force re-processing instead of loading the saved cache (use after retraining).",
+    ),
+) -> None:
+    """Replay a clip with pose + posture on BOTH panes: RGB model vs RGB+depth.
+
+    The colour pane shows the skeleton and the RGB-only model's posture call; the
+    depth pane shows the skeleton and the RGB+depth model's call. The recording's
+    own person is held out of training, so both calls are honest, and the
+    ground-truth posture is shown when a label exists -- so you can watch where
+    depth fixes a wrong RGB call (the sitting / nadir frames).
+    """
+    from ahfd.viz.classify_view import run_classify_viewer
+
+    run_classify_viewer(
+        source,
+        calibration=calibration,
+        height_m=height,
+        labels_dir=str(labels),
+        tracks_dir=str(tracks),
+        backend=backend,
+        runtime=runtime,
+        device=device,
+        dmin=dmin,
+        dmax=dmax,
+        rebuild=rebuild,
+    )
 
 
 @app.command()
@@ -1722,10 +1811,11 @@ def record_depth(
             "This writes colour+depth video to disk; use it only for consented "
             "staged sessions with volunteers, never patients or a live ward."
         )
-    if out.suffix.lower() != ".bag":
+    if out.suffix.lower() not in (".bag", ".db3"):
         raise typer.BadParameter(
-            "output must be a .bag file (it stores depth + IMU); got "
+            "output must be a .bag or .db3 file (it stores depth + IMU); got "
             + repr(out.suffix or out.name)
+            + ". Newer librealsense builds require .db3 (rosbag2); older ones use .bag."
         )
 
     # The explicit flag IS the consent, matching `record`.
@@ -1735,6 +1825,48 @@ def record_depth(
     n = record_bag(out, seconds=seconds)
     typer.echo("saved ~" + str(n) + " framesets to " + str(out))
     typer.echo("next: ahfd depth-view --pose --source " + str(out) + "  (verify), then extract features + DELETE the .bag")
+
+
+@app.command()
+def export_color(
+    bag: Path = typer.Argument(..., help="Depth .bag/.db3 to pull the colour stream from."),
+    out: Path = typer.Argument(..., help="Output .mp4 for the posture labeller."),
+    consent: bool = typer.Option(
+        False,
+        "--i-understand-raw-capture",
+        help="Required. Confirms this is consented staged data.",
+    ),
+) -> None:
+    """Export a depth .bag/.db3's colour stream to an .mp4 so you can label it.
+
+    The posture labeller (`ahfd label-postures`) reads an .mp4, not a .db3, so
+    depth clips can't be labelled directly. This re-encodes just the colour into
+    an .mp4 whose stem matches the clip, so the resulting <clip>.json label pairs
+    with the <clip>.jsonl tracks. Label times line up because `compare-posture`
+    normalises each clip's track timestamps to start at zero.
+
+    Raw imagery: staged, consented volunteers only. Delete the .mp4 once the
+    clip is labelled, the same as the .bag.
+    """
+    import os
+
+    from ahfd.debug.color_export import export_color as _export
+    from ahfd.privacy import ENV_VAR
+
+    if not consent:
+        raise typer.BadParameter(
+            "raw export is off unless you pass --i-understand-raw-capture. "
+            "It writes colour video to disk; use it only for consented staged "
+            "sessions, then delete the .mp4."
+        )
+    if out.suffix.lower() != ".mp4":
+        raise typer.BadParameter("output must be an .mp4 (the labeller reads video).")
+
+    os.environ[ENV_VAR] = "1"
+    typer.echo("exporting colour  " + str(bag) + "  ->  " + str(out))
+    n = _export(bag, out)
+    typer.echo("wrote " + str(n) + " frames to " + str(out))
+    typer.echo("next: ahfd label-postures " + str(out) + "   then DELETE the .mp4")
 
 
 @app.command(name="eval")

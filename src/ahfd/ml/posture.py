@@ -46,9 +46,10 @@ AGG_FEATURES = [
     "floor_spread",  # large upright, ~body length when down
     "vertical_extent",  # h_max - h_min, metres
     "compactness",  # vertical_extent / floor_spread -- tall-and-thin vs flat
+    "bed_overlap",  # fraction of body over a bed footprint: on_ground vs in_bed
 ]
-# The four aggregate heights read directly as attributes of `Features`.
-_AGG_FROM_FEATS = ["h_torso", "h_max", "h_min", "floor_spread"]
+# Aggregate features read directly as attributes of `Features`.
+_AGG_FROM_FEATS = ["h_torso", "h_max", "h_min", "floor_spread", "bed_overlap"]
 
 # The full input set: the aggregates above plus the per-joint heights, joint
 # angles, and shape ratios from `pose_features`. This is the "use the whole
@@ -196,14 +197,22 @@ def build_dataset(labels_dir, tracks_dir, calib, min_keypoint_score: float = 0.3
             calib.ground, zones=calib.zones, min_keypoint_score=min_keypoint_score
         )
         n_clip = 0
+        t0 = None
         for pose in read_tracks(track_path):
-            posture = _posture_at(segments, pose.t)
+            # Normalise to a 0-based clip time. Label segments are in seconds
+            # from the clip start, and mp4-extracted tracks already start at
+            # t=0 -- but .bag/.db3 tracks carry wall-clock timestamps, so
+            # offset by the first frame's time to make them line up.
+            if t0 is None:
+                t0 = pose.t
+            t = pose.t - t0
+            posture = _posture_at(segments, t)
             if posture is None:  # a transition/gap -- excluded
                 continue
             person = _main_person(pose)
             if person is None:
                 continue
-            feats = extractor.extract(person, pose.t)
+            feats = extractor.extract(person, t)
             if feats is None or not feats.has_geometry():
                 continue
 

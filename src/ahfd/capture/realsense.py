@@ -52,6 +52,25 @@ def _import_rs():
     return rs
 
 
+def _device_has_imu(rs) -> bool:
+    """True if a connected RealSense exposes accel+gyro.
+
+    The D435i has an IMU; the D435f does NOT (the 'f' is an IR filter, not the
+    'i' IMU). Requesting accel/gyro on a device without them makes
+    ``pipeline.start`` fail with "Couldn't resolve requests", so callers enable
+    the IMU streams only when this returns True.
+    """
+    try:
+        for dev in rs.context().query_devices():
+            for sensor in dev.query_sensors():
+                for prof in sensor.get_stream_profiles():
+                    if prof.stream_type() in (rs.stream.accel, rs.stream.gyro):
+                        return True
+    except Exception:  # pragma: no cover - hardware dependent
+        pass
+    return False
+
+
 class _RealSenseBase:
     """Shared pipeline: filters, alignment, IMU gravity, frame assembly."""
 
@@ -103,6 +122,11 @@ class _RealSenseBase:
         self._intrinsics: Intrinsics | None = None
         self._depth_scale = 0.001
         self._gravity: np.ndarray | None = None
+        # Set on the first depth frame: None = unknown, True = the stored
+        # depth->colour extrinsics are corrupt (rosbag2 .db3 playback mangles
+        # them), so rs.align emits all-zero depth and we resample manually.
+        self._manual_align: bool | None = None
+        self._remap = None  # cached (v_idx, u_idx, valid) for the manual warp
 
     def _build_filters(self):
         rs = self._rs
@@ -261,6 +285,56 @@ class _RealSenseBase:
         display = np.asanyarray(f["hole"].process(common).get_data()).copy()
         return measure, display
 
+    def _extrinsics_sane(self, frames) -> bool:
+        """True if the stored depth->colour extrinsics are a valid transform.
+
+        rosbag2 (.db3) recording can serialise garbage inter-stream extrinsics
+        (rotation entries in the hundred-thousands, metre-scale+ translation),
+        which makes rs.align project every depth pixel out of frame -> all-zero
+        aligned depth. Detect that so we can resample manually instead.
+        """
+        try:
+            dp = frames.get_depth_frame().get_profile()
+            cp = frames.get_color_frame().get_profile()
+            e = dp.get_extrinsics_to(cp)
+        except Exception:  # pragma: no cover - hardware/format dependent
+            return False
+        rot = np.asarray(e.rotation, dtype=float)
+        tr = np.asarray(e.translation, dtype=float)
+        if not (np.all(np.isfinite(rot)) and np.all(np.isfinite(tr))):
+            return False
+        # A rotation matrix has entries in [-1, 1]; the D435i depth<->colour
+        # translation is ~1.5 cm. Anything wildly bigger than that is corrupt.
+        return bool(np.all(np.abs(rot) <= 1.5) and np.all(np.abs(tr) < 1.0))
+
+    def _resample_native_to_color(self, native, depth_frame):
+        """Warp a native-resolution depth array into the colour pixel grid.
+
+        Used only when the stored extrinsics are corrupt (see
+        ``_extrinsics_sane``). With the ~1.5 cm baseline ignored -- negligible
+        parallax past ~2 m -- the depth->colour map reduces to a pure
+        focal-length / principal-point resample, independent of range. A
+        backward gather (nearest neighbour, no interpolation across depth
+        edges) fills each colour pixel from its source depth pixel.
+        """
+        intr = self._intrinsics  # colour intrinsics (set from the colour frame)
+        di = depth_frame.get_profile().as_video_stream_profile().get_intrinsics()
+        hc, wc = intr.height, intr.width
+        if self._remap is None or self._remap[0] != (hc, wc):
+            uc = np.arange(wc, dtype=np.float32)
+            vc = np.arange(hc, dtype=np.float32)
+            ud = np.round((uc - intr.cx) * (di.fx / intr.fx) + di.ppx).astype(np.int64)
+            vd = np.round((vc - intr.cy) * (di.fy / intr.fy) + di.ppy).astype(np.int64)
+            uok = (ud >= 0) & (ud < di.width)
+            vok = (vd >= 0) & (vd < di.height)
+            valid = np.outer(vok, uok)
+            self._remap = ((hc, wc), np.clip(vd, 0, di.height - 1),
+                           np.clip(ud, 0, di.width - 1), valid)
+        _, vd, ud, valid = self._remap
+        out = native[np.ix_(vd, ud)]
+        out[~valid] = 0
+        return out
+
     def _assemble_ir(self, frames, index: int, t: float) -> Frame | None:
         """Assemble a Frame from the left IR imager, as a 3-channel grey image.
 
@@ -305,10 +379,20 @@ class _RealSenseBase:
         # RGB-only path (default): no align, no depth filtering -- the expensive
         # per-frame work that made the RealSense slow. Depth path kept for any
         # future depth feature, behind with_depth.
+        native_depth = None  # set only when we must resample manually
         if self._with_depth:
-            aligned = self._align.process(frames)
-            color_frame = aligned.get_color_frame()
-            depth_frame = aligned.get_depth_frame()
+            if self._manual_align is None:
+                self._manual_align = not self._extrinsics_sane(frames)
+            if self._manual_align:
+                # Corrupt stored extrinsics: skip rs.align (it would zero the
+                # depth) and take the native depth to resample ourselves.
+                color_frame = frames.get_color_frame()
+                depth_frame = frames.get_depth_frame()
+                native_depth = depth_frame
+            else:
+                aligned = self._align.process(frames)
+                color_frame = aligned.get_color_frame()
+                depth_frame = aligned.get_depth_frame()
             if not color_frame or not depth_frame:
                 return None
         else:
@@ -337,6 +421,11 @@ class _RealSenseBase:
         measure = display = None
         if depth_frame is not None:
             measure, display = self._measure_and_filtered(depth_frame)
+            if native_depth is not None:
+                # depth_frame was native; warp the filtered depth into the
+                # colour grid so joint pixels index it the same as when aligned.
+                measure = self._resample_native_to_color(measure, native_depth)
+                display = self._resample_native_to_color(display, native_depth)
 
         gravity = self._read_gravity(frames)
         if gravity is not None:
@@ -398,9 +487,15 @@ class RealSenseSource(_RealSenseBase):
             self._config.enable_stream(
                 rs.stream.depth, depth_size[0], depth_size[1], rs.format.z16, fps
             )
-        # IMU streams for the gravity vector (cheap; calibration needs accel).
-        self._config.enable_stream(rs.stream.accel)
-        self._config.enable_stream(rs.stream.gyro)
+        # IMU streams for the gravity vector -- only when the device has an IMU.
+        # The D435i exposes accel+gyro; the D435f does NOT, and requesting absent
+        # streams makes pipeline.start fail ("Couldn't resolve requests"). Enable
+        # them conditionally so both cameras work. Without an IMU there is no live
+        # gravity, so the height/ground modes fall back to a calibrated tilt.
+        self._has_imu = _device_has_imu(rs)
+        if self._has_imu:
+            self._config.enable_stream(rs.stream.accel)
+            self._config.enable_stream(rs.stream.gyro)
 
     @property
     def meta(self) -> SourceMeta:
@@ -439,10 +534,22 @@ class RealSenseSource(_RealSenseBase):
 class BagSource(_RealSenseBase):
     """Recorded .bag playback, deterministic and frame-exact."""
 
-    def __init__(self, path: str, with_depth: bool = False):
+    def __init__(
+        self,
+        path: str,
+        with_depth: bool = False,
+        max_range_m: float = 6.0,
+        spatial_magnitude: int = 2,
+    ):
         # with_depth defaults off so plain replay stays fast; extraction for the
         # depth features passes True to also emit the aligned depth per frame.
-        super().__init__(with_depth=with_depth)
+        # The filter chain re-runs on playback (the .bag stores RAW depth), so
+        # max_range_m / spatial_magnitude let you tune denoising after the fact.
+        super().__init__(
+            with_depth=with_depth,
+            max_range_m=max_range_m,
+            spatial_magnitude=spatial_magnitude,
+        )
         rs = self._rs
         self._path = path
         self._config.enable_device_from_file(path, repeat_playback=False)

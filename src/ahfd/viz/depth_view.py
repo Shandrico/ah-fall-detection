@@ -40,8 +40,13 @@ def _open_source(source: str, max_laser: bool = False, max_range_m: float = 6.0,
     from ahfd.capture.realsense import BagSource, RealSenseSource
 
     if str(source).lower().endswith((".bag", ".db3")):
-        # A recording's filtering is fixed; with_depth so playback carries depth.
-        return BagSource(str(source), with_depth=True)
+        # The filter chain re-runs on playback (the .bag holds RAW depth), so
+        # --smooth / --max-range tune denoising on a recording too. with_depth
+        # so playback carries depth.
+        return BagSource(
+            str(source), with_depth=True,
+            max_range_m=max_range_m, spatial_magnitude=smooth,
+        )
     return RealSenseSource(
         with_depth=True, max_laser=max_laser, max_range_m=max_range_m,
         spatial_magnitude=smooth,
@@ -72,10 +77,13 @@ def run_depth_viewer(
     cmaps = _colormaps(cv2)
     ci = next((i for i, (n, _) in enumerate(cmaps) if n == colormap), 0)
 
-    # --long-range maxes the projector for denser far depth, and (unless the
-    # ramp was set explicitly) points the colour ramp at the 4-6 m band.
-    if long_range and (dmin, dmax) == (1.5, 3.5):
-        dmin, dmax = 4.0, 6.0
+    # --long-range maxes the projector for denser far depth. Unless the ramp
+    # was set explicitly, aim it at the far band and, crucially, end it at the
+    # requested --max-range -- otherwise everything past 6 m clamps to one
+    # colour (turbo's dark red) as the range is opened up.
+    if (dmin, dmax) == (1.5, 3.5) and (long_range or max_range_m > 6.0):
+        dmax = float(max_range_m)
+        dmin = max(1.0, dmax - 4.0)  # a ~4 m window ending at the far cut
 
     st = {
         "dmin": float(dmin),

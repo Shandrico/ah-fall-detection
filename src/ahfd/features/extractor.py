@@ -41,7 +41,7 @@ from dataclasses import dataclass, field
 import numpy as np
 
 from ahfd.geometry.ground import GroundPlane
-from ahfd.geometry.zones import ZoneMap
+from ahfd.geometry.zones import ZoneMap, point_in_polygon
 from ahfd.pose.skeleton import ANKLES, HEAD, HIPS, SHOULDERS
 from ahfd.types import PersonPose
 
@@ -102,6 +102,11 @@ class Features:
     bed_top_m: float | None = None
     bed_risk: str | None = None  # risk level of the associated bed, if any
     in_excluded_zone: bool = False
+    # Fraction of confident keypoints that land inside a bed's footprint when
+    # projected onto the bed surface. A location cue: separates a body lying ON
+    # a bed from one on the floor, which pose SHAPE cannot (both are flat). None
+    # when there are no bed zones. See FeatureExtractor._bed_overlap.
+    bed_overlap: float | None = None
     # Angle of the shoulders->hips torso vector from image-vertical, degrees:
     # ~0 upright/seated (torso stands up in frame), ~90 lying (torso flat). An
     # image-space angle, so it does NOT depend on camera height or calibration
@@ -335,6 +340,34 @@ class FeatureExtractor:
 
     # --------------------------------------------------------------- public
 
+    def _bed_overlap(self, person: PersonPose, valid: np.ndarray) -> float | None:
+        """Fraction of confident keypoints that fall inside a bed footprint.
+
+        Each keypoint is projected onto the bed's SURFACE plane (its ``top_m``)
+        and tested against the bed polygon; the max over all bed zones is
+        returned. This is a location cue the pose-shape features lack: a body
+        lying ON a bed and one lying on the floor are the same SHAPE, but the
+        bed one projects inside the bed footprint and the floor one does not.
+        None when there are no bed zones (then it imputes away -- no change).
+        """
+        idx = np.flatnonzero(valid)
+        if idx.size == 0:
+            return None
+        beds = [z for z in self.zones.zones if z.kind == "bed" and z.top_m is not None]
+        if not beds:
+            return None
+        best = 0.0
+        for bed in beds:
+            inside = 0
+            for i in idx:
+                pt = self.ground.pixel_to_plane(
+                    float(person.keypoints[i, 0]), float(person.keypoints[i, 1]), bed.top_m
+                )
+                if pt is not None and point_in_polygon(pt, bed.polygon):
+                    inside += 1
+            best = max(best, inside / idx.size)
+        return best
+
     def extract(self, person: PersonPose, t: float) -> Features | None:
         """Metric features for one tracked person. None if untracked."""
         if person.track_id is None:
@@ -430,6 +463,7 @@ class FeatureExtractor:
             bed_top_m=bed.top_m if bed else None,
             bed_risk=assoc_bed.risk_level if assoc_bed else None,
             in_excluded_zone=self.zones.is_excluded(contact),
+            bed_overlap=self._bed_overlap(person, valid),
             torso_tilt=self._torso_tilt(person, valid),
         )
 
