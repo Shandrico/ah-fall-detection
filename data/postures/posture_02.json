@@ -1,0 +1,15 @@
+{
+  "clip_id": "posture_02",
+  "duration_s": 114.4,
+  "segments": [
+    { "start_s": 6, "end_s": 20, "posture": "upright" },
+    { "start_s": 23, "end_s": 33, "posture": "sitting" },
+    { "start_s": 35, "end_s": 40, "posture": "upright" },
+    { "start_s": 42, "end_s": 45, "posture": "sitting" },
+    { "start_s": 47, "end_s": 80, "posture": "in_bed" },
+    { "start_s": 82, "end_s": 86, "posture": "sitting" },
+    { "start_s": 88, "end_s": 93, "posture": "on_ground" },
+    { "start_s": 98, "end_s": 101, "posture": "upright" },
+    { "start_s": 102, "end_s": 107, "posture": "on_ground" }
+  ]
+}
