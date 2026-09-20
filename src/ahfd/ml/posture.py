@@ -27,6 +27,7 @@ import math
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from ahfd.geometry.depth_height import DEPTH_FEATURES, depth_features
 from ahfd.ml.pose_features import JOINT_FEATURES, joint_features
 
 _EPS = 1e-6
@@ -53,7 +54,13 @@ _AGG_FROM_FEATS = ["h_torso", "h_max", "h_min", "floor_spread"]
 # angles, and shape ratios from `pose_features`. This is the "use the whole
 # skeleton, not just torso" change -- the trainer reports which of these
 # actually separate the postures (see `train`).
-FEATURES = AGG_FEATURES + JOINT_FEATURES
+#
+# DEPTH_FEATURES are appended last: joint heights measured directly from depth
+# (dh_*). They are None for any clip recorded without depth, so the trainer
+# imputes them and RGB-only data behaves exactly as before -- but on a
+# depth-recorded clip they add the measured-height signal that fixes the nadir
+# case. This is what makes the model depth-ready without a second pipeline.
+FEATURES = AGG_FEATURES + JOINT_FEATURES + DEPTH_FEATURES
 
 # A row is kept only if at least these are present -- the rest are imputed.
 REQUIRED = ["h_torso", "floor_spread"]
@@ -88,6 +95,9 @@ def features_row(feats, person, ground, min_keypoint_score: float = 0.3) -> dict
         else None
     )
     row.update(joint_features(person, ground, feats.contact_xy, min_keypoint_score))
+    # Depth-measured joint heights, when the clip was recorded with depth
+    # (person.heights). All None otherwise -> imputed, no effect on RGB clips.
+    row.update(depth_features(getattr(person, "heights", None)))
     return {k: _finite_or_none(v) for k, v in row.items()}
 
 

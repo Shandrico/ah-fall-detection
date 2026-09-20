@@ -39,8 +39,9 @@ def _colormaps(cv2):
 def _open_source(source: str, max_laser: bool = False, max_range_m: float = 6.0, smooth: int = 2):
     from ahfd.capture.realsense import BagSource, RealSenseSource
 
-    if str(source).lower().endswith(".bag"):
-        return BagSource(str(source))  # a recording's filtering is fixed
+    if str(source).lower().endswith((".bag", ".db3")):
+        # A recording's filtering is fixed; with_depth so playback carries depth.
+        return BagSource(str(source), with_depth=True)
     return RealSenseSource(
         with_depth=True, max_laser=max_laser, max_range_m=max_range_m,
         spatial_magnitude=smooth,
@@ -192,7 +193,7 @@ def run_depth_viewer(
             if not m.any():
                 return 0.0
             pts = p.keypoints[m]
-            return float((pts[:, 0].ptp()) * (pts[:, 1].ptp()))
+            return float(np.ptp(pts[:, 0]) * np.ptp(pts[:, 1]))
 
         person = max(people, key=_area)
         kp, sc = person.keypoints, person.scores

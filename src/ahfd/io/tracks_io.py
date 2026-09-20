@@ -48,6 +48,18 @@ def pose_to_dict(pose: PoseFrame) -> dict:
                     [round(float(x), 2), round(float(y), 2)] for x, y in p.keypoints
                 ],
                 "scores": [round(float(s), 4) for s in p.scores],
+                # Depth heights are optional; store only when present. JSON has no
+                # NaN, so an unmeasured joint is written as null.
+                **(
+                    {
+                        "heights": [
+                            None if not np.isfinite(h) else round(float(h), 3)
+                            for h in p.heights
+                        ]
+                    }
+                    if p.heights is not None
+                    else {}
+                ),
             }
             for p in pose.people
         ],
@@ -61,6 +73,14 @@ def dict_to_pose(data: dict) -> PoseFrame:
             scores=np.asarray(p["scores"], dtype=np.float32).reshape(-1),
             score=float(p["score"]),
             track_id=p["track_id"],
+            heights=(
+                np.asarray(
+                    [np.nan if h is None else float(h) for h in p["heights"]],
+                    dtype=np.float32,
+                )
+                if p.get("heights") is not None
+                else None
+            ),
         )
         for p in data.get("people", [])
     )

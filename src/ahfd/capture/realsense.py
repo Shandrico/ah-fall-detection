@@ -439,8 +439,10 @@ class RealSenseSource(_RealSenseBase):
 class BagSource(_RealSenseBase):
     """Recorded .bag playback, deterministic and frame-exact."""
 
-    def __init__(self, path: str):
-        super().__init__()
+    def __init__(self, path: str, with_depth: bool = False):
+        # with_depth defaults off so plain replay stays fast; extraction for the
+        # depth features passes True to also emit the aligned depth per frame.
+        super().__init__(with_depth=with_depth)
         rs = self._rs
         self._path = path
         self._config.enable_device_from_file(path, repeat_playback=False)

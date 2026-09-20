@@ -268,6 +268,13 @@ def extract(
     out: Path = typer.Argument(..., help="Output tracks.jsonl path."),
     config: Path = typer.Option(None, help="Path to a YAML config (for the pose backend)."),
     max_frames: int = typer.Option(0, help="Stop after N frames. 0 = whole clip."),
+    depth: bool = typer.Option(
+        False, "--depth",
+        help="Also measure each joint's height above the floor from depth and "
+        "store it in the tracks (adds the dh_* features to training). Needs a "
+        "RealSense depth source: bag://<clip>.bag or rs://.",
+    ),
+    height: float = typer.Option(2.5, help="Camera mount height above the floor (m), for --depth."),
 ) -> None:
     """Run pose once over a clip and write keypoints to tracks.jsonl.
 
@@ -275,6 +282,11 @@ def extract(
     the frames, extracts keypoints, and discards the pixels. Everything after
     this -- replay, sweep, eval -- works on the keypoints alone, so it is fast,
     deterministic, and privacy-safe. Run it once per clip; it is the slow step.
+
+    With --depth (on a .bag recorded by `ahfd record-depth`), it also samples
+    the aligned depth at each joint and stores the joint's height above the
+    floor -- keypoint scalars, never a depth image. Those feed the dh_* depth
+    features; clips extracted without --depth simply lack them and train as RGB.
     """
     from ahfd.capture import open_source
     from ahfd.io import TracksWriter
@@ -283,7 +295,22 @@ def extract(
 
     cfg = load_config(config)
 
-    src = open_source(source)
+    if depth:
+        # Depth needs a RealSense stream that carries the aligned depth + IMU.
+        if source.startswith("bag://"):
+            from ahfd.capture.realsense import BagSource
+
+            src = BagSource(source[len("bag://") :], with_depth=True)
+        elif source.startswith("rs://"):
+            from ahfd.capture.realsense import RealSenseSource
+
+            src = RealSenseSource(with_depth=True)
+        else:
+            raise typer.BadParameter(
+                "--depth needs a RealSense source (bag://<clip>.bag or rs://); got " + source
+            )
+    else:
+        src = open_source(source)
     typer.echo(
         "source:  " + source + "  "
         + str(src.meta.width) + "x" + str(src.meta.height)
@@ -302,9 +329,17 @@ def extract(
         else None
     )
     typer.echo("model:   " + estimator.name)
+    if depth:
+        import numpy as _np
+
+        from ahfd.geometry.depth_height import keypoint_heights_from_depth
+        from ahfd.geometry.ground import GroundPlane
+
+        typer.echo("depth:   ON -- storing joint heights above floor (mount " + str(height) + " m)")
 
     writer = TracksWriter(out)
     n = 0
+    depth_frames = 0
     try:
         for frame in src:
             pose = estimator.estimate(frame)
@@ -317,6 +352,28 @@ def extract(
                         for p in pose.people
                     )
                 )
+            if (
+                depth
+                and frame.depth_raw is not None
+                and frame.gravity is not None
+                and frame.intrinsics is not None
+                and pose.people
+            ):
+                # depth_raw = measurement depth (no hole filling), the right one
+                # for a per-joint reading. Heights come from the live IMU tilt.
+                gp = GroundPlane.from_gravity(frame.intrinsics, height, _np.asarray(frame.gravity))
+                depth_m = frame.depth_raw.astype(_np.float32) * float(frame.depth_scale)
+                pose = pose.with_people(
+                    tuple(
+                        p.with_heights(
+                            keypoint_heights_from_depth(
+                                p.keypoints, p.scores, depth_m, frame.intrinsics, gp
+                            )
+                        )
+                        for p in pose.people
+                    )
+                )
+                depth_frames += 1
             writer.write(pose)
             n += 1
             if max_frames and n >= max_frames:
@@ -326,6 +383,14 @@ def extract(
         writer.close()
 
     typer.echo("wrote " + str(writer.count) + " frames to " + str(out))
+    if depth:
+        if depth_frames:
+            typer.echo("depth:   heights attached on " + str(depth_frames) + " frames")
+        else:
+            typer.echo(
+                "WARNING: --depth was set but no frame carried depth+IMU. "
+                "Is this a depth .bag (from `ahfd record-depth`)? No dh_* features were stored."
+            )
 
 
 @app.command()

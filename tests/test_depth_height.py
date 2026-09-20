@@ -14,7 +14,9 @@ import numpy as np
 import pytest
 
 from ahfd.geometry.depth_height import (
+    DEPTH_FEATURES,
     coarse_posture,
+    depth_features,
     keypoint_heights_from_depth,
     region_height,
 )
@@ -101,3 +103,47 @@ def test_low_score_joints_ignored():
     sc[:] = 0.1  # everything below threshold
     heights = keypoint_heights_from_depth(kp, sc, depth, intr, ground, min_score=0.4)
     assert np.all(np.isnan(heights))
+
+
+def test_depth_features_none_when_no_depth():
+    feats = depth_features(None)
+    assert set(feats) == set(DEPTH_FEATURES)
+    assert all(v is None for v in feats.values())
+
+
+def test_depth_features_from_heights():
+    h = np.full(17, np.nan, np.float32)
+    h[list((5, 6))] = 1.40   # shoulders
+    h[list((11, 12))] = 0.90  # hips
+    h[list((13, 14))] = 0.50  # knees
+    h[list((15, 16))] = 0.05  # ankles
+    feats = depth_features(h)
+    assert feats["dh_shoulder"] == pytest.approx(1.40, abs=1e-3)
+    assert feats["dh_hip"] == pytest.approx(0.90, abs=1e-3)
+    assert feats["dh_torso"] == pytest.approx((1.40 + 0.90) / 2, abs=1e-3)
+    assert feats["dh_vextent"] == pytest.approx(1.40 - 0.05, abs=1e-3)  # tallest - lowest
+    assert feats["dh_hip_above_knee"] == pytest.approx(0.40, abs=1e-3)
+    assert feats["dh_ankle"] == pytest.approx(0.05, abs=1e-3)
+
+
+def test_heights_survive_track_serialisation_roundtrip():
+    from ahfd.io.tracks_io import dict_to_pose, pose_to_dict
+    from ahfd.types import PersonPose, PoseFrame
+
+    heights = np.array([np.nan, 1.6] + [0.9] * 15, np.float32)
+    person = PersonPose(
+        keypoints=np.zeros((17, 2), np.float32),
+        scores=np.ones(17, np.float32),
+        score=0.9,
+        track_id=1,
+        heights=heights,
+    )
+    frame = PoseFrame(t=0.0, index=0, width=1920, height=1080, people=(person,))
+    back = dict_to_pose(pose_to_dict(frame))
+    got = back.people[0].heights
+    assert got is not None
+    assert np.isnan(got[0])                       # NaN -> null -> NaN preserved
+    assert got[1] == pytest.approx(1.6, abs=1e-3)
+    # a plain RGB pose (no heights) round-trips to None, not an array
+    rgb = PersonPose(keypoints=np.zeros((17, 2), np.float32), scores=np.ones(17, np.float32), score=0.9)
+    assert dict_to_pose(pose_to_dict(PoseFrame(0.0, 0, 1920, 1080, (rgb,)))).people[0].heights is None

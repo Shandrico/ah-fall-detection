@@ -87,6 +87,58 @@ def region_height(heights: np.ndarray, region) -> float:
     return float(np.mean(vals)) if vals else float("nan")
 
 
+DEPTH_FEATURES: list[str] = [
+    "dh_head",        # head height above floor (m), from depth
+    "dh_shoulder",    # shoulder height (m)
+    "dh_torso",       # mean of shoulders + hips (m) -- the robust trunk height
+    "dh_hip",         # hip height (m)
+    "dh_knee",        # knee height (m)
+    "dh_ankle",       # ankle height (m)
+    "dh_vextent",     # highest minus lowest confident joint (m): the strongest cue
+    "dh_hip_above_knee",  # hip minus knee height (m): a sitting tell
+]
+
+
+def depth_features(heights: np.ndarray | None) -> dict:
+    """The compact depth-feature dict for one person, keyed by DEPTH_FEATURES.
+
+    `heights` is the (17,) per-joint height-above-floor array from
+    ``keypoint_heights_from_depth`` (NaN where a joint had no depth). All values
+    are floats or None; None means "not measurable this frame" and the trainer
+    imputes it, so a frame with no depth simply contributes no depth signal.
+    """
+    def _f(x):
+        return float(x) if x is not None and np.isfinite(x) else None
+
+    if heights is None:
+        return {k: None for k in DEPTH_FEATURES}
+
+    heights = np.asarray(heights, dtype=float)
+    head = region_height(heights, HEAD)
+    shoulder = region_height(heights, SHOULDERS)
+    hip = region_height(heights, HIPS)
+    knee = region_height(heights, KNEES)
+    ankle = region_height(heights, ANKLES)
+    torso = region_height(heights, SHOULDERS + HIPS)
+
+    valid = heights[np.isfinite(heights)]
+    vextent = float(valid.max() - valid.min()) if valid.size >= 2 else None
+    hip_above_knee = (
+        hip - knee if np.isfinite(hip) and np.isfinite(knee) else None
+    )
+
+    return {
+        "dh_head": _f(head),
+        "dh_shoulder": _f(shoulder),
+        "dh_torso": _f(torso),
+        "dh_hip": _f(hip),
+        "dh_knee": _f(knee),
+        "dh_ankle": _f(ankle),
+        "dh_vextent": _f(vextent),
+        "dh_hip_above_knee": _f(hip_above_knee),
+    }
+
+
 def coarse_posture(heights: np.ndarray) -> str:
     """A rough posture label from depth heights alone -- a sanity read, not the
     classifier. The learned model will set real thresholds; this just shows

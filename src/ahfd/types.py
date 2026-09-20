@@ -74,6 +74,11 @@ class PersonPose:
     scores: np.ndarray  # (17,) float32 -- per-keypoint confidence
     score: float  # overall person confidence
     track_id: int | None = None
+    # Optional per-joint height above the floor (m), measured from depth. 17
+    # scalars, NaN where a joint had no depth -- not imagery (you cannot
+    # reconstruct a picture from 17 heights), so it is safe to persist and
+    # carries the depth signal into training. None when the source had no depth.
+    heights: np.ndarray | None = None
 
     def valid_mask(self, min_score: float) -> np.ndarray:
         """Boolean mask of keypoints confident enough to use."""
@@ -106,6 +111,17 @@ class PersonPose:
             scores=self.scores,
             score=self.score,
             track_id=track_id,
+            heights=self.heights,
+        )
+
+    def with_heights(self, heights: np.ndarray) -> "PersonPose":
+        """Copy with per-joint depth heights attached (extraction fills this)."""
+        return PersonPose(
+            keypoints=self.keypoints,
+            scores=self.scores,
+            score=self.score,
+            track_id=self.track_id,
+            heights=heights,
         )
 
     def with_keypoints(self, keypoints: np.ndarray) -> "PersonPose":

@@ -3,6 +3,8 @@
 # discarded; anything image-shaped in git is a privacy incident, not a mistake.
 # ---------------------------------------------------------------------------
 *.bag
+*.db3
+data/depth_bags/
 *.mp4
 *.avi
 *.mkv
@@ -23,7 +25,10 @@ models/
 
 # Recorded data (keypoints only, but still not source)
 data/tracks/
+data/tracks_depth/
 data/events/
+# classify-view frame cache (rendered colour frames -- convenience, not source)
+data/classify_cache/
 # derived per-frame feature CSVs, regenerable via `ahfd export-features`
 data/features/
 debug_captures/
