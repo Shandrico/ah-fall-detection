@@ -485,6 +485,40 @@ class TestBedExit:
         sev = {r: self._bed_exit_event(r).severity for r in ("none", "low", "high")}
         assert sev["none"] < sev["low"] < sev["high"]
 
+    def test_confused_patient_may_sit_but_standup_is_the_exit(self):
+        """An exit-seeking ('confused') patient is allowed to sit up -- the sit
+        never alarms -- but standing up fires the exit at once, high severity."""
+        m = FallStateMachine()
+        # A long sit on the bed edge: allowed, so no alert.
+        frames = hold(0.0, 12.0, h_torso=0.55, zones=("bed_2",),
+                      bed_risk="confused", motion=0.05)
+        assert [e for e in run(m, frames) if e.type == "BED_EXIT"] == []
+        # Now they stand -> the exit fires once at high severity.
+        stand = hold(12.0, 2.0, h_torso=1.30, zones=("bed_2",),
+                     bed_risk="confused", motion=0.10)
+        events = [e for e in run(m, stand) if e.type == "BED_EXIT"]
+        assert len(events) == 1
+        assert events[0].severity == 3
+        assert events[0].evidence["trigger"] == "stood_up"
+
+    def test_fast_riser_is_caught_at_standup_when_sitting_was_too_brief(self):
+        """A quick get-up that never dwells long enough to trip the sit-up
+        precursor is still caught the moment they stand."""
+        m = FallStateMachine()
+        frames = hold(0.0, 0.5, h_torso=0.55, zones=("bed_2",), bed_risk="high", motion=0.1)
+        frames += hold(0.5, 2.0, h_torso=1.30, zones=("bed_2",), bed_risk="high", motion=0.2)
+        events = [e for e in run(m, frames) if e.type == "BED_EXIT"]
+        assert len(events) == 1
+        assert events[0].evidence["trigger"] == "stood_up"
+
+    def test_sit_up_exit_does_not_double_fire_at_standup(self):
+        """If the sit-up precursor already alerted, standing up must not raise a
+        second bed-exit for the same departure."""
+        m = FallStateMachine()
+        frames = hold(0.0, 6.0, h_torso=0.55, zones=("bed_2",), bed_risk="high", motion=0.05)
+        frames += hold(6.0, 2.0, h_torso=1.30, zones=("bed_2",), bed_risk="high", motion=0.1)
+        assert types_of(run(m, frames)).count("BED_EXIT") == 1
+
 
 class TestMultipleTracks:
     def test_tracks_are_independent(self):

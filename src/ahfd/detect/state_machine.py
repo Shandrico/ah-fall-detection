@@ -45,15 +45,43 @@ from ahfd.features.extractor import Features
 # patient cleared to self-exit and a real alert for a high-risk one.
 #   0 informational (dashboard status, no alarm)   1 low-priority notice
 #   2 warning                                       3 alert (page a nurse)
-# "unknown" defaults to a warning -- cautious, because not-yet-assessed is not
-# the same as safe. A ward would set the level from the admission fall-risk
-# assessment (Morse / Hendrich), per bed.
+# Patient severity tier, set per bed. It follows the three Morse Fall Scale
+# risk bands (score 0-125 over 6 items): high >=45, moderate 25-44, low 0-24.
+# The ward assigns it from the patient's Morse assessment; "unknown" stays
+# cautious (not-yet-assessed is not safe). Our scope is bed-exit PREVENTION, so
+# the tier drives how a sit-up is treated:
+#   high     (Morse >=45)   must not exit unassisted -> any sit-up is an alert
+#   moderate (Morse 25-44)  transfer risk            -> a sustained sit-up alerts
+#   low      (Morse 0-24)   supervised mobilisation  -> awareness on bed-exit
+#   none                    below scope / cleared    -> logged, no alarm
+# "moderate" and "medium" are accepted as the same band (Morse uses "moderate").
 BED_EXIT_SEVERITY_BY_RISK: dict[str, int] = {
-    "none": 0,     # cleared to mobilise independently -> awareness only
+    "none": 0,     # independent / cleared -> awareness only
     "low": 1,
     "medium": 2,
-    "high": 3,     # should not exit unassisted -> alert
+    "moderate": 2,  # Morse term for "medium"
+    "high": 3,     # must not exit unassisted -> alert
+    "confused": 3,  # mentally-ill / exit-seeking: allowed to move, but high exit risk
+    "wander": 3,    # alias for "confused"
     "unknown": 2,
+}
+
+# How long a sit near the bed must persist before it alerts, BY tier. The
+# highest ("high") tier fires almost at once -- any sitting up is an attempt to
+# leave and must be caught before the patient is out -- while a low-risk patient
+# may sit freely, so it waits longest (awareness, not alarm).
+BED_EXIT_DWELL_BY_RISK: dict[str, float] = {
+    "none": 5.0,
+    "low": 3.0,
+    "medium": 2.0,
+    "moderate": 2.0,  # Morse term for "medium"
+    "high": 1.0,   # highest tier -> alert on the first sustained sit-up
+    # An exit-seeking ("confused") patient is ALLOWED to sit up, so the sit-up
+    # never alarms (infinite dwell) -- the stand-up is what fires. See the
+    # UPRIGHT branch in _steady_state.
+    "confused": float("inf"),
+    "wander": float("inf"),
+    "unknown": 3.0,
 }
 
 State = Literal[
@@ -150,6 +178,13 @@ class _TrackState:
 
     sitting_since: float | None = None
     bed_exit_emitted: bool = False
+    # Cross-transition bed-exit state. The sit->stand reset clears sitting_since,
+    # so remember separately that the person was on/at a bed, the bed's tier
+    # (the contact leaves the bed zone as they stand), and whether this
+    # departure has already alerted -- so an exit fires at most once.
+    bed_assoc_recent: bool = False
+    bed_risk_recent: str | None = None
+    exit_alerted: bool = False
 
     last_alert_t: float | None = None
     height_log: list[tuple[float, float]] = field(default_factory=list)
@@ -411,6 +446,9 @@ class FallStateMachine:
             ts.sitting_since = None
             ts.bed_exit_emitted = False
             ts.down_since = None
+            ts.bed_assoc_recent = True
+            ts.bed_risk_recent = f.bed_risk
+            ts.exit_alerted = False  # settled back in bed -> ready for the next exit
             return None
 
         # A clearly seated body keeps a near-vertical torso even when its
@@ -468,6 +506,30 @@ class FallStateMachine:
 
         if f.h_torso >= th.upright_h:
             self._set_state(ts, "UPRIGHT", now)
+            # Standing up after being on/at a bed IS the exit. Catch it here when
+            # the sit-up precursor never fired -- a fast riser, or an exit-seeking
+            # ("confused") patient whose sit-up is allowed. Fires once per exit.
+            if (
+                ts.bed_assoc_recent
+                and not ts.exit_alerted
+                and not self._cooling_down(ts, now)
+            ):
+                ts.exit_alerted = True
+                ts.last_alert_t = now
+                risk = ts.bed_risk_recent or "unknown"
+                return Event(
+                    type="BED_EXIT",
+                    track_id=f.track_id,
+                    t_trigger=now,
+                    t_alert=now,
+                    zone=zone,
+                    severity_override=BED_EXIT_SEVERITY_BY_RISK.get(risk, 2),
+                    evidence={
+                        "bed_risk": risk,
+                        "trigger": "stood_up",
+                        "h_torso": round(f.h_torso, 2),
+                    },
+                )
         else:
             self._set_state(ts, "UNKNOWN", now)
         return None
@@ -484,13 +546,24 @@ class FallStateMachine:
         if ts.sitting_since is None:
             ts.sitting_since = now
         near_bed = any("bed" in z.lower() for z in f.zones)
+        risk = f.bed_risk or "unknown"
+        if near_bed:
+            ts.bed_assoc_recent = True
+            ts.bed_risk_recent = f.bed_risk
+        # The dwell before alerting is set by the patient's severity tier: an
+        # immobile patient alerts on the first sit-up, an independent one only
+        # after a longer sit. "confused"/"wander" use an infinite dwell -- they
+        # are allowed to sit up, so the sit-up never alarms (the stand-up does).
+        # Falls back to the global threshold for any tier not in the map.
+        dwell = BED_EXIT_DWELL_BY_RISK.get(risk, self.th.bed_exit_s)
         if (
             near_bed
             and not ts.bed_exit_emitted
-            and now - ts.sitting_since >= self.th.bed_exit_s
+            and not ts.exit_alerted
+            and now - ts.sitting_since >= dwell
         ):
             ts.bed_exit_emitted = True
-            risk = f.bed_risk or "unknown"
+            ts.exit_alerted = True
             return Event(
                 type="BED_EXIT",
                 track_id=f.track_id,
@@ -500,6 +573,8 @@ class FallStateMachine:
                 severity_override=BED_EXIT_SEVERITY_BY_RISK.get(risk, 2),
                 evidence={
                     "bed_risk": risk,
+                    "dwell_s": dwell,
+                    "trigger": "sit_up",
                     "h_torso": round(f.h_torso, 2),
                     "seated_s": round(now - ts.sitting_since, 1),
                 },
