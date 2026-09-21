@@ -70,6 +70,7 @@ def run_depth_viewer(
     runtime: str = "openvino",
     device: str = "gpu",
     max_width: int = 1280,
+    pitch: float | None = None,
 ) -> None:
     """Open the live depth viewer. See the module docstring for the keys."""
     import cv2
@@ -147,13 +148,30 @@ def run_depth_viewer(
     ground = {"gp": None, "h": float(height_m)}
 
     def _get_ground(frame):
-        """Latest GroundPlane from the IMU gravity + mount height, or None."""
+        """GroundPlane from live IMU gravity, else a --pitch fallback, else None.
+
+        The D435f has no IMU (no gravity), so heights would be unavailable; when
+        --pitch is given, build the ground from that fixed mount downtilt instead
+        (roll assumed level). The D435i keeps using its live gravity.
+        """
         from ahfd.geometry.ground import GroundPlane
 
-        if frame.gravity is not None and frame.intrinsics is not None:
+        if frame.intrinsics is None:
+            return ground["gp"]
+        if frame.gravity is not None:
             try:
                 ground["gp"] = GroundPlane.from_gravity(
                     frame.intrinsics, ground["h"], np.asarray(frame.gravity)
+                )
+            except Exception:
+                pass
+        elif ground["gp"] is None and pitch is not None:
+            try:
+                ground["gp"] = GroundPlane(
+                    intrinsics=frame.intrinsics,
+                    height_m=ground["h"],
+                    pitch_deg=float(pitch),
+                    roll_deg=0.0,
                 )
             except Exception:
                 pass

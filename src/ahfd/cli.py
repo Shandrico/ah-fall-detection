@@ -1557,6 +1557,12 @@ def depth_view(
     backend: str = typer.Option("rtmo", help="Pose backend for --pose: rtmo | rtmpose | yolo."),
     runtime: str = typer.Option("openvino", help="Pose runtime for --pose: openvino (iGPU) | onnxruntime."),
     device: str = typer.Option("gpu", help="Pose device for --pose: gpu (iGPU) | cpu | cuda."),
+    pitch: float = typer.Option(
+        None,
+        help="Mount downtilt in degrees. For the D435f (no IMU): supplies the tilt "
+        "for height mode / --pose heights when there is no live gravity. The D435i "
+        "ignores it and uses its IMU.",
+    ),
 ) -> None:
     """Live depth viewer for tuning: denoised RealSense depth with a clamped colour ramp.
 
@@ -1588,6 +1594,7 @@ def depth_view(
         backend=backend,
         runtime=runtime,
         device=device,
+        pitch=pitch,
     )
 
 
