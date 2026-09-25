@@ -20,6 +20,11 @@ from ahfd.config import load_config
 
 app = typer.Typer(add_completion=False, help="Privacy-preserving fall detection.")
 
+# Fixed mount downtilt (degrees) for a camera with no IMU (D435f). This is the
+# ONE place to change the angle: it is the default --pitch for `depth-view` and
+# `extract`, so you never have to pass the flag. Change it if the mount changes.
+MOUNT_PITCH_DEG = 15.0
+
 
 def _build_detection(cfg, calib_path, meta):
     """Wire up feature extractor + state machine + sinks from a calibration.
@@ -275,6 +280,12 @@ def extract(
         "RealSense depth source: bag://<clip>.bag or rs://.",
     ),
     height: float = typer.Option(2.5, help="Camera mount height above the floor (m), for --depth."),
+    pitch: float = typer.Option(
+        MOUNT_PITCH_DEG,
+        help="Mount downtilt in degrees, for --depth on a camera with no IMU (D435f). "
+        "Defaults to MOUNT_PITCH_DEG (set once at the top of cli.py). Ignored when the "
+        "clip carries IMU gravity (D435i).",
+    ),
 ) -> None:
     """Run pose once over a clip and write keypoints to tracks.jsonl.
 
@@ -355,25 +366,32 @@ def extract(
             if (
                 depth
                 and frame.depth_raw is not None
-                and frame.gravity is not None
                 and frame.intrinsics is not None
                 and pose.people
             ):
-                # depth_raw = measurement depth (no hole filling), the right one
-                # for a per-joint reading. Heights come from the live IMU tilt.
-                gp = GroundPlane.from_gravity(frame.intrinsics, height, _np.asarray(frame.gravity))
-                depth_m = frame.depth_raw.astype(_np.float32) * float(frame.depth_scale)
-                pose = pose.with_people(
-                    tuple(
-                        p.with_heights(
-                            keypoint_heights_from_depth(
-                                p.keypoints, p.scores, depth_m, frame.intrinsics, gp
+                # Ground tilt from the live IMU (D435i), or the fixed --pitch when
+                # the recording has no gravity (D435f). depth_raw = measurement
+                # depth (no hole filling), the right one for a per-joint reading.
+                if frame.gravity is not None:
+                    gp = GroundPlane.from_gravity(frame.intrinsics, height, _np.asarray(frame.gravity))
+                elif pitch is not None:
+                    gp = GroundPlane(intrinsics=frame.intrinsics, height_m=height,
+                                     pitch_deg=float(pitch), roll_deg=0.0)
+                else:
+                    gp = None
+                if gp is not None:
+                    depth_m = frame.depth_raw.astype(_np.float32) * float(frame.depth_scale)
+                    pose = pose.with_people(
+                        tuple(
+                            p.with_heights(
+                                keypoint_heights_from_depth(
+                                    p.keypoints, p.scores, depth_m, frame.intrinsics, gp
+                                )
                             )
+                            for p in pose.people
                         )
-                        for p in pose.people
                     )
-                )
-                depth_frames += 1
+                    depth_frames += 1
             writer.write(pose)
             n += 1
             if max_frames and n >= max_frames:
@@ -388,8 +406,9 @@ def extract(
             typer.echo("depth:   heights attached on " + str(depth_frames) + " frames")
         else:
             typer.echo(
-                "WARNING: --depth was set but no frame carried depth+IMU. "
-                "Is this a depth .bag (from `ahfd record-depth`)? No dh_* features were stored."
+                "WARNING: --depth was set but no heights were stored. Needs depth + a "
+                "tilt: an IMU (D435i) or --pitch <deg> (D435f). Is this a depth .bag "
+                "from `ahfd record-depth`?"
             )
 
 
@@ -1515,6 +1534,11 @@ def classify_view(
         False, "--rebuild",
         help="Force re-processing instead of loading the saved cache (use after retraining).",
     ),
+    pitch: float = typer.Option(
+        MOUNT_PITCH_DEG,
+        help="Mount downtilt in degrees for a D435f recording (no IMU). Defaults to "
+        "MOUNT_PITCH_DEG. Ignored when the clip carries IMU gravity (D435i).",
+    ),
 ) -> None:
     """Replay a clip with pose + posture on BOTH panes: RGB model vs RGB+depth.
 
@@ -1538,6 +1562,7 @@ def classify_view(
         dmin=dmin,
         dmax=dmax,
         rebuild=rebuild,
+        pitch=pitch,
     )
 
 
@@ -1558,10 +1583,10 @@ def depth_view(
     runtime: str = typer.Option("openvino", help="Pose runtime for --pose: openvino (iGPU) | onnxruntime."),
     device: str = typer.Option("gpu", help="Pose device for --pose: gpu (iGPU) | cpu | cuda."),
     pitch: float = typer.Option(
-        None,
-        help="Mount downtilt in degrees. For the D435f (no IMU): supplies the tilt "
-        "for height mode / --pose heights when there is no live gravity. The D435i "
-        "ignores it and uses its IMU.",
+        MOUNT_PITCH_DEG,
+        help="Mount downtilt in degrees for the D435f (no IMU): supplies the tilt for "
+        "height mode / --pose heights when there is no live gravity. Defaults to "
+        "MOUNT_PITCH_DEG (set once at the top of cli.py). The D435i ignores it.",
     ),
 ) -> None:
     """Live depth viewer for tuning: denoised RealSense depth with a clamped colour ramp.
@@ -1596,6 +1621,79 @@ def depth_view(
         device=device,
         pitch=pitch,
     )
+
+
+@app.command()
+def estimate_ground(
+    source: str = typer.Option("rs://", help="rs:// live, or bag://<clip>.db3 / a path."),
+    frames: int = typer.Option(30, help="Frames to sample; the median is reported."),
+) -> None:
+    """Recover the mount tilt + height from the FLOOR in depth -- no IMU needed.
+
+    Fits the floor plane in each depth frame and reports the median pitch / roll /
+    height. Use it to self-calibrate the D435f (no IMU): compare the printed pitch
+    to the D435i's IMU reading on the same mount, then use it as --pitch. Prints
+    only -- it does not touch detection.
+    """
+    import numpy as np
+
+    from ahfd.geometry.plane_fit import ground_from_floor
+
+    path = source[len("bag://"):] if source.startswith("bag://") else source
+    if source.startswith("bag://") or str(source).lower().endswith((".bag", ".db3")):
+        from ahfd.capture.realsense import BagSource
+
+        src = BagSource(path, with_depth=True)
+    else:
+        from ahfd.capture.realsense import RealSenseSource
+
+        src = RealSenseSource(with_depth=True)
+
+    typer.echo("sampling the floor plane from depth ...")
+    got = []
+    n = 0
+    try:
+        for frame in src:
+            if frame.depth_raw is None or frame.intrinsics is None:
+                continue
+            depth_m = frame.depth_raw.astype(float) * float(frame.depth_scale)
+            est = ground_from_floor(depth_m, frame.intrinsics)
+            if est is not None:
+                got.append(est)
+            n += 1
+            if n >= frames:
+                break
+    finally:
+        src.close()
+
+    if not got:
+        typer.echo("no floor plane found -- aim the camera so the floor is visible.")
+        return
+    arr = np.array(got)
+    typer.echo(
+        "recovered from floor (median of %d):  pitch %.1f deg   roll %.1f deg   height %.2f m"
+        % (len(got), float(np.median(arr[:, 0])), float(np.median(arr[:, 1])), float(np.median(arr[:, 2])))
+    )
+    typer.echo("compare the pitch to the D435i IMU on the same mount to validate, then pass it as --pitch.")
+
+
+@app.command()
+def compare_depth(
+    dmin: float = typer.Option(1.0, help="Near clip for the depth colour ramp (m)."),
+    dmax: float = typer.Option(6.0, help="Far clip for the depth colour ramp (m)."),
+) -> None:
+    """Live side-by-side depth from BOTH RealSense cameras, with quality gauges.
+
+    Opens the two connected cameras (e.g. D435i + D435f) at once and shows each
+    one's colourised depth with a centre-ROI readout -- fill %, mean distance,
+    noise spread -- so you point both at the same target and see which gives
+    denser, cleaner depth. Two projectors interfere (representative of a
+    multi-camera ward); press 1/2 to toggle a camera's projector to isolate it.
+    Keys: 1/2 projector on/off, q quit.
+    """
+    from ahfd.viz.compare_cameras import run_compare_cameras
+
+    run_compare_cameras(dmin=dmin, dmax=dmax)
 
 
 @app.command()
@@ -1790,6 +1888,11 @@ def record(
 def record_depth(
     out: Path = typer.Argument(..., help="Output .bag path (stores colour + depth + IMU)."),
     seconds: float = typer.Option(0.0, help="Auto-stop after N seconds. 0 = until you press q."),
+    rgb: str = typer.Option(
+        "1080", help="RGB resolution: 1080 (1920x1080) or 720 (1280x720). 1080 keeps "
+        "more detail on far/small subjects (multi-bed); use 720 for a close per-bed "
+        "mount to halve the file size.",
+    ),
     consent: bool = typer.Option(
         False,
         "--i-understand-raw-capture",
@@ -1825,11 +1928,16 @@ def record_depth(
             + ". Newer librealsense builds require .db3 (rosbag2); older ones use .bag."
         )
 
+    color_size = {"720": (1280, 720), "1080": (1920, 1080)}.get(str(rgb))
+    if color_size is None:
+        raise typer.BadParameter("--rgb must be 720 or 1080; got " + repr(rgb))
+
     # The explicit flag IS the consent, matching `record`.
     os.environ[ENV_VAR] = "1"
-    typer.echo("RECORDING depth .bag -> " + str(out) + "  (colour + depth + IMU)")
+    typer.echo("RECORDING depth .bag -> " + str(out)
+               + "  (colour %dx%d + depth + IMU-if-present)" % color_size)
     typer.echo("press q in the window to stop; the projector is on for depth.")
-    n = record_bag(out, seconds=seconds)
+    n = record_bag(out, seconds=seconds, color_size=color_size)
     typer.echo("saved ~" + str(n) + " framesets to " + str(out))
     typer.echo("next: ahfd depth-view --pose --source " + str(out) + "  (verify), then extract features + DELETE the .bag")
 

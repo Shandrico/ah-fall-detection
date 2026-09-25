@@ -29,8 +29,13 @@ def _person_of(stem: str) -> str:
     return "person_" + tail if tail.isdigit() else "person_?"
 
 
-def _train_two_models(labels_dir, tracks_dir, calib, exclude_person):
-    """Fit (rgb_only, rgb_depth) logistic models, holding out one person."""
+def _train_two_models(labels_dir, tracks_dir, calib, exclude_person, exclude_stem=None):
+    """Fit (rgb_only, rgb_depth) models, holding the viewed clip out of training.
+
+    Holds out the whole person when there is more than one (a real cross-person
+    test); for a single-subject set, holds out just the viewed CLIP so the calls
+    are still on unseen frames, not the ones it trained on.
+    """
     from sklearn.impute import SimpleImputer
     from sklearn.linear_model import LogisticRegression
     from sklearn.pipeline import Pipeline
@@ -41,7 +46,9 @@ def _train_two_models(labels_dir, tracks_dir, calib, exclude_person):
 
     rows, labels, groups, used, _ = build_dataset(labels_dir, tracks_dir, calib)
     keep = [i for i, g in enumerate(groups) if _person_of(g) != exclude_person]
-    if not keep:  # nothing left to train on -> fall back to all clips
+    if not keep and exclude_stem is not None:  # single subject: hold out the clip
+        keep = [i for i, g in enumerate(groups) if g != exclude_stem]
+    if not keep:  # last resort -> all clips (optimistic)
         keep = list(range(len(rows)))
     X = rows_to_matrix([rows[i] for i in keep])
     y = np.array([labels[i] for i in keep])
@@ -186,6 +193,8 @@ def _play(cv2, cache, stats, timeline, stem, pane_w, win):
         tag = "PLAY " if state["play"] else "PAUSE"
         cv2.putText(canvas, tag + "  %d/%d" % (idx + 1, n), (canvas.shape[1] - 260, 32),
                     cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 255) if state["play"] else _WHITE, 2, cv2.LINE_AA)
+        cv2.putText(canvas, "SPACE pause/play   a/d step frame   [ ] jump 30   drag bar seek   q quit",
+                    (14, canvas.shape[0] - 8), cv2.FONT_HERSHEY_SIMPLEX, 0.45, _WHITE, 1, cv2.LINE_AA)
         cv2.imshow(win, canvas)
 
         key = cv2.waitKey(25 if state["play"] else 40) & 0xFF
@@ -231,6 +240,7 @@ def run_classify_viewer(
     dmax: float = 5.5,
     max_width: int = 1600,
     rebuild: bool = False,
+    pitch: float | None = None,
 ) -> None:
     import cv2
 
@@ -263,7 +273,7 @@ def run_classify_viewer(
     calib = load_calibration(Path(calibration))
     print("training RGB-only and RGB+depth models (holding out " + person + ") ...")
     rgb_only, rgb_depth, depth_cols, n_train = _train_two_models(
-        labels_dir, tracks_dir, calib, person
+        labels_dir, tracks_dir, calib, person, exclude_stem=stem
     )
     print("trained on " + str(n_train) + " held-out clip(s).")
 
@@ -313,9 +323,13 @@ def run_classify_viewer(
                 _draw_skeleton(rgb, p.keypoints, p.scores)
                 _draw_skeleton(dvis, p.keypoints, p.scores)
                 gp = None
-                if frame.gravity is not None and frame.intrinsics is not None:
+                if frame.intrinsics is not None:
                     try:
-                        gp = GroundPlane.from_gravity(frame.intrinsics, height_m, np.asarray(frame.gravity))
+                        if frame.gravity is not None:
+                            gp = GroundPlane.from_gravity(frame.intrinsics, height_m, np.asarray(frame.gravity))
+                        elif pitch is not None:  # D435f (no IMU): fixed mount tilt
+                            gp = GroundPlane(intrinsics=frame.intrinsics, height_m=height_m,
+                                             pitch_deg=float(pitch), roll_deg=0.0)
                     except Exception:
                         gp = None
                 if gp is not None:

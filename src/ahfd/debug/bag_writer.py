@@ -53,12 +53,18 @@ def record_bag(
     out_path = Path(out_path)
     out_path.parent.mkdir(parents=True, exist_ok=True)
 
+    from ahfd.capture.realsense import _device_has_imu
+
     pipeline = rs.pipeline()
     config = rs.config()
     config.enable_stream(rs.stream.color, color_size[0], color_size[1], rs.format.bgr8, fps)
     config.enable_stream(rs.stream.depth, depth_size[0], depth_size[1], rs.format.z16, fps)
-    config.enable_stream(rs.stream.accel)
-    config.enable_stream(rs.stream.gyro)
+    # IMU only when present: the D435i has accel+gyro, the D435f does NOT, and
+    # requesting absent streams makes pipeline.start fail. A D435f .bag then has
+    # no gravity -- extraction uses --pitch for the tilt instead.
+    if _device_has_imu(rs):
+        config.enable_stream(rs.stream.accel)
+        config.enable_stream(rs.stream.gyro)
     config.enable_record_to_file(str(out_path))  # the whole point of this module
 
     profile = pipeline.start(config)
@@ -80,7 +86,13 @@ def record_bag(
     n_framesets = 0
     try:
         while True:
-            frames = pipeline.wait_for_frames()
+            try:
+                frames = pipeline.wait_for_frames()
+            except RuntimeError as exc:  # USB drop mid-recording -- keep what we got
+                print("\ncamera disconnected after %d framesets: %s" % (n_framesets, exc))
+                print("the clip up to here is saved. This is a USB/bandwidth issue, not config:")
+                print("use the shipped cable in a USB-3 port with no hub; 1080p is heavy -- try --rgb 720.")
+                break
             n_framesets += 1
             elapsed = time.monotonic() - start
             if preview:
