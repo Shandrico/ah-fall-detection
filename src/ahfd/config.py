@@ -90,6 +90,7 @@ class DetectConfig(BaseModel):
 
     slow_down_s: float = 20.0
     bed_exit_s: float = 3.0
+    in_bed_move: float = 0.10  # in-bed movement speed that alerts the high tier
 
     min_valid_kp: int = 8
     min_mean_conf: float = 0.40

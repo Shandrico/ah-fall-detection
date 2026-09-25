@@ -66,23 +66,26 @@ BED_EXIT_SEVERITY_BY_RISK: dict[str, int] = {
     "unknown": 2,
 }
 
-# How long a sit near the bed must persist before it alerts, BY tier. The
-# highest ("high") tier fires almost at once -- any sitting up is an attempt to
-# leave and must be caught before the patient is out -- while a low-risk patient
-# may sit freely, so it waits longest (awareness, not alarm).
+# How long a sit near the bed must persist before it alerts, BY tier. Only the
+# "high" (immobile) tier alarms on the sit-up itself -- any movement is an
+# alert. Every other tier is ALLOWED to move/sit in bed, so the sit-up never
+# alarms (infinite dwell); their *exit* is caught by the stand-up trigger in
+# _steady_state instead. "unknown" stays cautious and alerts on the sit-up.
 BED_EXIT_DWELL_BY_RISK: dict[str, float] = {
-    "none": 5.0,
-    "low": 3.0,
-    "medium": 2.0,
-    "moderate": 2.0,  # Morse term for "medium"
-    "high": 1.0,   # highest tier -> alert on the first sustained sit-up
-    # An exit-seeking ("confused") patient is ALLOWED to sit up, so the sit-up
-    # never alarms (infinite dwell) -- the stand-up is what fires. See the
-    # UPRIGHT branch in _steady_state.
+    "high": 1.0,        # immobile -> alert on the first sustained sit-up
+    "unknown": 2.0,     # not assessed -> cautious, alerts on the sit-up
+    "medium": float("inf"),
+    "moderate": float("inf"),
     "confused": float("inf"),
     "wander": float("inf"),
-    "unknown": 3.0,
+    "low": float("inf"),
+    "none": float("inf"),
 }
+
+# Tiers cleared to leave the bed on their own (a fit patient, rare): NO bed-exit
+# alert at all -- neither the sit-up nor the stand-up fires. Fall detection still
+# applies to them, which is their safety net.
+SELF_EXIT_ALLOWED: frozenset[str] = frozenset({"low", "none"})
 
 State = Literal[
     "UNKNOWN",
@@ -153,6 +156,10 @@ class FallThresholds:
 
     # --- bed exit ------------------------------------------------------
     bed_exit_s: float = 3.0
+    # In-bed movement speed (m/s) that alerts for the immobile ("high") tier:
+    # any sustained motion this fast -- turning, reaching, starting to rise --
+    # is itself an alert, before it becomes a sit-up.
+    in_bed_move: float = 0.10
 
     # --- quality gate --------------------------------------------------
     min_valid_kp: int = 8
@@ -185,6 +192,7 @@ class _TrackState:
     bed_assoc_recent: bool = False
     bed_risk_recent: str | None = None
     exit_alerted: bool = False
+    bed_move_emitted: bool = False  # one in-bed-movement alert per movement burst
 
     last_alert_t: float | None = None
     height_log: list[tuple[float, float]] = field(default_factory=list)
@@ -449,6 +457,30 @@ class FallStateMachine:
             ts.bed_assoc_recent = True
             ts.bed_risk_recent = f.bed_risk
             ts.exit_alerted = False  # settled back in bed -> ready for the next exit
+            # The immobile ("high") tier tracks EVERYTHING: any sustained in-bed
+            # movement -- turning, reaching, starting to rise -- alerts on its
+            # own, before a sit-up. One alert per movement burst; resets when the
+            # patient is still again.
+            if (f.bed_risk or "unknown") == "high":
+                if f.motion >= th.in_bed_move:
+                    if not ts.bed_move_emitted and not self._cooling_down(ts, now):
+                        ts.bed_move_emitted = True
+                        ts.last_alert_t = now
+                        return Event(
+                            type="BED_EXIT",
+                            track_id=f.track_id,
+                            t_trigger=now,
+                            t_alert=now,
+                            zone=zone,
+                            severity_override=3,
+                            evidence={
+                                "bed_risk": "high",
+                                "trigger": "in_bed_movement",
+                                "motion": round(f.motion, 3),
+                            },
+                        )
+                else:
+                    ts.bed_move_emitted = False  # still again -> ready for next move
             return None
 
         # A clearly seated body keeps a near-vertical torso even when its
@@ -509,14 +541,15 @@ class FallStateMachine:
             # Standing up after being on/at a bed IS the exit. Catch it here when
             # the sit-up precursor never fired -- a fast riser, or an exit-seeking
             # ("confused") patient whose sit-up is allowed. Fires once per exit.
+            risk = ts.bed_risk_recent or "unknown"
             if (
                 ts.bed_assoc_recent
                 and not ts.exit_alerted
+                and risk not in SELF_EXIT_ALLOWED  # cleared to self-exit -> no alert
                 and not self._cooling_down(ts, now)
             ):
                 ts.exit_alerted = True
                 ts.last_alert_t = now
-                risk = ts.bed_risk_recent or "unknown"
                 return Event(
                     type="BED_EXIT",
                     track_id=f.track_id,

@@ -465,13 +465,31 @@ class TestBedExit:
         assert e.severity == 3
         assert e.evidence["bed_risk"] == "high"
 
-    def test_low_risk_bed_exit_is_awareness_not_alarm(self):
-        """A patient cleared to mobilise -> low priority, no alarm. This is the
-        alarm-fatigue fix: same action, gentler response."""
-        assert self._bed_exit_event("low").severity == 1
+    def _sits_only(self, bed_risk):
+        """Sit on the bed edge and never stand; return the BED_EXIT events."""
+        m = FallStateMachine()
+        frames = hold(0.0, 2.0)
+        frames += hold(2.0, 10.0, h_torso=0.55, zones=("bed_2",),
+                       bed_risk=bed_risk, motion=0.05)
+        return [e for e in run(m, frames) if e.type == "BED_EXIT"]
 
-    def test_none_risk_bed_exit_is_informational(self):
-        assert self._bed_exit_event("none").severity == 0
+    def test_low_and_none_may_self_exit_no_alert(self):
+        """Patients cleared to mobilise on their own raise no bed-exit alert --
+        not on sitting up, nor on standing. Fall detection is their safety net."""
+        assert self._sits_only("low") == []
+        assert self._sits_only("none") == []
+
+    def test_medium_may_move_in_bed_but_standing_up_alerts(self):
+        """Medium: in-bed movement (sitting up) is allowed, but the actual exit
+        (standing) fires at severity 2."""
+        assert self._sits_only("medium") == []  # sitting up is allowed
+        m = FallStateMachine()
+        frames = hold(0.0, 4.0, h_torso=0.55, zones=("bed_2",), bed_risk="medium", motion=0.05)
+        frames += hold(4.0, 2.0, h_torso=1.30, zones=("bed_2",), bed_risk="medium", motion=0.1)
+        events = [e for e in run(m, frames) if e.type == "BED_EXIT"]
+        assert len(events) == 1
+        assert events[0].severity == 2
+        assert events[0].evidence["trigger"] == "stood_up"
 
     def test_unknown_risk_defaults_to_a_cautious_warning(self):
         """Not-yet-assessed is not the same as safe."""
@@ -479,11 +497,32 @@ class TestBedExit:
         # A bed with no risk set at all lands on the same cautious default.
         assert self._bed_exit_event(None).severity == 2
 
-    def test_same_action_different_urgency(self):
-        """The whole point, stated as one assertion: identical bed exit,
-        severity driven entirely by the bed's risk level."""
-        sev = {r: self._bed_exit_event(r).severity for r in ("none", "low", "high")}
-        assert sev["none"] < sev["low"] < sev["high"]
+    def test_severity_grades_by_tier(self):
+        """The bed's tier drives urgency: an immobile patient's sit-up alerts
+        loudly (3); an unassessed bed stays cautious (2)."""
+        assert self._bed_exit_event("high").severity == 3
+        assert self._bed_exit_event("unknown").severity == 2
+
+    def test_high_risk_in_bed_movement_alerts(self):
+        """Immobile ('high') tier tracks everything: sustained movement while
+        lying in bed alerts on its own, before any sit-up."""
+        m = FallStateMachine()
+        still = hold(0.0, 3.0, h_torso=0.30, supported_by_bed="bed_2",
+                     zones=("bed_2",), bed_risk="high", motion=0.0)
+        assert [e for e in run(m, still) if e.type == "BED_EXIT"] == []
+        moving = hold(3.0, 2.0, h_torso=0.30, supported_by_bed="bed_2",
+                      zones=("bed_2",), bed_risk="high", motion=0.20)
+        events = [e for e in run(m, moving) if e.type == "BED_EXIT"]
+        assert len(events) == 1
+        assert events[0].severity == 3
+        assert events[0].evidence["trigger"] == "in_bed_movement"
+
+    def test_medium_may_move_freely_in_bed(self):
+        """A medium patient may move around in bed with no alert."""
+        m = FallStateMachine()
+        moving = hold(0.0, 3.0, h_torso=0.30, supported_by_bed="bed_2",
+                      zones=("bed_2",), bed_risk="medium", motion=0.20)
+        assert [e for e in run(m, moving) if e.type == "BED_EXIT"] == []
 
     def test_confused_patient_may_sit_but_standup_is_the_exit(self):
         """An exit-seeking ('confused') patient is allowed to sit up -- the sit
