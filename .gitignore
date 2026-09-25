@@ -5,6 +5,7 @@
 *.bag
 *.db3
 data/depth_bags/
+data/depth_bags_d435f/
 *.mp4
 *.avi
 *.mkv
@@ -31,6 +32,8 @@ data/events/
 data/classify_cache/
 # derived per-frame feature CSVs, regenerable via `ahfd export-features`
 data/features/
+# error-analysis dumps (wrong-frame CSV + tree rules), regenerable
+data/error_analysis/
 debug_captures/
 
 # Python
