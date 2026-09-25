@@ -1,0 +1,22 @@
+{
+  "clip_id": "test_set_01_label",
+  "duration_s": 148.6,
+  "segments": [
+    { "start_s": 1, "end_s": 5, "posture": "upright" },
+    { "start_s": 7, "end_s": 21, "posture": "sitting" },
+    { "start_s": 23, "end_s": 28, "posture": "upright" },
+    { "start_s": 30, "end_s": 32, "posture": "sitting" },
+    { "start_s": 34, "end_s": 78, "posture": "in_bed" },
+    { "start_s": 80, "end_s": 82, "posture": "sitting" },
+    { "start_s": 84, "end_s": 88, "posture": "upright" },
+    { "start_s": 89, "end_s": 91, "posture": "sitting" },
+    { "start_s": 92, "end_s": 96, "posture": "in_bed" },
+    { "start_s": 98, "end_s": 101, "posture": "sitting" },
+    { "start_s": 103, "end_s": 107, "posture": "on_ground" },
+    { "start_s": 110, "end_s": 116, "posture": "upright" },
+    { "start_s": 118, "end_s": 123, "posture": "on_ground" },
+    { "start_s": 126, "end_s": 129, "posture": "upright" },
+    { "start_s": 131, "end_s": 142, "posture": "on_ground" },
+    { "start_s": 145, "end_s": 148.57, "posture": "upright" }
+  ]
+}

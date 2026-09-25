@@ -1,0 +1,17 @@
+{
+  "clip_id": "fall_collapse_01_label",
+  "duration_s": 83.47,
+  "segments": [
+    { "start_s": 1, "end_s": 8, "posture": "upright" },
+    { "start_s": 9, "end_s": 13, "posture": "sitting" },
+    { "start_s": 14, "end_s": 30, "posture": "in_bed" },
+    { "start_s": 32, "end_s": 34, "posture": "sitting" },
+    { "start_s": 36, "end_s": 38, "posture": "upright" },
+    { "start_s": 39, "end_s": 43, "posture": "on_ground" },
+    { "start_s": 46, "end_s": 51, "posture": "upright" },
+    { "start_s": 52, "end_s": 59, "posture": "on_ground" },
+    { "start_s": 62, "end_s": 72, "posture": "upright" },
+    { "start_s": 75, "end_s": 78, "posture": "on_ground" },
+    { "start_s": 80, "end_s": 83.43, "posture": "upright" }
+  ]
+}
