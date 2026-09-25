@@ -1368,6 +1368,12 @@ def compare_posture(
         help="Ignore the depth (dh_*) features. Run with and without this on the "
         "same clips to isolate what depth adds (paired RGB vs RGB+depth).",
     ),
+    collapse: str = typer.Option(
+        None, "--collapse",
+        help="Score at a coarser granularity: 'bed-state' folds upright+on_ground "
+        "into OUT (in-bed / sitting-up / out), the bed-exit target. Runs the flat "
+        "models only (the cascade/rule models are posture-specific).",
+    ),
 ) -> None:
     """Train the posture classifier several ways and rank them, honestly.
 
@@ -1392,6 +1398,15 @@ def compare_posture(
 
     calib = load_calibration(calibration)
     rows, labels_list, groups, used, skipped = build_dataset(labels, tracks, calib)
+
+    if collapse is not None:
+        from ahfd.ml.posture import COLLAPSE_SCHEMES, collapse_labels
+
+        if collapse not in COLLAPSE_SCHEMES:
+            raise typer.BadParameter(
+                "--collapse must be one of: " + ", ".join(sorted(COLLAPSE_SCHEMES))
+            )
+        labels_list = collapse_labels(labels_list, collapse)
 
     # A fixed test person forces person-level grouping (you can't hold out a
     # single person while grouping by clip).
@@ -1456,9 +1471,14 @@ def compare_posture(
         + ", ".join(k + "=" + str(v) for k, v in sorted(dist.items()))
     )
 
-    result = compare(rows, labels_list, groups, holdout=holdout, rgb_only=rgb_only)
+    result = compare(
+        rows, labels_list, groups, holdout=holdout, rgb_only=rgb_only,
+        flat_only=collapse is not None,
+    )
     if rgb_only:
         typer.echo("(RGB-only: depth dh_* features masked out)")
+    if collapse is not None:
+        typer.echo("(collapsed to '" + collapse + "' labels; flat models only)")
 
     typer.echo("")
     if holdout is not None:

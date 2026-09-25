@@ -66,6 +66,36 @@ FEATURES = AGG_FEATURES + JOINT_FEATURES + DEPTH_FEATURES
 # A row is kept only if at least these are present -- the rest are imputed.
 REQUIRED = ["h_torso", "floor_spread"]
 
+# Coarser label schemes for evaluating at the granularity a task actually needs.
+# "bed-state" is the bed-exit target: it folds the two postures the shallow mount
+# cannot separate (upright/on_ground) into a single OUT state, keeping the
+# distinctions the ward cares about (lying vs sitting-up vs out of bed). Scoring
+# here answers "how well does the system do at the job", separate from the
+# harder-but-less-relevant 4-class posture number.
+COLLAPSE_SCHEMES = {
+    "bed-state": {
+        "in_bed": "IN_BED",
+        "sitting": "SITTING_UP",
+        "upright": "OUT",
+        "on_ground": "OUT",
+    },
+}
+
+
+def collapse_labels(labels, scheme: str):
+    """Map fine posture labels to a coarser scheme (e.g. 'bed-state').
+
+    Unknown labels pass through unchanged, so a partially-labelled set never
+    raises -- it just isn't collapsed for those rows.
+    """
+    if scheme not in COLLAPSE_SCHEMES:
+        raise ValueError(
+            "unknown collapse scheme " + repr(scheme)
+            + "; known: " + ", ".join(sorted(COLLAPSE_SCHEMES))
+        )
+    mapping = COLLAPSE_SCHEMES[scheme]
+    return [mapping.get(lbl, lbl) for lbl in labels]
+
 
 def _finite_or_none(v):
     """Coerce inf/nan/None to None so every stored feature is a real number or absent.

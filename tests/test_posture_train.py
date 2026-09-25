@@ -112,3 +112,49 @@ class TestTrain:
             r["h_ankle_min"] = None
         result = train(rows, labels, seed=0)  # must not crash on None -> imputed
         assert result.accuracy >= 0.8
+
+
+class TestCollapseLabels:
+    def test_bed_state_mapping(self):
+        from ahfd.ml.posture import collapse_labels
+
+        out = collapse_labels(["in_bed", "sitting", "upright", "on_ground"], "bed-state")
+        assert out == ["IN_BED", "SITTING_UP", "OUT", "OUT"]
+
+    def test_unknown_label_passes_through(self):
+        from ahfd.ml.posture import collapse_labels
+
+        # A label the scheme doesn't mention is left alone, not dropped.
+        assert collapse_labels(["mystery"], "bed-state") == ["mystery"]
+
+    def test_unknown_scheme_raises(self):
+        from ahfd.ml.posture import collapse_labels
+
+        with pytest.raises(ValueError):
+            collapse_labels(["in_bed"], "nonsense")
+
+
+class TestCompareFlatOnly:
+    def test_flat_only_keeps_only_flat_models(self):
+        # The cascade/rule models hardcode the four posture names, so collapsed
+        # labels must run flat models only -- and compare must still work on them.
+        import random
+
+        from ahfd.ml.compare import compare
+        from ahfd.ml.posture import collapse_labels
+
+        rng = random.Random(0)
+        rows, labels, groups = [], [], []
+        for grp in ("A", "B"):
+            for _ in range(15):
+                lying = rng.random() < 0.5
+                h = 0.25 if lying else 1.1
+                rows.append(_row(h + rng.uniform(-0.03, 0.03), 1.5 if lying else 10.0))
+                labels.append("in_bed" if lying else "upright")
+                groups.append(grp)
+        collapsed = collapse_labels(labels, "bed-state")  # -> IN_BED / OUT
+        res = compare(rows, collapsed, groups, flat_only=True)
+        names = [s.name for s in res.scores]
+        assert names, "expected at least one model"
+        assert all(n.startswith("flat_") for n in names)
+        assert not any("cascade" in n or "rule" in n for n in names)
