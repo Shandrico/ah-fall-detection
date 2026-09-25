@@ -3,6 +3,7 @@
 from ahfd.detect.cusum import CusumConfig, CusumOnset, CusumSample
 from ahfd.detect.events import SEVERITY, Event, EventType
 from ahfd.detect.state_machine import FallStateMachine, FallThresholds, State
+from ahfd.detect.bed_exit import BedExitConfig, BedExitMonitor
 
 __all__ = [
     "Event",
@@ -14,4 +15,6 @@ __all__ = [
     "CusumOnset",
     "CusumConfig",
     "CusumSample",
+    "BedExitMonitor",
+    "BedExitConfig",
 ]
