@@ -1701,19 +1701,27 @@ def estimate_ground(
 def compare_depth(
     dmin: float = typer.Option(1.0, help="Near clip for the depth colour ramp (m)."),
     dmax: float = typer.Option(6.0, help="Far clip for the depth colour ramp (m)."),
+    long_range: bool = typer.Option(
+        False, "--long-range",
+        help="Max both projectors for a far (e.g. 8 m) comparison, and point the "
+        "colour ramp there (dmax -> 8 if left at the default).",
+    ),
 ) -> None:
     """Live side-by-side depth from BOTH RealSense cameras, with quality gauges.
 
-    Opens the two connected cameras (e.g. D435i + D435f) at once and shows each
+    Opens the two connected cameras (e.g. D435f + D455) at once and shows each
     one's colourised depth with a centre-ROI readout -- fill %, mean distance,
     noise spread -- so you point both at the same target and see which gives
-    denser, cleaner depth. Two projectors interfere (representative of a
+    denser, cleaner depth. Depth is raw (no distance cut), so the gauge reads
+    true noise at any range. Two projectors interfere (representative of a
     multi-camera ward); press 1/2 to toggle a camera's projector to isolate it.
-    Keys: 1/2 projector on/off, q quit.
+    Keys: 1/2 projector on/off, n numbers, q quit.
     """
+    if long_range and dmax == 6.0:
+        dmax = 8.0  # so 8 m depth lands in-ramp instead of saturating
     from ahfd.viz.compare_cameras import run_compare_cameras
 
-    run_compare_cameras(dmin=dmin, dmax=dmax)
+    run_compare_cameras(dmin=dmin, dmax=dmax, long_range=long_range)
 
 
 @app.command()

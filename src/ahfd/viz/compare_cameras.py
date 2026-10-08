@@ -60,7 +60,7 @@ def _colorize(cv2, depth_m, dmin, dmax):
 
 def run_compare_cameras(*, dmin: float = 1.0, dmax: float = 6.0,
                         width: int = 848, height: int = 480, fps: int = 30,
-                        pane_w: int = 640) -> None:
+                        pane_w: int = 640, long_range: bool = False) -> None:
     import cv2
     import pyrealsense2 as rs
 
@@ -81,6 +81,16 @@ def run_compare_cameras(*, dmin: float = 1.0, dmax: float = 6.0,
         profile = pipe.start(cfg)
         sensor = profile.get_device().first_depth_sensor()
         scale = float(sensor.get_depth_scale())
+        # For a long-range (8 m) comparison the projector must be maxed on BOTH
+        # cameras, else far depth is starved and the fill % is meaninglessly low
+        # -- the same reason record_bag maxes it. Best-effort: not every unit
+        # exposes laser_power.
+        if long_range and sensor.supports(rs.option.laser_power):
+            try:
+                rng = sensor.get_option_range(rs.option.laser_power)
+                sensor.set_option(rs.option.laser_power, rng.max)
+            except Exception:
+                pass
         cams.append({"pipe": pipe, "scale": scale,
                      "label": "%s  %s" % (name, serial[-4:]), "sensor": sensor,
                      "emitter": True})
