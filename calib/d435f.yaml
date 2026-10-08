@@ -1,0 +1,32 @@
+camera_id: d435f
+camera:
+  width: 1920
+  height: 1080
+  fx: 1360.0
+  fy: 1358.0
+  cx: 980.0
+  cy: 572.0
+  height_m: 2.5
+  gravity:
+  - 0.0
+  - -9.4661
+  - -2.5364
+zones:
+- name: 24/09/2026
+  kind: bed
+  top_m: 0.4
+  risk_level: low
+  polygon:
+  - - -1.044
+    - 9.301
+  - - 0.084
+    - 10.129
+  - - 0.879
+    - 6.805
+  - - -0.123
+    - 6.386
+notes: 'D435f multi-bed mount, ~15 deg downtilt. Zones NOT yet calibrated for this
+  mount -- run `ahfd calibrate-zones` on a D435f clip before using bed-exit detection.
+  Gravity is synthesised (no IMU); re-derive if the mount angle changes.
+
+  '

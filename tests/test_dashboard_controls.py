@@ -507,14 +507,16 @@ class TestRescan:
             assert status == 200 and body["rescanned"] is True
             assert ctl.calls == 1
         finally:
-            srv.shutdown(); srv.server_close()
+            srv.shutdown()
+            srv.server_close()
 
     def test_rescan_without_a_controller_is_503(self):
         srv, _state, base = serve()
         try:
             assert request(base + "/api/rescan", {})[0] == 503
         finally:
-            srv.shutdown(); srv.server_close()
+            srv.shutdown()
+            srv.server_close()
 
     def test_rescan_is_same_origin_checked(self):
         srv, _state, base = serve(FakeController())
@@ -522,7 +524,8 @@ class TestRescan:
             assert request(base + "/api/rescan", {},
                            headers={"Origin": "http://evil.example"})[0] == 403
         finally:
-            srv.shutdown(); srv.server_close()
+            srv.shutdown()
+            srv.server_close()
 
 
 class TestSourceOptionBuilding:
@@ -723,7 +726,8 @@ class TestControlEndpoints:
             # The read-only dashboard still works.
             assert request(base + "/api/state")[0] == 200
         finally:
-            srv.shutdown(); srv.server_close()
+            srv.shutdown()
+            srv.server_close()
 
     def test_options_are_served(self):
         srv, _state, base = serve(FakeController())
@@ -731,7 +735,8 @@ class TestControlEndpoints:
             status, body = request(base + "/api/options")
             assert status == 200 and body["backends"] == ["rtmo"]
         finally:
-            srv.shutdown(); srv.server_close()
+            srv.shutdown()
+            srv.server_close()
 
     def test_body_is_forwarded_as_kwargs(self):
         ctl = FakeController()
@@ -745,7 +750,8 @@ class TestControlEndpoints:
             # Whitespace trimmed, blanks and non-booleans become None.
             assert ctl.seen == [{"source": "rs://", "backend": None, "show_rgb": None}]
         finally:
-            srv.shutdown(); srv.server_close()
+            srv.shutdown()
+            srv.server_close()
 
     def test_the_controllers_status_reaches_the_client(self):
         ctl = FakeController(code=409, payload={"ok": False, "error": "busy"})
@@ -755,7 +761,8 @@ class TestControlEndpoints:
                 409, {"ok": False, "error": "busy"}
             )
         finally:
-            srv.shutdown(); srv.server_close()
+            srv.shutdown()
+            srv.server_close()
 
     def test_malformed_body_is_refused_without_wedging_the_server(self):
         ctl = FakeController()
@@ -774,7 +781,8 @@ class TestControlEndpoints:
             assert ctl.seen == []
             assert request(base + "/api/state")[0] == 200
         finally:
-            srv.shutdown(); srv.server_close()
+            srv.shutdown()
+            srv.server_close()
 
     def test_oversized_body_is_refused(self):
         ctl = FakeController()
@@ -783,7 +791,8 @@ class TestControlEndpoints:
             assert request(base + "/api/switch", {"source": "x" * 9000})[0] == 400
             assert ctl.seen == []
         finally:
-            srv.shutdown(); srv.server_close()
+            srv.shutdown()
+            srv.server_close()
 
     def test_cross_origin_post_is_refused(self):
         ctl = FakeController()
@@ -800,7 +809,8 @@ class TestControlEndpoints:
             request(base + "/api/ack/e1", {}, headers={"Origin": "http://evil.example"})
             assert state.snapshot()["open_count"] == 1
         finally:
-            srv.shutdown(); srv.server_close()
+            srv.shutdown()
+            srv.server_close()
 
 
 # -------------------------------------------------------------- devices

@@ -49,11 +49,18 @@ def make_handler(state: DashboardState, controller=None):
             pass
 
         def _send(self, code: int, content_type: str, body: bytes) -> None:
-            self.send_response(code)
-            self.send_header("Content-Type", content_type)
-            self.send_header("Content-Length", str(len(body)))
-            self.end_headers()
-            self.wfile.write(body)
+            try:
+                self.send_response(code)
+                self.send_header("Content-Type", content_type)
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+            except (BrokenPipeError, ConnectionResetError, ConnectionAbortedError):
+                # The browser reloaded, closed the tab, or cancelled the request
+                # mid-response -- there is nothing left to write to. End the
+                # handler quietly, exactly as the MJPEG stream does, instead of
+                # letting socketserver print a traceback for every aborted GET.
+                pass
 
         def _json(self, code: int, payload: dict) -> None:
             self._send(code, "application/json", json.dumps(payload).encode())

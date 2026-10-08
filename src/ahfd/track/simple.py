@@ -18,7 +18,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
-from ahfd.types import PersonPose, PoseFrame
+from ahfd.types import PoseFrame
 
 BBox = tuple[float, float, float, float]
 

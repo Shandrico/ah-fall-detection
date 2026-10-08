@@ -273,7 +273,10 @@ class CompareResult:
     tree_rules: str = field(default="")  # export_text of a flat tree on all data
 
 
-def compare(rows, labels, groups, *, seed: int = 0, holdout: str | None = None) -> CompareResult:
+def compare(
+    rows, labels, groups, *, seed: int = 0, holdout: str | None = None,
+    rgb_only: bool = False,
+) -> CompareResult:
     """Evaluate every model in the zoo on held-out groups, ranked.
 
     Two protocols, depending on `holdout`:
@@ -285,6 +288,11 @@ def compare(rows, labels, groups, *, seed: int = 0, holdout: str | None = None) 
       the named one, test on that one only. This is the plain train/test
       holdout ("train on persons 01+02, test on 03"); scores are computed on
       the held-out group's frames alone.
+
+    ``rgb_only`` masks the depth (dh_*) features to NaN so the imputer turns
+    them into a constant -- i.e. the model can't use depth. Running compare
+    twice, with and without it, on the same rows/split isolates exactly what the
+    depth features add (a paired RGB vs RGB+depth comparison).
     """
     from sklearn.metrics import (
         balanced_accuracy_score,
@@ -295,6 +303,12 @@ def compare(rows, labels, groups, *, seed: int = 0, holdout: str | None = None) 
     from sklearn.model_selection import LeaveOneGroupOut
 
     X = rows_to_matrix(rows)
+    if rgb_only:
+        from ahfd.ml.posture import DEPTH_FEATURES
+
+        depth_cols = [_FIDX[f] for f in DEPTH_FEATURES if f in _FIDX]
+        if depth_cols:
+            X[:, depth_cols] = np.nan  # drop the depth signal -> imputed constant
     y = np.asarray(labels)
     g = np.asarray(groups)
     classes = sorted(set(labels))

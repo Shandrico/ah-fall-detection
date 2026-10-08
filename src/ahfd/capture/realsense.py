@@ -24,6 +24,7 @@ imported lazily and only here. Everything else in the project runs without it.
 
 from __future__ import annotations
 
+import math
 from typing import Iterator
 
 import numpy as np
@@ -40,6 +41,10 @@ _FIRST_FRAME_TIMEOUT_MS = 8000
 _START_ATTEMPTS = 4
 
 
+class RealSenseVerificationError(RuntimeError):
+    """Deterministic onsite verification failure that must not be retried."""
+
+
 def _import_rs():
     try:
         import pyrealsense2 as rs
@@ -50,6 +55,134 @@ def _import_rs():
             "librealsense from source -- there is no aarch64 wheel."
         ) from exc
     return rs
+
+
+def _get_device_serial(rs, device) -> str:
+    """Read a RealSense serial without ever formatting it into an error."""
+    try:
+        return str(device.get_info(rs.camera_info.serial_number))
+    except Exception:  # pragma: no cover - hardware/firmware dependent
+        return ""
+
+
+def _bind_config_to_device(config, device_serial: str | None) -> None:
+    """Pin a live pipeline config to the already-probed physical camera."""
+    if device_serial is not None:
+        config.enable_device(device_serial)
+
+
+def _verify_active_device_serial(rs, device, device_serial: str | None) -> None:
+    """Fail closed if librealsense started a device other than the probed one."""
+    if device_serial is not None and _get_device_serial(rs, device) != device_serial:
+        raise RealSenseVerificationError(
+            "active RealSense does not match the device selected during preflight"
+        )
+
+
+def _verify_active_usb3(rs, device) -> str:
+    """Require a readable USB-3 descriptor from the active pipeline device."""
+    info = getattr(getattr(rs, "camera_info", None), "usb_type_descriptor", None)
+    if info is None:
+        raise RealSenseVerificationError(
+            "active RealSense USB link could not be verified"
+        )
+    try:
+        supports = getattr(device, "supports", None)
+        if supports is None or not supports(info):
+            raise RealSenseVerificationError(
+                "active RealSense USB link could not be verified"
+            )
+        descriptor = str(device.get_info(info)).strip()
+    except RealSenseVerificationError:
+        raise
+    except Exception:  # pragma: no cover - firmware-dependent metadata
+        raise RealSenseVerificationError(
+            "active RealSense USB link could not be verified"
+        ) from None
+    if not descriptor:
+        raise RealSenseVerificationError(
+            "active RealSense USB link could not be verified"
+        )
+    if not descriptor.startswith("3"):
+        raise RealSenseVerificationError("active RealSense link is not USB 3")
+    return descriptor
+
+
+def _apply_strict_depth_controls(rs, depth_sensor) -> dict[str, float | bool]:
+    """Apply and read back the onsite projector controls, failing closed."""
+    emitter_option = rs.option.emitter_enabled
+    laser_option = rs.option.laser_power
+    try:
+        supported = depth_sensor.supports(emitter_option) and depth_sensor.supports(
+            laser_option
+        )
+    except Exception:
+        raise RealSenseVerificationError(
+            "onsite depth-control support could not be verified"
+        ) from None
+    if not supported:
+        raise RealSenseVerificationError(
+            "onsite D435i must expose emitter_enabled and laser_power controls"
+        )
+    try:
+        laser_range = depth_sensor.get_option_range(laser_option)
+        laser_max = float(laser_range.max)
+        depth_sensor.set_option(emitter_option, 1.0)
+        depth_sensor.set_option(laser_option, laser_max)
+        emitter_readback = float(depth_sensor.get_option(emitter_option))
+        laser_readback = float(depth_sensor.get_option(laser_option))
+    except Exception:
+        raise RealSenseVerificationError(
+            "onsite depth controls could not be applied and read back"
+        ) from None
+
+    if (
+        not math.isfinite(laser_max)
+        or laser_max <= 0.0
+        or not math.isfinite(emitter_readback)
+        or not math.isfinite(laser_readback)
+    ):
+        raise RealSenseVerificationError(
+            "onsite depth-control readback was not finite and positive"
+        )
+    laser_tolerance = max(0.01, abs(laser_max) * 1e-4)
+    if abs(emitter_readback - 1.0) > 0.05:
+        raise RealSenseVerificationError(
+            "onsite emitter readback did not confirm enabled"
+        )
+    if abs(laser_readback - laser_max) > laser_tolerance:
+        raise RealSenseVerificationError(
+            "onsite laser readback did not confirm maximum power"
+        )
+    return {
+        "emitter_enabled": True,
+        "laser_at_max": True,
+        "laser_power": laser_readback,
+        "laser_power_max": laser_max,
+    }
+
+
+def _device_has_imu(rs, device_serial: str | None = None) -> bool:
+    """True if a connected RealSense exposes accel+gyro.
+
+    The D435i has an IMU; the D435f does NOT (the 'f' is an IR filter, not the
+    'i' IMU). Requesting accel/gyro on a device without them makes
+    ``pipeline.start`` fail with "Couldn't resolve requests", so callers enable
+    the IMU streams only when this returns True.
+    """
+    try:
+        for dev in rs.context().query_devices():
+            if device_serial is not None and _get_device_serial(rs, dev) != device_serial:
+                continue
+            stream_types = set()
+            for sensor in dev.query_sensors():
+                for prof in sensor.get_stream_profiles():
+                    stream_types.add(prof.stream_type())
+            if {rs.stream.accel, rs.stream.gyro} <= stream_types:
+                return True
+    except Exception:  # pragma: no cover - hardware dependent
+        pass
+    return False
 
 
 class _RealSenseBase:
@@ -66,6 +199,11 @@ class _RealSenseBase:
         ir_index=1,
         ir_size=(1280, 720),
         emitter=None,
+        max_laser=False,
+        max_range_m=6.0,
+        spatial_magnitude=2,
+        device_serial: str | None = None,
+        strict_depth_controls: bool = False,
     ):
         # with_depth defaults OFF: nothing downstream consumes depth (the
         # geometry is homography-based), but capturing + filtering + aligning it
@@ -90,6 +228,17 @@ class _RealSenseBase:
         self._ir_index = ir_index
         self._ir_size = ir_size
         self._emitter = emitter
+        self._max_laser = max_laser
+        self._max_range_m = max_range_m
+        self._spatial_magnitude = spatial_magnitude
+        self._device_serial = device_serial
+        self._strict_depth_controls = bool(strict_depth_controls)
+        if self._strict_depth_controls and (
+            not self._with_depth or self._emitter is not True or not self._max_laser
+        ):
+            raise ValueError(
+                "strict depth controls require depth, emitter and max_laser enabled"
+            )
         self._pipeline = self._rs.pipeline()
         self._config = self._rs.config()
         self._align = None
@@ -97,16 +246,27 @@ class _RealSenseBase:
         self._intrinsics: Intrinsics | None = None
         self._depth_scale = 0.001
         self._gravity: np.ndarray | None = None
+        self._started = False
+        self._verified_depth_controls: dict[str, float | bool] | None = None
+        # Set on the first depth frame: None = unknown, True = the stored
+        # depth->colour extrinsics are corrupt (rosbag2 .db3 playback mangles
+        # them), so rs.align emits all-zero depth and we resample manually.
+        self._manual_align: bool | None = None
+        self._remap = None  # cached (v_idx, u_idx, valid) for the manual warp
 
     def _build_filters(self):
         rs = self._rs
         threshold = rs.threshold_filter()
         threshold.set_option(rs.option.min_distance, 0.3)
-        threshold.set_option(rs.option.max_distance, 6.0)  # was 3.0: clipped far beds
+        # The far cut. 6 m was the default (3 m clipped far beds); raise it to see
+        # further, at the cost of noisier depth -- the D435i can report ~10 m.
+        threshold.set_option(rs.option.max_distance, float(self._max_range_m))
 
         to_disparity = rs.disparity_transform(True)
         spatial = rs.spatial_filter()
-        spatial.set_option(rs.option.filter_magnitude, 2)
+        # filter_magnitude = number of smoothing passes (1-5). More = less
+        # spatial noise, at the cost of rounding off the person's edges.
+        spatial.set_option(rs.option.filter_magnitude, float(max(1, min(5, self._spatial_magnitude))))
         spatial.set_option(rs.option.filter_smooth_alpha, 0.5)
         spatial.set_option(rs.option.filter_smooth_delta, 20)
         temporal = rs.temporal_filter()
@@ -126,17 +286,35 @@ class _RealSenseBase:
 
     def _start(self):
         rs = self._rs
+        self._verified_depth_controls = None
         profile = self._pipeline.start(self._config)
         device = profile.get_device()
+        _verify_active_device_serial(rs, device, self._device_serial)
+        if self._strict_depth_controls:
+            _verify_active_usb3(rs, device)
+
+        depth_sensor = None
+        if self._with_depth or self._emitter is not None:
+            try:
+                depth_sensor = device.first_depth_sensor()
+            except Exception:
+                if self._strict_depth_controls:
+                    raise RealSenseVerificationError(
+                        "onsite D435i depth sensor could not be verified"
+                    ) from None
+                raise
 
         # The dot projector lives on the stereo (depth) sensor, and can be set
         # whether or not depth is streamed -- turning it off gives a clean IR
         # image. Best-effort: not every firmware exposes the option.
-        if self._emitter is not None:
+        if self._strict_depth_controls:
+            self._verified_depth_controls = _apply_strict_depth_controls(
+                rs, depth_sensor
+            )
+        elif self._emitter is not None:
             try:
-                sensor = device.first_depth_sensor()
-                if sensor.supports(rs.option.emitter_enabled):
-                    sensor.set_option(
+                if depth_sensor.supports(rs.option.emitter_enabled):
+                    depth_sensor.set_option(
                         rs.option.emitter_enabled, 1.0 if self._emitter else 0.0
                     )
             except Exception:  # pragma: no cover - best-effort hardware option
@@ -144,7 +322,20 @@ class _RealSenseBase:
 
         if self._with_depth:
             self._align = rs.align(rs.stream.color)
-            self._depth_scale = float(device.first_depth_sensor().get_depth_scale())
+            self._depth_scale = float(depth_sensor.get_depth_scale())
+
+            # Maxing the projector power puts more IR light on far surfaces, so
+            # depth stays dense out to 4-6 m instead of dropping to sparse
+            # speckle. Best-effort: not every firmware exposes laser_power, and
+            # it only matters when the emitter is on (which it is, by default,
+            # whenever depth is streamed). Near-range accuracy is unaffected.
+            if self._max_laser and not self._strict_depth_controls:
+                try:
+                    if depth_sensor.supports(rs.option.laser_power):
+                        rng = depth_sensor.get_option_range(rs.option.laser_power)
+                        depth_sensor.set_option(rs.option.laser_power, rng.max)
+                except Exception:  # pragma: no cover - best-effort hardware option
+                    pass
 
     def _reset_device(self) -> None:
         """Hardware-reset the device and wait for it to re-enumerate.
@@ -157,8 +348,13 @@ class _RealSenseBase:
         rs = self._rs
         try:
             devices = rs.context().query_devices()
-            if len(devices) > 0:
-                devices[0].hardware_reset()
+            for device in devices:
+                if (
+                    self._device_serial is None
+                    or _get_device_serial(rs, device) == self._device_serial
+                ):
+                    device.hardware_reset()
+                    break
         except Exception:  # pragma: no cover - best-effort recovery
             pass
         time.sleep(4.0)  # re-enumeration takes a few seconds
@@ -175,12 +371,15 @@ class _RealSenseBase:
         """
         import time
 
+        if self._started:
+            return
         rs = self._rs
         last: Exception | None = None
         for attempt in range(_START_ATTEMPTS):
             try:
                 self._start()
                 self._pipeline.wait_for_frames(_FIRST_FRAME_TIMEOUT_MS)
+                self._started = True
                 return
             except Exception as exc:  # noqa: BLE001 - retry on any capture failure
                 last = exc
@@ -188,6 +387,10 @@ class _RealSenseBase:
                     self._pipeline.stop()
                 except Exception:
                     pass
+                self._verified_depth_controls = None
+                self._started = False
+                if isinstance(exc, RealSenseVerificationError):
+                    raise
                 if attempt >= _START_ATTEMPTS - 1:
                     break
                 if attempt == _START_ATTEMPTS - 2:
@@ -237,6 +440,56 @@ class _RealSenseBase:
         display = np.asanyarray(f["hole"].process(common).get_data()).copy()
         return measure, display
 
+    def _extrinsics_sane(self, frames) -> bool:
+        """True if the stored depth->colour extrinsics are a valid transform.
+
+        rosbag2 (.db3) recording can serialise garbage inter-stream extrinsics
+        (rotation entries in the hundred-thousands, metre-scale+ translation),
+        which makes rs.align project every depth pixel out of frame -> all-zero
+        aligned depth. Detect that so we can resample manually instead.
+        """
+        try:
+            dp = frames.get_depth_frame().get_profile()
+            cp = frames.get_color_frame().get_profile()
+            e = dp.get_extrinsics_to(cp)
+        except Exception:  # pragma: no cover - hardware/format dependent
+            return False
+        rot = np.asarray(e.rotation, dtype=float)
+        tr = np.asarray(e.translation, dtype=float)
+        if not (np.all(np.isfinite(rot)) and np.all(np.isfinite(tr))):
+            return False
+        # A rotation matrix has entries in [-1, 1]; the D435i depth<->colour
+        # translation is ~1.5 cm. Anything wildly bigger than that is corrupt.
+        return bool(np.all(np.abs(rot) <= 1.5) and np.all(np.abs(tr) < 1.0))
+
+    def _resample_native_to_color(self, native, depth_frame):
+        """Warp a native-resolution depth array into the colour pixel grid.
+
+        Used only when the stored extrinsics are corrupt (see
+        ``_extrinsics_sane``). With the ~1.5 cm baseline ignored -- negligible
+        parallax past ~2 m -- the depth->colour map reduces to a pure
+        focal-length / principal-point resample, independent of range. A
+        backward gather (nearest neighbour, no interpolation across depth
+        edges) fills each colour pixel from its source depth pixel.
+        """
+        intr = self._intrinsics  # colour intrinsics (set from the colour frame)
+        di = depth_frame.get_profile().as_video_stream_profile().get_intrinsics()
+        hc, wc = intr.height, intr.width
+        if self._remap is None or self._remap[0] != (hc, wc):
+            uc = np.arange(wc, dtype=np.float32)
+            vc = np.arange(hc, dtype=np.float32)
+            ud = np.round((uc - intr.cx) * (di.fx / intr.fx) + di.ppx).astype(np.int64)
+            vd = np.round((vc - intr.cy) * (di.fy / intr.fy) + di.ppy).astype(np.int64)
+            uok = (ud >= 0) & (ud < di.width)
+            vok = (vd >= 0) & (vd < di.height)
+            valid = np.outer(vok, uok)
+            self._remap = ((hc, wc), np.clip(vd, 0, di.height - 1),
+                           np.clip(ud, 0, di.width - 1), valid)
+        _, vd, ud, valid = self._remap
+        out = native[np.ix_(vd, ud)]
+        out[~valid] = 0
+        return out
+
     def _assemble_ir(self, frames, index: int, t: float) -> Frame | None:
         """Assemble a Frame from the left IR imager, as a 3-channel grey image.
 
@@ -281,10 +534,20 @@ class _RealSenseBase:
         # RGB-only path (default): no align, no depth filtering -- the expensive
         # per-frame work that made the RealSense slow. Depth path kept for any
         # future depth feature, behind with_depth.
+        native_depth = None  # set only when we must resample manually
         if self._with_depth:
-            aligned = self._align.process(frames)
-            color_frame = aligned.get_color_frame()
-            depth_frame = aligned.get_depth_frame()
+            if self._manual_align is None:
+                self._manual_align = not self._extrinsics_sane(frames)
+            if self._manual_align:
+                # Corrupt stored extrinsics: skip rs.align (it would zero the
+                # depth) and take the native depth to resample ourselves.
+                color_frame = frames.get_color_frame()
+                depth_frame = frames.get_depth_frame()
+                native_depth = depth_frame
+            else:
+                aligned = self._align.process(frames)
+                color_frame = aligned.get_color_frame()
+                depth_frame = aligned.get_depth_frame()
             if not color_frame or not depth_frame:
                 return None
         else:
@@ -313,6 +576,11 @@ class _RealSenseBase:
         measure = display = None
         if depth_frame is not None:
             measure, display = self._measure_and_filtered(depth_frame)
+            if native_depth is not None:
+                # depth_frame was native; warp the filtered depth into the
+                # colour grid so joint pixels index it the same as when aligned.
+                measure = self._resample_native_to_color(measure, native_depth)
+                display = self._resample_native_to_color(display, native_depth)
 
         gravity = self._read_gravity(frames)
         if gravity is not None:
@@ -334,6 +602,8 @@ class _RealSenseBase:
             self._pipeline.stop()
         except Exception:  # pragma: no cover - already stopped
             pass
+        self._started = False
+        self._verified_depth_controls = None
 
 
 class RealSenseSource(_RealSenseBase):
@@ -350,12 +620,21 @@ class RealSenseSource(_RealSenseBase):
         ir_index=1,
         ir_size=(1280, 720),
         emitter=None,
+        max_laser=False,
+        max_range_m=6.0,
+        spatial_magnitude=2,
+        device_serial: str | None = None,
+        strict_depth_controls: bool = False,
     ):
         super().__init__(
             color_size, depth_size, fps, with_depth=with_depth,
             infrared=infrared, ir_index=ir_index, ir_size=ir_size, emitter=emitter,
+            max_laser=max_laser, max_range_m=max_range_m, spatial_magnitude=spatial_magnitude,
+            device_serial=device_serial,
+            strict_depth_controls=strict_depth_controls,
         )
         rs = self._rs
+        _bind_config_to_device(self._config, device_serial)
         if infrared:
             # Left IR imager, single-channel Y8. Colour is not enabled -- one
             # stream is all pose needs, and it keeps the frame rate up.
@@ -370,9 +649,28 @@ class RealSenseSource(_RealSenseBase):
             self._config.enable_stream(
                 rs.stream.depth, depth_size[0], depth_size[1], rs.format.z16, fps
             )
-        # IMU streams for the gravity vector (cheap; calibration needs accel).
-        self._config.enable_stream(rs.stream.accel)
-        self._config.enable_stream(rs.stream.gyro)
+        # IMU streams for the gravity vector -- only when the device has an IMU.
+        # The D435i exposes accel+gyro; the D435f does NOT, and requesting absent
+        # streams makes pipeline.start fail ("Couldn't resolve requests"). Enable
+        # them conditionally so both cameras work. Without an IMU there is no live
+        # gravity, so the height/ground modes fall back to a calibrated tilt.
+        self._has_imu = _device_has_imu(rs, device_serial)
+        if self._has_imu:
+            self._config.enable_stream(rs.stream.accel)
+            self._config.enable_stream(rs.stream.gyro)
+
+    def preflight(self) -> dict[str, float | bool]:
+        """Start once, verify strict controls, and discard the startup frameset."""
+        self._start_with_retry()
+        if self._strict_depth_controls and self._verified_depth_controls is None:
+            raise RealSenseVerificationError("onsite depth controls were not verified")
+        return dict(self._verified_depth_controls or {})
+
+    @property
+    def verified_depth_controls(self) -> dict[str, float | bool] | None:
+        if self._verified_depth_controls is None:
+            return None
+        return dict(self._verified_depth_controls)
 
     @property
     def meta(self) -> SourceMeta:
@@ -411,9 +709,22 @@ class RealSenseSource(_RealSenseBase):
 class BagSource(_RealSenseBase):
     """Recorded .bag playback, deterministic and frame-exact."""
 
-    def __init__(self, path: str):
-        super().__init__()
-        rs = self._rs
+    def __init__(
+        self,
+        path: str,
+        with_depth: bool = False,
+        max_range_m: float = 6.0,
+        spatial_magnitude: int = 2,
+    ):
+        # with_depth defaults off so plain replay stays fast; extraction for the
+        # depth features passes True to also emit the aligned depth per frame.
+        # The filter chain re-runs on playback (the .bag stores RAW depth), so
+        # max_range_m / spatial_magnitude let you tune denoising after the fact.
+        super().__init__(
+            with_depth=with_depth,
+            max_range_m=max_range_m,
+            spatial_magnitude=spatial_magnitude,
+        )
         self._path = path
         self._config.enable_device_from_file(path, repeat_playback=False)
 

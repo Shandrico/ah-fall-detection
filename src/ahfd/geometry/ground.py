@@ -91,19 +91,21 @@ class GroundPlane:
     roll_deg: float = 0.0
 
     def __post_init__(self) -> None:
-        if self.height_m <= 0.0:
+        if not math.isfinite(self.height_m) or self.height_m <= 0.0:
             raise ValueError(
                 "camera height must be positive, got " + repr(self.height_m)
             )
         # A camera pitched up, or exactly level, never intersects the floor
         # ahead of it, so no pixel has a floor position. Catch it here rather
         # than returning None for every pixel later.
-        if self.pitch_deg <= 0.0:
+        if not math.isfinite(self.pitch_deg) or self.pitch_deg <= 0.0:
             raise ValueError(
                 "pitch_deg must be positive (camera looking down); got "
                 + repr(self.pitch_deg)
                 + ". A level or upward camera sees no floor."
             )
+        if not math.isfinite(self.roll_deg):
+            raise ValueError("roll_deg must be finite, got " + repr(self.roll_deg))
 
     # ---------------------------------------------------------------- build
 
@@ -155,6 +157,8 @@ class GroundPlane:
         calibration uses, which keeps the two from disagreeing.
         """
         g = np.asarray(gravity_cam, dtype=float).reshape(3)
+        if not np.all(np.isfinite(g)):
+            raise ValueError("gravity vector must be finite")
         norm = float(np.linalg.norm(g))
         if norm < 1e-6:
             raise ValueError("gravity vector is degenerate (near zero length)")

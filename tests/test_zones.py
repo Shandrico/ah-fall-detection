@@ -4,7 +4,14 @@ from __future__ import annotations
 
 import pytest
 
-from ahfd.geometry.zones import Zone, ZoneMap, point_in_polygon, rectangle
+from ahfd.geometry.zones import (
+    Zone,
+    ZoneMap,
+    distance_to_polygon_edge,
+    point_in_polygon,
+    rectangle,
+    signed_distance_to_polygon,
+)
 
 SQUARE = [(0.0, 0.0), (2.0, 0.0), (2.0, 2.0), (0.0, 2.0)]
 
@@ -21,6 +28,11 @@ class TestPointInPolygon:
 
     def test_degenerate_polygon_contains_nothing(self):
         assert point_in_polygon((0.0, 0.0), [(0.0, 0.0), (1.0, 1.0)]) is False
+
+    def test_signed_edge_distance_is_positive_inside_negative_outside(self):
+        assert signed_distance_to_polygon((1.0, 1.0), SQUARE) == pytest.approx(1.0)
+        assert signed_distance_to_polygon((3.0, 1.0), SQUARE) == pytest.approx(-1.0)
+        assert distance_to_polygon_edge((1.0, 0.25), SQUARE) == pytest.approx(0.25)
 
     def test_concave_polygon(self):
         """An L-shape: the notch must not count as inside.

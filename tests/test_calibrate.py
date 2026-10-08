@@ -29,7 +29,45 @@ class TestPitchPath:
         assert c.camera_id == "cam_a"
         assert c.height_m == pytest.approx(2.6)
         assert c.ground.pitch_deg == pytest.approx(20.0)
+        assert c.verified_for_onsite is False
         assert (c.ground.intrinsics.width, c.ground.intrinsics.height) == (1920, 1080)
+
+    def test_onsite_verification_latch_round_trips_only_when_explicit(self, tmp_path):
+        import yaml
+
+        out = tmp_path / "cam.yaml"
+        _write_calibration_yaml(out, "cam_a", INTR, 2.6, pitch_deg=20.0)
+        data = yaml.safe_load(out.read_text(encoding="utf-8"))
+        data["verified_for_onsite"] = True
+        out.write_text(yaml.safe_dump(data, sort_keys=False), encoding="utf-8")
+        assert load_calibration(out).verified_for_onsite is True
+
+    @pytest.mark.parametrize("bad", ["false", 1, None])
+    def test_onsite_verification_latch_rejects_non_boolean_values(self, tmp_path, bad):
+        import yaml
+
+        out = tmp_path / "cam.yaml"
+        _write_calibration_yaml(out, "cam_a", INTR, 2.6, pitch_deg=20.0)
+        data = yaml.safe_load(out.read_text(encoding="utf-8"))
+        data["verified_for_onsite"] = bad
+        out.write_text(yaml.safe_dump(data, sort_keys=False), encoding="utf-8")
+        with pytest.raises(ValueError, match="YAML boolean"):
+            load_calibration(out)
+
+    @pytest.mark.parametrize(
+        ("field", "bad"),
+        [("fx", float("nan")), ("fy", 0.0), ("height_m", float("inf"))],
+    )
+    def test_nonfinite_or_impossible_geometry_is_rejected(self, tmp_path, field, bad):
+        import yaml
+
+        out = tmp_path / "cam.yaml"
+        _write_calibration_yaml(out, "cam_a", INTR, 2.6, pitch_deg=20.0)
+        data = yaml.safe_load(out.read_text(encoding="utf-8"))
+        data["camera"][field] = bad
+        out.write_text(yaml.safe_dump(data, sort_keys=False), encoding="utf-8")
+        with pytest.raises(ValueError):
+            load_calibration(out)
 
     def test_intrinsics_survive(self, tmp_path):
         out = tmp_path / "cam.yaml"
@@ -42,6 +80,20 @@ class TestPitchPath:
         out = tmp_path / "cam.yaml"
         _write_calibration_yaml(out, "cam_a", INTR, 2.6, pitch_deg=20.0)
         assert load_calibration(out).zones.zones == []
+
+    def test_device_hash_round_trips_without_raw_serial(self, tmp_path):
+        out = tmp_path / "cam.yaml"
+        _write_calibration_yaml(
+            out,
+            "cam_01234567",
+            INTR,
+            2.6,
+            pitch_deg=20.0,
+            device_serial_sha256="a" * 64,
+        )
+        calibration = load_calibration(out)
+        assert calibration.device_serial_sha256 == "a" * 64
+        assert calibration.ankle_height_baseline_m is None
 
 
 class TestMissingFile:
@@ -74,3 +126,15 @@ class TestGravityPath:
         out = tmp_path / "cam.yaml"
         _write_calibration_yaml(out, "c", INTR, 2.6, gravity=g, pitch_deg=99.0)
         assert load_calibration(out).ground.pitch_deg == pytest.approx(25.0, abs=0.05)
+
+    @pytest.mark.parametrize("gravity", [[0.0, float("nan"), 1.0], [0.0, 0.0, 0.0]])
+    def test_invalid_gravity_is_rejected(self, tmp_path, gravity):
+        import yaml
+
+        out = tmp_path / "cam.yaml"
+        _write_calibration_yaml(out, "cam_imu", INTR, 2.6, gravity=np.array([0.0, 1.0, 1.0]))
+        data = yaml.safe_load(out.read_text(encoding="utf-8"))
+        data["camera"]["gravity"] = gravity
+        out.write_text(yaml.safe_dump(data, sort_keys=False), encoding="utf-8")
+        with pytest.raises(ValueError, match="gravity"):
+            load_calibration(out)

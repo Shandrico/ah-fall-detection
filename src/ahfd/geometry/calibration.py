@@ -19,6 +19,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
+import re
 
 import numpy as np
 import yaml
@@ -36,6 +37,16 @@ class Calibration:
     ground: GroundPlane
     zones: ZoneMap
     notes: str = ""
+    # A human-controlled deployment latch. `ahfd calibrate` always writes
+    # false; set true only after the onsite mount/height/zones/depth checks in
+    # docs/ONSITE_COLLECTION.md have been completed for this exact position.
+    verified_for_onsite: bool = False
+    # SHA-256 of the factory serial. The raw serial is never written to a
+    # research manifest, but this binds one calibration to one physical unit.
+    device_serial_sha256: str | None = None
+    # Median two-ankle sparse-depth height measured during the verified staff
+    # preflight. Runtime drift is evaluated around this mount-specific value.
+    ankle_height_baseline_m: float | None = None
 
     @property
     def height_m(self) -> float:
@@ -45,9 +56,11 @@ class Calibration:
 def _intrinsics_from(entry: dict) -> Intrinsics:
     width = int(entry["width"])
     height = int(entry["height"])
+    if width <= 0 or height <= 0:
+        raise ValueError("camera width and height must be positive")
 
     if "fx" in entry:
-        return Intrinsics(
+        intrinsics = Intrinsics(
             width=width,
             height=height,
             fx=float(entry["fx"]),
@@ -55,15 +68,23 @@ def _intrinsics_from(entry: dict) -> Intrinsics:
             cx=float(entry.get("cx", width / 2.0)),
             cy=float(entry.get("cy", height / 2.0)),
         )
+        values = (intrinsics.fx, intrinsics.fy, intrinsics.cx, intrinsics.cy)
+        if not all(np.isfinite(value) for value in values):
+            raise ValueError("camera intrinsics must be finite")
+        if intrinsics.fx <= 0 or intrinsics.fy <= 0:
+            raise ValueError("camera fx and fy must be positive")
+        return intrinsics
 
     if "hfov_deg" in entry:
+        hfov = float(entry["hfov_deg"])
+        vfov = float(entry["vfov_deg"]) if entry.get("vfov_deg") is not None else None
+        if not np.isfinite(hfov) or vfov is not None and not np.isfinite(vfov):
+            raise ValueError("camera field of view must be finite")
         return Intrinsics.from_hfov(
             width,
             height,
-            hfov_deg=float(entry["hfov_deg"]),
-            vfov_deg=(
-                float(entry["vfov_deg"]) if entry.get("vfov_deg") is not None else None
-            ),
+            hfov_deg=hfov,
+            vfov_deg=vfov,
         )
 
     raise ValueError(
@@ -93,21 +114,48 @@ def load_calibration(path: str | Path) -> Calibration:
         raise ValueError(str(path) + " has no 'camera' section")
 
     intrinsics = _intrinsics_from(camera)
+    height_m = float(camera["height_m"])
+    if not np.isfinite(height_m) or height_m <= 0:
+        raise ValueError("camera height_m must be finite and positive")
+
+    verified = data.get("verified_for_onsite", False)
+    if not isinstance(verified, bool):
+        raise ValueError("verified_for_onsite must be a YAML boolean true or false")
+    serial_hash = data.get("device_serial_sha256")
+    if serial_hash is not None and (
+        not isinstance(serial_hash, str)
+        or not re.fullmatch(r"[0-9a-f]{64}", serial_hash)
+    ):
+        raise ValueError("device_serial_sha256 must be 64 lowercase hexadecimal characters")
+    ankle_baseline = data.get("ankle_height_baseline_m")
+    if ankle_baseline is not None:
+        ankle_baseline = float(ankle_baseline)
+        if not np.isfinite(ankle_baseline):
+            raise ValueError("ankle_height_baseline_m must be finite")
 
     if "gravity" in camera:
+        gravity = np.asarray(camera["gravity"], dtype=float)
+        if gravity.shape != (3,) or not np.all(np.isfinite(gravity)):
+            raise ValueError("camera gravity must contain exactly three finite values")
+        if float(np.linalg.norm(gravity)) < 1e-6:
+            raise ValueError("camera gravity vector is degenerate")
         # Preferred on a D435i: tilt comes from the IMU, so it cannot go stale
         # when the mount sags.
         ground = GroundPlane.from_gravity(
             intrinsics,
-            height_m=float(camera["height_m"]),
-            gravity_cam=np.array([float(v) for v in camera["gravity"]]),
+            height_m=height_m,
+            gravity_cam=gravity,
         )
     else:
+        pitch = float(camera["pitch_deg"])
+        roll = float(camera.get("roll_deg", 0.0))
+        if not np.isfinite(pitch) or not np.isfinite(roll):
+            raise ValueError("camera pitch_deg and roll_deg must be finite")
         ground = GroundPlane(
             intrinsics=intrinsics,
-            height_m=float(camera["height_m"]),
-            pitch_deg=float(camera["pitch_deg"]),
-            roll_deg=float(camera.get("roll_deg", 0.0)),
+            height_m=height_m,
+            pitch_deg=pitch,
+            roll_deg=roll,
         )
 
     return Calibration(
@@ -115,10 +163,18 @@ def load_calibration(path: str | Path) -> Calibration:
         ground=ground,
         zones=ZoneMap.from_config(data.get("zones", [])),
         notes=str(data.get("notes", "")),
+        verified_for_onsite=verified,
+        device_serial_sha256=serial_hash,
+        ankle_height_baseline_m=ankle_baseline,
     )
 
 
-def drift_check(ankle_heights: list[float], tolerance_m: float = 0.10) -> bool:
+def drift_check(
+    ankle_heights: list[float],
+    tolerance_m: float = 0.10,
+    *,
+    baseline_m: float = 0.0,
+) -> bool:
     """Is the calibration still trustworthy?
 
     While somebody walks in view, their ankles should read close to the floor.
@@ -131,4 +187,4 @@ def drift_check(ankle_heights: list[float], tolerance_m: float = 0.10) -> bool:
     if not ankle_heights:
         return True
     mean = float(np.mean(ankle_heights))
-    return abs(mean) <= tolerance_m
+    return abs(mean - float(baseline_m)) <= tolerance_m

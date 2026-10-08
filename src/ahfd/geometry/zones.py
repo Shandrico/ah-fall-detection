@@ -18,6 +18,7 @@ per-bed calibration value, never a global constant.
 
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass, field
 from typing import Literal
 
@@ -63,6 +64,36 @@ def point_in_polygon(point: Point, polygon: list[Point]) -> bool:
     return inside
 
 
+def distance_to_polygon_edge(point: Point, polygon: list[Point]) -> float:
+    """Shortest Euclidean distance from ``point`` to a polygon boundary.
+
+    This is deliberately independent of whether the point is inside.  It is
+    useful for the bed-activity layer, where approaching an edge is a temporal
+    cue and crossing it should not make the magnitude discontinuous.
+    """
+    if len(polygon) < 2:
+        return math.inf
+    px, py = point
+    best = math.inf
+    for i, (x1, y1) in enumerate(polygon):
+        x2, y2 = polygon[(i + 1) % len(polygon)]
+        dx, dy = x2 - x1, y2 - y1
+        denom = dx * dx + dy * dy
+        if denom <= 1e-12:
+            qx, qy = x1, y1
+        else:
+            u = max(0.0, min(1.0, ((px - x1) * dx + (py - y1) * dy) / denom))
+            qx, qy = x1 + u * dx, y1 + u * dy
+        best = min(best, math.hypot(px - qx, py - qy))
+    return best
+
+
+def signed_distance_to_polygon(point: Point, polygon: list[Point]) -> float:
+    """Distance to the nearest edge, positive inside and negative outside."""
+    distance = distance_to_polygon_edge(point, polygon)
+    return distance if point_in_polygon(point, polygon) else -distance
+
+
 @dataclass(frozen=True)
 class Zone:
     """A named region of floor."""
@@ -74,16 +105,34 @@ class Zone:
     risk_level: str = "unknown"  # per-bed fall risk; see RiskLevel
 
     def __post_init__(self) -> None:
+        if not self.name.strip():
+            raise ValueError("zone name must be nonempty")
+        if self.kind not in ("bed", "chair", "floor", "exclude"):
+            raise ValueError("zone " + repr(self.name) + " has invalid kind " + repr(self.kind))
         if len(self.polygon) < 3:
             raise ValueError(
                 "zone " + repr(self.name) + " needs at least 3 points, got "
                 + str(len(self.polygon))
             )
+        if any(
+            not math.isfinite(float(value))
+            for point in self.polygon
+            for value in point
+        ):
+            raise ValueError("zone " + repr(self.name) + " polygon must be finite")
+        if self.top_m is not None and (
+            not math.isfinite(float(self.top_m)) or self.top_m < 0
+        ):
+            raise ValueError("zone " + repr(self.name) + " top_m must be finite and non-negative")
         if self.kind in ("bed", "chair") and self.top_m is None:
             raise ValueError(
                 "zone " + repr(self.name) + " of kind " + self.kind
                 + " needs top_m (surface height above floor in metres); "
                 "without it, lying in bed cannot be told from lying on the floor"
+            )
+        if self.kind in ("bed", "chair") and self.top_m is not None and self.top_m <= 0:
+            raise ValueError(
+                "zone " + repr(self.name) + " surface top_m must be positive"
             )
         if self.risk_level not in VALID_RISK:
             raise ValueError(

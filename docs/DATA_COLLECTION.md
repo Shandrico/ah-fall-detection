@@ -84,14 +84,17 @@ Nothing in the system touches raw capture; you manage the videos yourself.
 For when you want the system to capture directly (e.g. from the D435i later):
 
 ```bash
-ahfd record data/raw/fall_01.mp4 --source webcam://0 --i-understand-raw-capture
+$env:AHFD_ALLOW_RAW = "1"
+ahfd record data/raw/fall_01.mp4 --source webcam://0 `
+  --config configs/consented_raw.yaml --i-understand-raw-capture
 ```
 
 - It records **on start** and shows a live window with a red REC banner burned
   into every frame — recording is never invisible.
 - It stops when you **press `q`**, or after `--seconds N` if you set it.
-- The `--i-understand-raw-capture` flag is required: this is the one tool that
-  writes video to disk, so it will not run by accident.
+- All three gates are required: `privacy.allow_raw_capture: true` in the named
+  config, `AHFD_ALLOW_RAW=1`, and `--i-understand-raw-capture`. This is only for
+  separately approved, consented staged volunteers—never an occupied ward.
 - Then extract and **delete the video**, keeping only the keypoints:
 
 ```bash

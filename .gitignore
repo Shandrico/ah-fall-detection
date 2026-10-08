@@ -3,6 +3,9 @@
 # discarded; anything image-shaped in git is a privacy incident, not a mistake.
 # ---------------------------------------------------------------------------
 *.bag
+*.db3
+data/depth_bags/
+data/depth_bags_d435f/
 *.mp4
 *.avi
 *.mkv
@@ -23,10 +26,19 @@ models/
 
 # Recorded data (keypoints only, but still not source)
 data/tracks/
+data/tracks_depth/
 data/events/
+# classify-view frame cache (rendered colour frames -- convenience, not source)
+data/classify_cache/
 # derived per-frame feature CSVs, regenerable via `ahfd export-features`
 data/features/
 debug_captures/
+
+# Derived-only onsite sessions are still sensitive behavioural research data.
+# The collector refuses Git worktrees, and these patterns add a second barrier
+# if someone manually copies a session back into this repository.
+onsite_sessions/
+**/ses_*/
 
 # Python
 __pycache__/

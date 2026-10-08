@@ -90,6 +90,7 @@ class DetectConfig(BaseModel):
 
     slow_down_s: float = 20.0
     bed_exit_s: float = 3.0
+    in_bed_move: float = 0.10  # in-bed movement speed that alerts the high tier
 
     min_valid_kp: int = 8
     min_mean_conf: float = 0.40
@@ -102,6 +103,68 @@ class DetectConfig(BaseModel):
         values = self.model_dump()
         values.pop("enabled", None)
         return FallThresholds(**values)
+
+
+class CusumConfigModel(BaseModel):
+    """Rest-gated onset detector settings (engineering defaults)."""
+
+    k: float = 0.5
+    threshold: float = 6.0
+    warmup_samples: int = 12
+    baseline_alpha: float = 0.02
+    rest_z: float = 2.0
+    min_baseline_std: float = 0.03
+    max_gap_s: float = 2.0
+    reference_hz: float = 10.0
+    max_step_scale: float = 2.0
+
+    def to_config(self):
+        from ahfd.detect import CusumConfig
+
+        return CusumConfig(**self.model_dump())
+
+
+class BedActivityConfig(BaseModel):
+    """Hierarchical bed-activity thresholds and alert policy.
+
+    ``emit_early_warning`` defaults off: next week's onsite collection is a
+    shadow experiment. Candidate warnings and their evidence are still logged
+    for later nurse review, but they do not become operational alerts.
+    """
+
+    enabled: bool = True
+    min_valid_kp: int = 8
+    min_mean_conf: float = 0.40
+    reclined_tilt_enter_deg: float = 58.0
+    reclined_tilt_exit_deg: float = 48.0
+    upright_tilt_enter_deg: float = 38.0
+    upright_tilt_exit_deg: float = 48.0
+    stable_rest_motion_max: float = 0.08
+    support_enter: float = 0.55
+    support_exit: float = 0.30
+    support_loss_rate: float = 0.20
+    near_edge_enter_m: float = 0.22
+    near_edge_exit_m: float = 0.34
+    outside_edge_m: float = 0.05
+    edge_velocity_enter_mps: float = -0.05
+    edge_velocity_exit_mps: float = -0.015
+    rise_delta_m: float = 0.12
+    phase_dwell_s: float = 0.30
+    fast_transition_dwell_s: float = 0.10
+    return_recline_dwell_s: float = 0.75
+    out_of_bed_dwell_s: float = 0.20
+    early_warning_dwell_s: float = 0.60
+    emit_early_warning: bool = False
+    emit_exit_event: bool = True
+    cusum: CusumConfigModel = Field(default_factory=CusumConfigModel)
+
+    def to_thresholds(self):
+        from ahfd.detect import BedExitThresholds
+
+        values = self.model_dump()
+        values.pop("enabled", None)
+        values["cusum"] = self.cusum.to_config()
+        return BedExitThresholds(**values)
 
 
 class AlertConfig(BaseModel):
@@ -167,6 +230,7 @@ class Config(BaseModel):
     pose: PoseConfig = Field(default_factory=PoseConfig)
     smoothing: SmoothingConfig = Field(default_factory=SmoothingConfig)
     detect: DetectConfig = Field(default_factory=DetectConfig)
+    bed_activity: BedActivityConfig = Field(default_factory=BedActivityConfig)
     alert: AlertConfig = Field(default_factory=AlertConfig)
     view: ViewConfig = Field(default_factory=ViewConfig)
     dashboard: DashboardConfig = Field(default_factory=DashboardConfig)

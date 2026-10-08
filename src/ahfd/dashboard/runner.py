@@ -51,6 +51,7 @@ class PipelineRunner:
         self._thread: threading.Thread | None = None
         self._started = False
         self._jpeg_quality = cfg.dashboard.jpeg_quality
+        self._sink = None
 
     @property
     def alive(self) -> bool:
@@ -115,7 +116,7 @@ class PipelineRunner:
                 # error -- not the multi-camera "uncalibrated spare camera" case.
                 from ahfd.cli import _build_detection
 
-                extractor, machine, _sink, _calib = _build_detection(
+                extractor, machine, self._sink, _calib = _build_detection(
                     cfg, self.calib_path, src.meta
                 )
 
@@ -167,6 +168,9 @@ class PipelineRunner:
         finally:
             if src is not None:
                 src.close()
+            if self._sink is not None:
+                self._sink.close()
+                self._sink = None
 
     def _loop(self, src, estimator, tracker, smoother, extractor, machine) -> int:
         """Run until the source ends or a stop is asked. Returns frames processed.
@@ -282,6 +286,16 @@ class PipelineRunner:
                     )
                 )
 
+            if extractor is not None and frame.depth_raw is not None:
+                from ahfd.features import attach_depth_heights
+
+                pose = attach_depth_heights(
+                    pose,
+                    frame,
+                    extractor.ground,
+                    min_score=cfg.pose.min_keypoint_score,
+                )
+
             alert = None
             # Per-track feature snapshot for the dashboard (state + a metric
             # or two the nurse can read). Built even when detection is off,
@@ -290,39 +304,61 @@ class PipelineRunner:
             if machine is not None and extractor is not None:
                 extractor.retain_only(tracker.live_ids)
                 machine.retain_only(tracker.live_ids)
+                observed_ids: set[int] = set()
                 for person in pose.people:
                     if person.track_id is None:
                         continue
                     features = extractor.extract(person, pose.t)
-                    info = {
-                        "track_id": person.track_id,
-                        "state": machine.state_of(person.track_id),
-                    }
+                    info = {"track_id": person.track_id}
                     if features is not None:
                         if features.h_torso is not None:
                             info["height_m"] = round(features.h_torso, 2)
                         if features.zones:
                             info["zone"] = features.zones[0]
+                        observed_ids.add(person.track_id)
+                        for event in machine.update_all(features):
+                            # The dashboard is a real detector entry point, so it
+                            # must honour the same configured durable sinks as
+                            # ``ahfd run``. Previously it only painted the browser.
+                            if self._sink is not None:
+                                self._sink.emit(event)
+                            self.state.publish_event(
+                                {
+                                    "event_id": uuid.uuid4().hex[:12],
+                                    "type": event.type,
+                                    "severity": event.severity,
+                                    "track_id": event.track_id,
+                                    "t_alert": round(event.t_alert, 1),
+                                    "clock": time.strftime("%H:%M:%S"),
+                                    "zone": event.zone,
+                                    "evidence": event.evidence,
+                                },
+                                gen=self.gen,
+                            )
+                            if event.type in ("FALL_CONFIRMED", "PERSON_DOWN"):
+                                alert = event.describe()
+
+                    # Read states after update so the dashboard is not one frame
+                    # behind. Bed phase/support/availability remain separate.
+                    info["state"] = machine.state_of(person.track_id)
+                    if hasattr(machine, "bed_snapshot_of"):
+                        bed = machine.bed_snapshot_of(person.track_id, pose.t)
+                        if bed is not None:
+                            info.update(
+                                {
+                                    "bed_phase": bed.phase,
+                                    "bed_support": bed.support,
+                                    "observation": bed.observation,
+                                    "warning_candidate": bed.early_warning_candidate,
+                                    "cusum_g": round(bed.cusum_g, 2),
+                                }
+                            )
                     track_info[person.track_id] = info
-                    if features is None:
-                        continue
-                    event = machine.update(features)
-                    if event is not None:
-                        self.state.publish_event(
-                            {
-                                "event_id": uuid.uuid4().hex[:12],
-                                "type": event.type,
-                                "severity": event.severity,
-                                "track_id": event.track_id,
-                                "t_alert": round(event.t_alert, 1),
-                                "clock": time.strftime("%H:%M:%S"),
-                                "zone": event.zone,
-                                "evidence": event.evidence,
-                            },
-                            gen=self.gen,
-                        )
-                        if event.type in ("FALL_CONFIRMED", "PERSON_DOWN"):
-                            alert = event.describe()
+
+                if hasattr(machine, "mark_frame_unobserved"):
+                    machine.mark_frame_unobserved(
+                        pose.t, set(tracker.live_ids), observed_ids
+                    )
             else:
                 for person in pose.people:
                     if person.track_id is not None:

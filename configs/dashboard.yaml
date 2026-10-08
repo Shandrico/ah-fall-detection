@@ -45,6 +45,11 @@ detect:
   # Thresholds omitted -> DetectConfig defaults (the ward-geometry starting
   # point: camera ~2.6 m, ~20 deg downtilt). Tune later with `ahfd sweep`.
 
+bed_activity:
+  enabled: true
+  emit_early_warning: false    # shadow/status only until nurse-reviewed
+  emit_exit_event: true
+
 alert:
   console: true
   jsonl_path: "data/events/dashboard.jsonl"
@@ -69,8 +74,8 @@ dashboard:
     - label: "Laptop webcam"
       uri: "webcam://0"
       calibration: "calib/laptop_webcam.yaml"
-    - label: "RealSense D435i"
-      uri: "rs://"
+    - label: "RealSense D435i (RGB + depth features)"
+      uri: "rs://?depth=1&max_laser=1&max_range=6"
       calibration: "calib/d435i.yaml"
     # Infrared low-light mode: streams the IR imager with the dot projector off.
     # Needs its OWN calibration (the IR camera is 1280x720 with different

@@ -74,6 +74,7 @@ DASHBOARD_HTML = r"""<!doctype html>
               display:flex; justify-content:space-between; }
   .chip { display:flex; justify-content:space-between; align-items:center; padding:7px 10px; border-radius:8px;
           background:var(--panel2); margin-bottom:6px; font-size:14px; }
+  .chip .sub { color:var(--muted); font-size:11px; margin-top:3px; }
   .badge { font-size:11px; padding:2px 9px; border-radius:999px; background:#22304a; white-space:nowrap; }
   .s-ON_GROUND,.s-FALLING { background:var(--crit); color:#fff; }
   .s-IN_BED { background:#1f6feb; color:#fff; }
@@ -333,7 +334,8 @@ async function refresh(){
   // say which way the feed is pointing while a switch is in flight.
   document.getElementById('feedtag').textContent = busy
     ? 'switching to ' + (rt.source_label || rt.source || '\u2026')
-    : s.people + ' in view \u00b7 ' + s.fps + ' fps';
+    : (rt.monitoring || 'UNAVAILABLE') + ' \u00b7 ' + s.people +
+      ' in view \u00b7 ' + s.fps + ' fps';
 
   if (s.open_count > lastAlertCount) beep();
   lastAlertCount = s.open_count;
@@ -345,7 +347,10 @@ async function refresh(){
 
   const tr = s.tracks.length ? s.tracks.map(t=>{
     const extra = (t.height_m!=null?` &middot; ${t.height_m} m`:'') + (t.zone?` &middot; ${esc(t.zone)}`:'');
-    return `<div class="chip"><span>Track ${t.track_id}${extra}</span>
+    const bed = t.bed_phase
+      ? `<div class="sub">bed ${esc(t.bed_phase)} &middot; ${esc(t.bed_support || 'UNKNOWN')} &middot; ${esc(t.observation || 'MONITORING_UNAVAILABLE')}${t.warning_candidate?' &middot; warning candidate':''}</div>`
+      : '';
+    return `<div class="chip"><span>Track ${t.track_id}${extra}${bed}</span>
       <span class="badge s-${esc(t.state)}">${esc(t.state)}</span></div>`;
   }).join('') : '<div class="empty">none</div>';
   // Without detection there is no posture, only a track id. Say why, or every

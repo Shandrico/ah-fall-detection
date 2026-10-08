@@ -1,0 +1,54 @@
+# Derived-only D435i research collection. This is shadow instrumentation, not
+# a clinical alerting configuration. Recreate/verify the calibration for the
+# exact onsite mount and bed geometry before every collection block.
+
+source: "rs://?depth=1&emitter=1&max_laser=1&max_range=6"
+# Deliberately no repository calibration: pass the exact external, verified
+# hospital mount file with --calibration.
+calibration: null
+
+pose:
+  backend: "rtmo"
+  model_size: "s"
+  runtime: "openvino"
+  device: "gpu"
+  min_score: 0.5
+  min_keypoint_score: 0.45
+
+smoothing:
+  enabled: true
+
+detect:
+  enabled: true
+
+bed_activity:
+  enabled: true
+  emit_early_warning: false
+  emit_exit_event: true
+
+alert:
+  console: false
+  jsonl_path: null
+  min_severity: 0
+
+view:
+  mode: "skeleton"
+  show_bbox: false
+  show_ids: true
+  show_fps: true
+  show_metrics: true
+
+dashboard:
+  host: "127.0.0.1"
+  port: 8000
+  show_rgb: false
+  allow_rgb: false
+  allow_custom_source: false
+  sources:
+    - label: "Approved D435i"
+      uri: "rs://?depth=1&emitter=1&max_laser=1&max_range=6"
+      calibration: null
+  backends: ["rtmo"]
+
+privacy:
+  allow_raw_capture: false

@@ -20,6 +20,11 @@ from ahfd.config import load_config
 
 app = typer.Typer(add_completion=False, help="Privacy-preserving fall detection.")
 
+# Fixed mount downtilt (degrees) for a camera with no IMU (D435f). This is the
+# ONE place to change the angle: it is the default --pitch for `depth-view` and
+# `extract`, so you never have to pass the flag. Change it if the mount changes.
+MOUNT_PITCH_DEG = 15.0
+
 
 def _build_detection(cfg, calib_path, meta):
     """Wire up feature extractor + state machine + sinks from a calibration.
@@ -31,7 +36,7 @@ def _build_detection(cfg, calib_path, meta):
     plausible-but-wrong metres, and it must be identical everywhere.
     """
     from ahfd.alert import ConsoleSink, JsonlSink, MultiSink
-    from ahfd.detect import FallStateMachine
+    from ahfd.detect import DetectionEngine
     from ahfd.features import FeatureExtractor
     from ahfd.geometry.calibration import load_calibration
 
@@ -47,7 +52,11 @@ def _build_detection(cfg, calib_path, meta):
     extractor = FeatureExtractor(
         calib.ground, zones=calib.zones, min_keypoint_score=cfg.pose.min_keypoint_score
     )
-    machine = FallStateMachine(cfg.detect.to_thresholds())
+    machine = DetectionEngine(
+        cfg.detect.to_thresholds(),
+        cfg.bed_activity.to_thresholds(),
+        bed_activity_enabled=cfg.bed_activity.enabled,
+    )
 
     sinks: list = []
     if cfg.alert.console:
@@ -55,6 +64,409 @@ def _build_detection(cfg, calib_path, meta):
     if cfg.alert.jsonl_path:
         sinks.append(JsonlSink(cfg.alert.jsonl_path))
     return extractor, machine, MultiSink(*sinks), calib
+
+
+def _validate_onsite_calibration(calib, device_serial_sha256: str) -> None:
+    """Refuse geometry that has not passed the physical onsite preflight.
+
+    This is intentionally scoped to ``ahfd collect``.  Development playback
+    and the ordinary local runner may use an unverified calibration, but a
+    hospital collection must make the human verification latch and the
+    geometry/privacy invariants explicit before the camera loop starts.
+    """
+    import re
+
+    if not re.fullmatch(r"cam_[0-9a-f]{8}", calib.camera_id):
+        raise typer.BadParameter(
+            "onsite pseudonymous camera_id must be cam_ plus exactly 8 random hex characters; "
+            "do not encode a ward, room, bed, date, or serial"
+        )
+    if not calib.verified_for_onsite:
+        raise typer.BadParameter(
+            "calibration is not verified for onsite collection. Complete the "
+            "mount/height/bed/depth preflight in docs/ONSITE_COLLECTION.md, "
+            "then set verified_for_onsite: true in that calibration file."
+        )
+    if calib.device_serial_sha256 != device_serial_sha256:
+        raise typer.BadParameter(
+            "the connected D435i does not match this calibration's hashed device "
+            "identity; recalibrate the exact camera or connect the correct unit"
+        )
+    if calib.ankle_height_baseline_m is None:
+        raise typer.BadParameter(
+            "onsite calibration needs ankle_height_baseline_m from the approved "
+            "two-ankle standing preflight before verified_for_onsite is enabled"
+        )
+    if not 1.5 <= float(calib.height_m) <= 4.0:
+        raise typer.BadParameter("onsite camera height must be within 1.5-4.0 m")
+    if not -0.05 <= float(calib.ankle_height_baseline_m) <= 0.25:
+        raise typer.BadParameter(
+            "onsite ankle baseline must be within -0.05 to 0.25 m"
+        )
+    bed_zones = [zone for zone in calib.zones.zones if zone.kind == "bed"]
+    if not bed_zones:
+        raise typer.BadParameter("onsite calibration has no bed zones")
+    names = [zone.name for zone in calib.zones.zones]
+    if len(names) != len(set(names)):
+        raise typer.BadParameter("onsite calibration has duplicate zone names")
+    bad_names = [
+        name
+        for name in names
+        if not re.fullmatch(r"(?:bed|chair|floor|exclude)_[a-z0-9]{1,20}", name)
+    ]
+    if bad_names:
+        raise typer.BadParameter(
+            "onsite zone names must be pseudonymous kind_codes "
+            "(bed_a, floor_1); bad: " + ", ".join(bad_names)
+        )
+    if any(zone.risk_level != "unknown" for zone in bed_zones):
+        raise typer.BadParameter(
+            "onsite calibration must contain geometry only: set bed risk_level "
+            "to unknown and keep care policy in the hospital-controlled system"
+        )
+    for zone in bed_zones:
+        if zone.top_m is None or not 0.25 <= float(zone.top_m) <= 1.20:
+            raise typer.BadParameter(
+                "onsite bed top_m must be within the plausible 0.25-1.20 m range"
+            )
+        if _polygon_area(zone.polygon) < 0.20 or _polygon_self_intersects(
+            zone.polygon
+        ):
+            raise typer.BadParameter(
+                "onsite bed polygons must be non-self-intersecting with area >= 0.20 m^2"
+            )
+    for index, left in enumerate(bed_zones):
+        for right in bed_zones[index + 1 :]:
+            if _polygons_overlap(left.polygon, right.polygon):
+                raise typer.BadParameter(
+                    "onsite bed polygons overlap: " + left.name + " and " + right.name
+                )
+
+
+def _polygon_area(points) -> float:
+    return abs(
+        sum(
+            points[index][0] * points[(index + 1) % len(points)][1]
+            - points[(index + 1) % len(points)][0] * points[index][1]
+            for index in range(len(points))
+        )
+    ) / 2.0
+
+
+def _segments_intersect(a, b, c, d) -> bool:
+    def orientation(p, q, r):
+        return (q[0] - p[0]) * (r[1] - p[1]) - (q[1] - p[1]) * (r[0] - p[0])
+
+    values = (
+        orientation(a, b, c),
+        orientation(a, b, d),
+        orientation(c, d, a),
+        orientation(c, d, b),
+    )
+    epsilon = 1e-9
+
+    def on_segment(p, q, r):
+        return (
+            min(p[0], r[0]) - epsilon <= q[0] <= max(p[0], r[0]) + epsilon
+            and min(p[1], r[1]) - epsilon <= q[1] <= max(p[1], r[1]) + epsilon
+        )
+
+    if values[0] * values[1] < 0 and values[2] * values[3] < 0:
+        return True
+    return (
+        abs(values[0]) <= epsilon and on_segment(a, c, b)
+        or abs(values[1]) <= epsilon and on_segment(a, d, b)
+        or abs(values[2]) <= epsilon and on_segment(c, a, d)
+        or abs(values[3]) <= epsilon and on_segment(c, b, d)
+    )
+
+
+def _polygon_self_intersects(points) -> bool:
+    size = len(points)
+    for first in range(size):
+        a, b = points[first], points[(first + 1) % size]
+        for second in range(first + 1, size):
+            if second in (first, (first + 1) % size) or (second + 1) % size == first:
+                continue
+            c, d = points[second], points[(second + 1) % size]
+            if _segments_intersect(a, b, c, d):
+                return True
+    return False
+
+
+def _polygons_overlap(left, right) -> bool:
+    from ahfd.geometry.zones import point_in_polygon
+
+    if any(point_in_polygon(point, right) for point in left):
+        return True
+    if any(point_in_polygon(point, left) for point in right):
+        return True
+    return any(
+        _segments_intersect(
+            left[i],
+            left[(i + 1) % len(left)],
+            right[j],
+            right[(j + 1) % len(right)],
+        )
+        for i in range(len(left))
+        for j in range(len(right))
+    )
+
+
+def _validate_approved_output(root: Path, site_id: str) -> None:
+    """Require a custodian-provisioned marker on the encrypted study volume."""
+    import json
+
+    root = Path(root).expanduser().resolve()
+    marker = root / ".ahfd-approved-output.json"
+    if not root.is_dir() or not marker.is_file():
+        raise typer.BadParameter(
+            "onsite output must already exist and contain the custodian-provisioned "
+            ".ahfd-approved-output.json marker"
+        )
+    try:
+        document = json.loads(marker.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise typer.BadParameter("approved-output marker is not valid JSON") from exc
+    expected = {
+        "schema": "ahfd.approved-output",
+        "schema_version": 1,
+        "site_id": site_id,
+        "encrypted_storage_attested": True,
+        "purpose": "research_shadow_collection",
+    }
+    if document != expected:
+        raise typer.BadParameter(
+            "approved-output marker must exactly match this site, purpose, and "
+            "encrypted-storage attestation"
+        )
+
+
+def _validate_calibration_approval(
+    calibration: Path,
+    approval: Path,
+    site_id: str,
+    config_sha256: str,
+    pose_model_sha256: str,
+) -> tuple[str, str]:
+    """Return approval and calibration hashes from one validated byte snapshot."""
+    import hashlib
+    import json
+    from datetime import datetime, timezone
+
+    calibration = Path(calibration).expanduser().resolve()
+    approval = Path(approval).expanduser().resolve()
+    if not approval.is_file():
+        raise typer.BadParameter("external calibration approval record was not found")
+    try:
+        calibration_bytes = calibration.read_bytes()
+        approval_bytes = approval.read_bytes()
+        document = json.loads(approval_bytes.decode("utf-8"))
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise typer.BadParameter("calibration approval record is not valid JSON") from exc
+    digest = hashlib.sha256(calibration_bytes).hexdigest()
+    approved_utc = document.get("approved_utc") if isinstance(document, dict) else None
+    try:
+        approved_at = datetime.fromisoformat(str(approved_utc).replace("Z", "+00:00"))
+    except (TypeError, ValueError) as exc:
+        raise typer.BadParameter("calibration approval needs an ISO-8601 approved_utc") from exc
+    if approved_at.tzinfo is None:
+        raise typer.BadParameter("calibration approval approved_utc must include a timezone")
+    age_s = (datetime.now(timezone.utc) - approved_at.astimezone(timezone.utc)).total_seconds()
+    if age_s < -300 or age_s > 12 * 60 * 60:
+        raise typer.BadParameter(
+            "calibration approval must be issued after the current pre-session "
+            "mount/depth check and within the last 12 hours"
+        )
+    expected = {
+        "schema": "ahfd.calibration.approval",
+        "schema_version": 2,
+        "site_id": site_id,
+        "purpose": "research_shadow_collection",
+        "config_sha256": config_sha256,
+        "calibration_sha256": digest,
+        "pose_model_sha256": pose_model_sha256,
+        "approved_utc": approved_utc,
+    }
+    if document != expected:
+        raise typer.BadParameter(
+            "calibration approval does not exactly match this site, purpose, "
+            "config SHA-256, calibration SHA-256, and pose-model SHA-256"
+        )
+    return hashlib.sha256(approval_bytes).hexdigest(), digest
+
+
+def _canonical_onsite_source(
+    uri: str,
+    meta,
+    cfg,
+    approval_sha256: str,
+    verified_depth_controls: dict[str, float | bool],
+) -> dict:
+    """Return allowlisted provenance based on applied sensor readback."""
+    import math
+    from importlib.metadata import PackageNotFoundError, version
+
+    from ahfd.capture.factory import parse_realsense_uri
+
+    options = parse_realsense_uri(uri)
+    if options.get("infrared"):
+        raise typer.BadParameter("onsite collection requires the calibrated colour stream")
+    if (
+        verified_depth_controls.get("emitter_enabled") is not True
+        or verified_depth_controls.get("laser_at_max") is not True
+    ):
+        raise typer.BadParameter(
+            "onsite source provenance requires verified emitter and laser readback"
+        )
+    try:
+        laser_power = float(verified_depth_controls["laser_power"])
+        laser_power_max = float(verified_depth_controls["laser_power_max"])
+    except (KeyError, TypeError, ValueError) as exc:
+        raise typer.BadParameter(
+            "onsite source provenance requires numeric laser readback"
+        ) from exc
+    tolerance = max(0.01, abs(laser_power_max) * 1e-4)
+    if (
+        not math.isfinite(laser_power)
+        or not math.isfinite(laser_power_max)
+        or laser_power_max <= 0.0
+        or abs(laser_power - laser_power_max) > tolerance
+    ):
+        raise typer.BadParameter(
+            "onsite source provenance requires verified maximum laser power"
+        )
+    runtime_versions = {}
+    for package in ("numpy", "opencv-python", "rtmlib", "openvino", "onnxruntime"):
+        try:
+            runtime_versions[package] = version(package)
+        except PackageNotFoundError:
+            continue
+    return {
+        "kind": "intel_realsense_d435i",
+        "width": int(meta.width),
+        "height": int(meta.height),
+        "fps": float(meta.fps),
+        "depth_enabled": bool(meta.has_depth),
+        # These are applied/read-back states, not URI intent.
+        "emitter": True,
+        "max_laser": True,
+        "laser_power": laser_power,
+        "laser_power_max": laser_power_max,
+        "max_range_m": float(options.get("max_range_m", 6.0)),
+        "spatial_magnitude": int(options.get("spatial_magnitude", 2)),
+        "pose_backend": str(cfg.pose.backend),
+        "pose_model_size": str(cfg.pose.model_size),
+        "pose_runtime": str(cfg.pose.runtime),
+        "pose_device": str(cfg.pose.device),
+        "runtime_versions": runtime_versions,
+        "approval_sha256": approval_sha256,
+    }
+
+
+def _pose_artifact_sha256(estimator) -> str:
+    """Hash the exact local ONNX artifact used by the approved RTMO runtime."""
+    import hashlib
+
+    model = getattr(estimator, "_model", None)
+    path = getattr(model, "onnx_model", None)
+    candidate = Path(path) if isinstance(path, str) else None
+    if candidate is None or not candidate.is_file():
+        raise typer.BadParameter(
+            "cannot resolve the local pose model artifact for provenance; "
+            "onsite collection requires the reviewed RTMO ONNX file"
+        )
+    digest = hashlib.sha256()
+    with candidate.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def _containing_git_worktree(path: Path) -> Path | None:
+    """Return the Git worktree containing ``path`` (including future children)."""
+    import subprocess
+
+    target = path.expanduser().resolve()
+    probe = target if target.is_dir() else target.parent
+    while not probe.exists() and probe != probe.parent:
+        probe = probe.parent
+    try:
+        result = subprocess.run(
+            ["git", "-C", str(probe), "rev-parse", "--show-toplevel"],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    return Path(result.stdout.strip()).resolve()
+
+
+def _validate_comparator_output(out_dir: Path, sessions: list[Path]) -> None:
+    """Require a new analysis directory under the approved external site root."""
+    import json
+
+    worktree = _containing_git_worktree(out_dir)
+    if worktree is not None:
+        raise typer.BadParameter(
+            "model output contains sensitive study-derived information and must "
+            "stay outside Git; selected path is inside " + str(worktree)
+        )
+    site_ids: set[str] = set()
+    try:
+        for session in sessions:
+            manifest = json.loads((Path(session) / "manifest.json").read_text("utf-8"))
+            site_ids.add(str(manifest["site_id"]))
+    except (OSError, KeyError, TypeError, json.JSONDecodeError) as exc:
+        raise typer.BadParameter(
+            "cannot bind comparator output to the input session site"
+        ) from exc
+    if len(site_ids) != 1:
+        raise typer.BadParameter(
+            "comparator output requires input sessions from exactly one approved site"
+        )
+    approved_root = Path(out_dir).expanduser().resolve().parent
+    while not (approved_root / ".ahfd-approved-output.json").is_file():
+        if approved_root == approved_root.parent:
+            raise typer.BadParameter(
+                "comparator output must be under a custodian-approved external root"
+            )
+        approved_root = approved_root.parent
+    _validate_approved_output(approved_root, next(iter(site_ids)))
+
+
+def _probe_onsite_d435i() -> tuple[str, str]:
+    """Return the verified raw serial for binding plus its provenance digest."""
+    import hashlib
+
+    from ahfd.capture import probe_realsense
+
+    probe = probe_realsense()
+    if not probe.installed:
+        raise typer.BadParameter("pyrealsense2 is not installed for the onsite D435i")
+    if probe.error:
+        raise typer.BadParameter("D435i enumeration failed: " + probe.error)
+    if len(probe.devices) != 1:
+        raise typer.BadParameter(
+            "onsite collection requires exactly one connected RealSense; found "
+            + str(len(probe.devices))
+        )
+    device = probe.devices[0]
+    if "D435I" not in device.name.upper():
+        raise typer.BadParameter(
+            "onsite collection requires the approved D435i; found " + device.name
+        )
+    usb_descriptor = str(device.usb or "").strip()
+    if not usb_descriptor.startswith("3"):
+        raise typer.BadParameter(
+            "D435i negotiated USB "
+            + (usb_descriptor or "unknown")
+            + "; onsite collection requires a verified USB 3 link without a hub"
+        )
+    if not device.serial:
+        raise typer.BadParameter("D435i did not report a serial; device identity is unverifiable")
+    return device.serial, hashlib.sha256(device.serial.encode("utf-8")).hexdigest()
 
 
 @app.command()
@@ -184,15 +596,31 @@ def run(
                     )
                 )
 
+            # A depth-enabled RealSense URI (``rs://?depth=1``) contributes
+            # only seventeen per-joint height scalars.  Dense depth remains on
+            # this local capture frame and is discarded after the iteration.
+            if extractor is not None and frame.depth_raw is not None:
+                from ahfd.features import attach_depth_heights
+
+                pose = attach_depth_heights(
+                    pose,
+                    frame,
+                    extractor.ground,
+                    min_score=cfg.pose.min_keypoint_score,
+                )
+
             metrics: dict[int, dict] = {}
             if machine is not None and extractor is not None and sink is not None:
-                extractor.retain_only(tracker.live_ids)
-                machine.retain_only(tracker.live_ids)
+                live_ids = set(tracker.live_ids)
+                observed_ids: set[int] = set()
+                extractor.retain_only(live_ids)
+                machine.retain_only(live_ids)
                 for person in pose.people:
                     features = extractor.extract(person, pose.t)
                     if features is None:
                         continue
                     if person.track_id is not None:
+                        observed_ids.add(person.track_id)
                         metrics[person.track_id] = {
                             "state": machine.state_of(person.track_id),
                             "h_torso": features.h_torso,
@@ -202,12 +630,15 @@ def run(
                             "bed_risk": features.bed_risk,
                             "range_m": features.range_m,
                         }
-                    event = machine.update(features)
-                    if event is not None:
+                    for event in machine.update_all(features):
                         sink.emit(event)
                         events_seen += 1
                         if event.type in ("FALL_CONFIRMED", "PERSON_DOWN"):
                             last_alert = event.describe()
+                # A tracker may keep an identity alive across a missed pose.
+                # Preserve its last activity phase, but explicitly mark bed
+                # monitoring unavailable for this frame.
+                machine.mark_frame_unobserved(pose.t, live_ids, observed_ids)
 
             dt = time.perf_counter() - t0
             inst = 1.0 / dt if dt > 0 else 0.0
@@ -262,12 +693,1743 @@ def run(
         typer.echo("events emitted " + str(events_seen))
 
 
+def _finite_or_none(value):
+    """JSON-safe finite float, or None for missing/invalid measurements."""
+    import math
+
+    if value is None:
+        return None
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return None
+    return round(number, 5) if math.isfinite(number) else None
+
+
+def _collection_person_record(
+    person, features, machine, association_epoch: int, temporal_summary=None
+) -> dict:
+    """Privacy-reduced, JSON-only row for one tracked person."""
+    heights = None
+    if person.heights is not None:
+        heights = [_finite_or_none(value) for value in person.heights]
+    record = {
+        "track_id": int(person.track_id),
+        "association_epoch": int(association_epoch),
+        "keypoints_xy": [
+            [_finite_or_none(point[0]), _finite_or_none(point[1])]
+            for point in person.keypoints
+        ],
+        "keypoint_scores": [_finite_or_none(value) for value in person.scores],
+        "joint_heights_m": heights,
+        "features": {
+            "contact_xy_m": (
+                [_finite_or_none(features.contact_xy[0]), _finite_or_none(features.contact_xy[1])]
+                if features.contact_xy is not None
+                else None
+            ),
+            "range_m": _finite_or_none(features.range_m),
+            "h_torso_m": _finite_or_none(features.h_torso),
+            "h_shoulder_m": _finite_or_none(features.h_shoulder),
+            "h_head_m": _finite_or_none(features.h_head),
+            "floor_spread_m": _finite_or_none(features.floor_spread),
+            "vertical_velocity_mps": _finite_or_none(features.v_z),
+            "motion_mps": _finite_or_none(features.motion),
+            "n_valid_keypoints": int(features.n_valid_kp),
+            "mean_confidence": _finite_or_none(features.mean_conf),
+            "zones": list(features.zones),
+            "associated_bed": features.associated_bed,
+            "supported_by_bed": features.supported_by_bed,
+            "bed_support_fraction": _finite_or_none(features.bed_overlap),
+            "bed_edge_distance_m": _finite_or_none(features.bed_edge_distance_m),
+            "torso_tilt_deg": _finite_or_none(features.torso_tilt),
+        },
+        "fall_state": machine.state_of(person.track_id),
+    }
+    if hasattr(machine, "bed_snapshot_of"):
+        snapshot = machine.bed_snapshot_of(person.track_id, features.t)
+        if snapshot is not None:
+            activity = snapshot.to_dict()
+            # Care/risk policy is not a behavioural model input and must not be
+            # copied out of the hospital-controlled system into research rows.
+            activity.pop("bed_risk", None)
+            record["bed_activity"] = activity
+    if temporal_summary is not None:
+        record["temporal_summary"] = {
+            "schema_version": temporal_summary.schema_version,
+            # The ordered feature names and their SHA-256 live once in the
+            # manifest.  Repeating 929 JSON keys for every frame inflated an
+            # hour-long session by roughly a gigabyte.
+            "values": temporal_summary.as_vector(),
+        }
+    return record
+
+
+def _standing_depth_ankle_height(
+    person, features, state: str, *, min_score: float, feature_valid: bool
+) -> float | None:
+    """Return a real sparse-depth ankle check, never monocular fallback geometry."""
+    import math
+
+    from ahfd.pose.skeleton import ANKLES
+
+    if (
+        not feature_valid
+        or state != "UPRIGHT"
+        or features.supported_by_bed is not None
+        or person.heights is None
+    ):
+        return None
+    values = [
+        float(person.heights[index])
+        for index in ANKLES
+        if (
+            index < len(person.heights)
+            and person.scores[index] >= min_score
+            and math.isfinite(float(person.heights[index]))
+        )
+    ]
+    # Both ankles are required.  A lone stereo sample at a limb boundary is too
+    # easy to corrupt, and a lifted foot is not evidence that the mount moved.
+    if len(values) != len(ANKLES) or max(values) - min(values) > 0.12:
+        return None
+    return sum(values) / len(values)
+
+
+def _standing_preflight_eligible(features, cfg) -> bool:
+    """Strict posture gate for the consenting-staff ankle preflight."""
+    return bool(
+        features is not None
+        and features.n_valid_kp >= cfg.detect.min_valid_kp
+        and features.mean_conf >= cfg.detect.min_mean_conf
+        and features.has_geometry()
+        and features.h_torso is not None
+        and features.h_torso >= cfg.detect.upright_h
+        and features.torso_tilt is not None
+        and features.torso_tilt <= cfg.detect.seated_tilt_max
+        and features.supported_by_bed is None
+        and not features.in_excluded_zone
+    )
+
+
+def _bed_observation_valid(snapshot) -> bool:
+    """Use the bed machine's full visibility gate for temporal training rows."""
+    return snapshot is not None and snapshot.observation == "VALID"
+
+
+def _collection_marker(
+    kind: str,
+    value: str,
+    selected_track_id: int | None,
+    observed_ids: set[int],
+    epochs: dict[int, int],
+) -> dict | None:
+    """Build one observer marker only for an explicitly selected association."""
+    if selected_track_id is None or selected_track_id not in observed_ids:
+        return None
+    record = {
+        "kind": kind,
+        "track_ids": [selected_track_id],
+        "associations": [
+            {
+                "track_id": selected_track_id,
+                "association_epoch": epochs[selected_track_id],
+            }
+        ],
+    }
+    record["phase" if kind == "phase_marker" else "value"] = value
+    return record
+
+
+def _collection_scope_violation(
+    participant_id: str | None,
+    observed_track_ids: set[int],
+    *,
+    credible_person_count: int | None = None,
+) -> str | None:
+    """Return the fail-closed privacy code for the current observed people."""
+    count = max(
+        len(observed_track_ids),
+        len(observed_track_ids)
+        if credible_person_count is None
+        else int(credible_person_count),
+    )
+    if participant_id is None and count:
+        return "UNEXPECTED_PERSON_IN_EMPTY_ROOM"
+    if participant_id is not None and count > 1:
+        return "UNAPPROVED_PERSON_PRESENT"
+    return None
+
+
+def _credible_pose_count(people, *, min_person_score: float) -> int:
+    """Count privacy-relevant detections, including ones the tracker cannot box.
+
+    RTMO is configured with the same person-score threshold.  Rechecking it
+    here makes the collection boundary explicit and prevents a credible but
+    keypoint-poor second pose (``track_id=None``) from bypassing scope checks.
+    """
+    import math
+
+    return sum(
+        1
+        for person in people
+        if math.isfinite(float(getattr(person, "score", float("nan"))))
+        and float(person.score) >= float(min_person_score)
+    )
+
+
+def _returned_associations(
+    observed_track_ids: set[int], recently_missing: dict[int, float]
+) -> set[int]:
+    """Identify reused tracker IDs before the missing map is pruned."""
+    return set(observed_track_ids) & set(recently_missing)
+
+
+def _next_collection_target(
+    candidates: list[int], selected_track_id: int | None, *, step: int
+) -> tuple[int | None, bool]:
+    """Return the requested target and whether its association actually changed."""
+    if not candidates:
+        return None, selected_track_id is not None
+    if selected_track_id not in candidates:
+        return candidates[0], True
+    index = (candidates.index(selected_track_id) + step) % len(candidates)
+    next_track_id = candidates[index]
+    return next_track_id, next_track_id != selected_track_id
+
+
+def _collection_completion_issues(
+    participant_id: str | None,
+    *,
+    labeled_available_rows: int,
+    imu_orientation_ready: bool,
+) -> tuple[str, ...]:
+    """List missing evidence that makes a participant run incomplete."""
+    if participant_id is None:
+        return ()
+    issues: list[str] = []
+    if labeled_available_rows < 1:
+        issues.append("NO_LABELED_AVAILABLE_TARGET_ROWS")
+    if not imu_orientation_ready:
+        issues.append("IMU_PREFLIGHT_NOT_READY")
+    return tuple(issues)
+
+
+def _is_labeled_available_target_row(
+    participant_id: str | None,
+    selected_track_id: int | None,
+    association_epoch: int,
+    people_rows: list[dict],
+    monitoring: dict,
+    current_phase_by_association: dict[tuple[int, int], str],
+) -> bool:
+    """True only for a persisted available row with a prior usable local label."""
+    if participant_id is None or selected_track_id is None:
+        return False
+    association = (selected_track_id, association_epoch)
+    phase = current_phase_by_association.get(association)
+    if phase is None or phase == "UNKNOWN" or monitoring.get("status") != "AVAILABLE":
+        return False
+    return any(
+        (row.get("track_id"), row.get("association_epoch")) == association
+        for row in people_rows
+    )
+
+
+def _collection_exception_abort_code(
+    abort_code: str, *, processing_frame: bool
+) -> str:
+    """Identify capture-boundary failures without relabeling later failures."""
+    if abort_code == "PIPELINE_ERROR" and not processing_frame:
+        return "CAMERA_DISCONNECTED"
+    return abort_code
+
+
+def _collection_disk_free_bytes(path: Path) -> int:
+    """Return output-volume free bytes; callers classify OSError as disk failure."""
+    import shutil
+
+    return int(shutil.disk_usage(path).free)
+
+
+def _finalize_collection_recorder(
+    recorder,
+    *,
+    requested_abort: bool,
+    abort_reason: str | None = None,
+) -> str:
+    """Complete an eligible run or persist a controlled abort reason."""
+    if requested_abort:
+        abort_reason = "REQUESTED_STOP"
+    if abort_reason is not None:
+        recorder.abort(abort_reason)
+        return "aborted"
+    recorder.complete()
+    return "complete"
+
+
+def _intrinsics_match(expected, actual, *, tolerance_px: float = 1.0) -> bool:
+    """Check the live factory intrinsics against the file used for geometry."""
+    if actual is None:
+        return False
+    if (expected.width, expected.height) != (actual.width, actual.height):
+        return False
+    return all(
+        abs(float(left) - float(right)) <= tolerance_px
+        for left, right in (
+            (expected.fx, actual.fx),
+            (expected.fy, actual.fy),
+            (expected.cx, actual.cx),
+            (expected.cy, actual.cy),
+        )
+    )
+
+
+def _imu_orientation_delta(calib, gravity) -> tuple[float, float] | None:
+    """Live D435i pitch/roll delta from the orientation stored in calibration."""
+    if gravity is None:
+        return None
+    from ahfd.geometry.ground import GroundPlane
+
+    live = GroundPlane.from_gravity(
+        calib.ground.intrinsics,
+        calib.height_m,
+        gravity,
+    )
+    roll_delta = (live.roll_deg - calib.ground.roll_deg + 180.0) % 360.0 - 180.0
+    return live.pitch_deg - calib.ground.pitch_deg, roll_delta
+
+
+def _depth_provenance(person, *, min_score: float) -> dict[str, float | None]:
+    """Causal masks that stop a model confusing depth loss with movement."""
+    import math
+
+    from ahfd.pose.skeleton import HIPS, SHOULDERS
+
+    if person.heights is None:
+        return {
+            "joint_depth_valid_fraction": 0.0,
+            "shoulder_depth_available": 0.0,
+            "torso_depth_available": 0.0,
+        }
+    valid = [
+        index
+        for index in range(min(len(person.heights), len(person.scores)))
+        if person.scores[index] >= min_score
+        and math.isfinite(float(person.heights[index]))
+    ]
+    valid_set = set(valid)
+    shoulder_available = any(index in valid_set for index in SHOULDERS)
+    hip_available = any(index in valid_set for index in HIPS)
+    return {
+        "joint_depth_valid_fraction": len(valid) / 17.0,
+        "shoulder_depth_available": float(shoulder_available),
+        "torso_depth_available": float(shoulder_available and hip_available),
+    }
+
+
+def _target_depth_healthy(provenance: dict[str, float | None]) -> bool:
+    """Require critical trunk depth plus four valid joints, not one limb hit."""
+    return bool(
+        float(provenance.get("joint_depth_valid_fraction") or 0.0) >= 4.0 / 17.0
+        and provenance.get("shoulder_depth_available") == 1.0
+        and provenance.get("torso_depth_available") == 1.0
+    )
+
+
+def _robust_ankle_baseline(values: list[float]) -> float:
+    """Validate a standing preflight sample and return its robust median."""
+    import numpy as np
+
+    clean = np.asarray(values, dtype=float)
+    clean = clean[np.isfinite(clean)]
+    if clean.size < 30:
+        raise ValueError("need at least 30 valid two-ankle samples")
+    median = float(np.median(clean))
+    mad = float(np.median(np.abs(clean - median)))
+    if not -0.05 <= median <= 0.25:
+        raise ValueError("standing ankle baseline is outside the plausible floor band")
+    if mad > 0.025:
+        raise ValueError("standing ankle sample is too unstable; fix depth/mount/pose")
+    return median
+
+
+@app.command(name="collect")
+def collect_onsite(
+    out_root: Path = typer.Option(
+        ..., "--out-root", help="Hospital-managed encrypted output directory."
+    ),
+    site_id: str = typer.Option(
+        ...,
+        help="Random pseudonymous site code, e.g. site_0123abcd (never a ward/room name).",
+    ),
+    participant_id: str = typer.Option(
+        None,
+        help=(
+            "Optional random pseudonym, e.g. sub_0123456789abcdef; "
+            "omit for empty-room tests."
+        ),
+    ),
+    session_id: str = typer.Option(
+        None,
+        help="Optional ses_ plus 16 random hex characters; generated when omitted.",
+    ),
+    source: str = typer.Option(
+        None,
+        help="Disabled onsite: the reviewed config is the capture-source authority.",
+    ),
+    config: Path = typer.Option(
+        Path("configs/onsite_collection.yaml"), help="Locked shadow-collection YAML."
+    ),
+    calibration: Path = typer.Option(
+        None, help="Exact onsite mount calibration; defaults to config calibration."
+    ),
+    approval: Path = typer.Option(
+        None,
+        help=(
+            "External governance approval JSON bound to config, calibration, "
+            "and pose-model hashes."
+        ),
+    ),
+    seconds: float = typer.Option(0.0, help="Stop after N wall-clock seconds; 0 = until q."),
+    max_frames: int = typer.Option(0, help="Dry-run limit; 0 = no frame limit."),
+    view: bool = typer.Option(
+        True, "--view/--headless", help="Show only the derived skeleton and enable marker keys."
+    ),
+) -> None:
+    """Collect derived D435i signals and observer markers in research shadow mode.
+
+    No RGB frame or dense depth map is written. Output contains keypoints,
+    seventeen optional joint-height scalars, metric/temporal features, explicit
+    availability telemetry and controlled observer labels. It is sensitive
+    research data and must not be committed to GitHub.
+    """
+    from collections import deque
+    import hashlib
+    import os
+    import re
+    import subprocess
+    import threading
+    import uuid
+
+    import cv2
+    import numpy as np
+
+    from ahfd.capture import open_source
+    from ahfd.capture.factory import parse_realsense_uri
+    from ahfd.collect import HealthMonitor, HealthReason, SessionRecorder, sha256_file
+    from ahfd.features import attach_depth_heights
+    from ahfd.geometry.calibration import drift_check
+    from ahfd.pose import KeypointSmoother, build_estimator
+    from ahfd.privacy import ENV_VAR
+    from ahfd.track import SimpleTracker
+    from ahfd.viz import render_skeleton
+    from ahfd.ml.temporal import (
+        TEMPORAL_FEATURE_NAMES,
+        TEMPORAL_SCHEMA_VERSION,
+        CausalTemporalSummarizer,
+    )
+
+    # Hash around parsing so the runtime object and recorded provenance cannot
+    # silently refer to different bytes if an operator/editor replaces a file
+    # during preflight.
+    config_sha256 = sha256_file(config)
+    cfg = load_config(config)
+    if sha256_file(config) != config_sha256:
+        raise typer.BadParameter("onsite config changed while it was being loaded")
+    if source is not None:
+        raise typer.BadParameter(
+            "--source overrides are disabled onsite; update and re-approve the config"
+        )
+    uri = cfg.source
+    calib_path = calibration or cfg.calibration
+    if not str(uri).startswith("rs://"):
+        raise typer.BadParameter("onsite collection accepts only a live rs:// source")
+    try:
+        source_options = parse_realsense_uri(uri)
+    except (TypeError, ValueError) as exc:
+        raise typer.BadParameter("invalid onsite RealSense URI: " + str(exc)) from exc
+    if source_options.get("infrared"):
+        raise typer.BadParameter("onsite collection requires the calibrated colour stream")
+    if not source_options.get("with_depth"):
+        raise typer.BadParameter(
+            "onsite collection requires depth=1 in the approved config"
+        )
+    if not source_options.get("max_laser"):
+        raise typer.BadParameter(
+            "onsite collection requires max_laser=1 in the approved config"
+        )
+    if source_options.get("emitter") is not True:
+        raise typer.BadParameter(
+            "onsite collection requires emitter=1 in the approved config"
+        )
+    # Refuse an armed raw path before calibration/repository preflight.  The
+    # collection command must fail closed even when other required arguments
+    # are missing and it must never reach a writer or camera in this state.
+    if cfg.privacy.allow_raw_capture or os.environ.get(ENV_VAR) == "1":
+        raise typer.BadParameter(
+            "raw capture is armed; unset AHFD_ALLOW_RAW and keep privacy.allow_raw_capture false"
+        )
+    if calib_path is None:
+        raise typer.BadParameter("onsite collection needs the exact mount calibration")
+    if approval is None:
+        raise typer.BadParameter("onsite collection needs an external --approval record")
+    if participant_id is not None and not view:
+        raise typer.BadParameter(
+            "participant collection requires the skeleton view for explicit target binding"
+        )
+    if not cfg.detect.enabled:
+        raise typer.BadParameter("onsite collection config must set detect.enabled: true")
+    if not cfg.bed_activity.enabled:
+        raise typer.BadParameter(
+            "onsite collection config must set bed_activity.enabled: true"
+        )
+    if not cfg.bed_activity.emit_exit_event:
+        raise typer.BadParameter(
+            "onsite collection requires bed_activity.emit_exit_event: true "
+            "for shadow outcome logging"
+        )
+    if cfg.pose.backend != "rtmo":
+        raise typer.BadParameter(
+            "first onsite protocol is pinned to the reviewed Apache-2.0 RTMO pose backend"
+        )
+    if cfg.bed_activity.emit_early_warning:
+        raise typer.BadParameter(
+            "onsite collection is shadow-only: bed_activity.emit_early_warning must be false"
+        )
+    if cfg.dashboard.show_rgb or cfg.dashboard.allow_rgb:
+        raise typer.BadParameter(
+            "onsite collection config must keep dashboard show_rgb/allow_rgb false"
+        )
+    if cfg.alert.console or cfg.alert.jsonl_path:
+        raise typer.BadParameter(
+            "onsite collection keeps shadow events only in its managed derived "
+            "stream; disable alert.console and alert.jsonl_path"
+        )
+    if not re.fullmatch(r"site_[0-9a-f]{8}", site_id):
+        raise typer.BadParameter("site_id must be site_ plus exactly 8 random hex characters")
+    if participant_id is not None and not re.fullmatch(
+        r"sub_[0-9a-f]{16}", participant_id
+    ):
+        raise typer.BadParameter(
+            "participant_id must be sub_ plus exactly 16 random hex characters"
+        )
+    if session_id is not None and not re.fullmatch(r"ses_[0-9a-f]{16}", session_id):
+        raise typer.BadParameter(
+            "session_id must be ses_ plus exactly 16 random hex characters"
+        )
+    output_worktree = _containing_git_worktree(out_root)
+    if output_worktree is not None:
+        raise typer.BadParameter(
+            "onsite output must be an approved encrypted directory outside every "
+            "Git worktree; selected path is inside " + str(output_worktree)
+        )
+    _validate_approved_output(out_root, site_id)
+    calibration_worktree = _containing_git_worktree(Path(calib_path))
+    if calibration_worktree is not None:
+        raise typer.BadParameter(
+            "onsite calibration may reveal ward geometry and must live outside "
+            "Git; selected file is inside " + str(calibration_worktree)
+        )
+    approval_worktree = _containing_git_worktree(Path(approval))
+    if approval_worktree is not None:
+        raise typer.BadParameter(
+            "calibration approval must be a hospital-controlled external record, "
+            "not a file inside " + str(approval_worktree)
+        )
+    repo_root = Path(__file__).resolve().parents[2]
+    try:
+        revision = subprocess.run(
+            ["git", "rev-parse", "HEAD"],
+            cwd=repo_root,
+            check=True,
+            capture_output=True,
+            text=True,
+        ).stdout.strip()
+        dirty = bool(
+            subprocess.run(
+                ["git", "status", "--porcelain"],
+                cwd=repo_root,
+                check=True,
+                capture_output=True,
+                text=True,
+            ).stdout.strip()
+        )
+    except (OSError, subprocess.SubprocessError):
+        revision = hashlib.sha256(Path(__file__).read_bytes()).hexdigest()
+        dirty = True
+    if dirty:
+        raise typer.BadParameter(
+            "onsite collection requires a clean, reviewed Git revision; commit or "
+            "discard local changes and resolve any merge before collection"
+        )
+
+    typer.echo("loading the reviewed pose model for provenance preflight...")
+    review_estimator = build_estimator(cfg.pose)
+    pose_model_sha256 = _pose_artifact_sha256(review_estimator)
+    approval_sha256, calibration_sha256 = _validate_calibration_approval(
+        Path(calib_path),
+        Path(approval),
+        site_id,
+        config_sha256,
+        pose_model_sha256,
+    )
+    if _pose_artifact_sha256(review_estimator) != pose_model_sha256:
+        raise typer.BadParameter("reviewed pose model changed during approval preflight")
+    del review_estimator
+    estimator = build_estimator(cfg.pose)
+    if _pose_artifact_sha256(estimator) != pose_model_sha256:
+        raise typer.BadParameter("runtime pose model does not match the approved artifact")
+    device_serial, device_serial_sha256 = _probe_onsite_d435i()
+    src = open_source(
+        uri,
+        width=cfg.capture.width,
+        height=cfg.capture.height,
+        device_serial=device_serial,
+        strict_depth_controls=True,
+    )
+    extractor = machine = sink = None
+    recorder = None
+    abort_code = "PIPELINE_ERROR"
+    health = None
+    watchdog_stop = None
+    watchdog_thread = None
+    watchdog_errors: list[Exception] = []
+    window = "ahfd onsite collection -- DERIVED SKELETON ONLY"
+    frames_seen = 0
+    event_count = 0
+    epoch_counter = 0
+    epochs: dict[int, int] = {}
+    previous_live: set[int] = set()
+    previous_observed_tracks: set[int] = set()
+    recently_missing_tracks: dict[int, float] = {}
+    ankle_heights: deque[tuple[float, float]] = deque(maxlen=120)
+    orientation_samples: deque[tuple[float, float, float]] = deque(maxlen=120)
+    intrinsics_checked = False
+    selected_track_id: int | None = None
+    last_complete_wall: float | None = None
+    fps_ema: float | None = None
+    last_heartbeat_t = -10.0
+    next_derived_write_t = 0.0
+    pending_events: list[dict] = []
+    stop_reason = None
+    requested_abort = False
+    completion_abort_reason: str | None = None
+    processing_frame = False
+    current_phase_by_association: dict[tuple[int, int], str] = {}
+    labeled_available_rows = 0
+    imu_orientation_ready = False
+
+    phase_keys = {
+        ord("1"): "RECLINED",
+        ord("2"): "TORSO_RISING",
+        ord("3"): "UPRIGHT_IN_BED",
+        ord("4"): "SHIFTING_TO_EDGE",
+        ord("5"): "EDGE_SITTING",
+        ord("6"): "ATTEMPTING_STAND",
+        ord("7"): "OUT_OF_BED",
+        ord("0"): "UNKNOWN",
+    }
+    context_keys = {
+        ord("x"): "RETURN_TO_RECLINE",
+        ord("p"): "PAUSE",
+        ord("f"): "FAST_TRANSITION",
+        ord("z"): "SLIDE",
+        ord("r"): "RAIL_CLIMB",
+        ord("i"): "ASSISTED_TRANSFER",
+        ord("c"): "STAFF_OCCLUSION",
+        ord("v"): "BLANKET_OCCLUSION",
+        ord("a"): "BED_ARTICULATION",
+        ord("t"): "TRACK_ERROR",
+        ord("u"): "OBSERVER_UNSURE",
+    }
+
+    try:
+        extractor, machine, sink, calib = _build_detection(cfg, calib_path, src.meta)
+        if sha256_file(calib_path) != calibration_sha256:
+            raise typer.BadParameter(
+                "onsite calibration changed while it was being loaded"
+            )
+        _validate_onsite_calibration(calib, device_serial_sha256)
+        verified_depth_controls = src.preflight()
+        tracker = SimpleTracker(min_keypoint_score=cfg.pose.min_keypoint_score)
+        temporal = CausalTemporalSummarizer(
+            max_gap_s=cfg.bed_activity.cusum.max_gap_s,
+            near_edge_m=cfg.bed_activity.near_edge_enter_m,
+        )
+        smoother = (
+            KeypointSmoother(
+                min_cutoff=cfg.smoothing.min_cutoff,
+                beta=cfg.smoothing.beta,
+                d_cutoff=cfg.smoothing.d_cutoff,
+            )
+            if cfg.smoothing.enabled
+            else None
+        )
+
+        source_provenance = _canonical_onsite_source(
+            uri,
+            src.meta,
+            cfg,
+            approval_sha256,
+            verified_depth_controls,
+        )
+        source_provenance.update(
+            {
+                "camera_id": calib.camera_id,
+                "pose_model": estimator.name,
+                "pose_model_sha256": pose_model_sha256,
+            }
+        )
+        if sha256_file(config) != config_sha256:
+            raise typer.BadParameter("onsite config changed after preflight")
+        if sha256_file(calib_path) != calibration_sha256:
+            raise typer.BadParameter("onsite calibration changed after approval")
+        if sha256_file(approval) != approval_sha256:
+            raise typer.BadParameter("onsite approval record changed after preflight")
+        if _pose_artifact_sha256(estimator) != pose_model_sha256:
+            raise typer.BadParameter("reviewed pose model changed after approval")
+        recorder = SessionRecorder(
+            out_root,
+            site_id=site_id,
+            participant_id=participant_id,
+            session_id=session_id,
+            code_hash=revision,
+            config_path=config,
+            calibration_path=calib_path,
+            source=source_provenance,
+            expected_config_sha256=config_sha256,
+            expected_calibration_sha256=calibration_sha256,
+            temporal_schema_version=TEMPORAL_SCHEMA_VERSION,
+            temporal_feature_names=TEMPORAL_FEATURE_NAMES,
+        )
+        # All JSONL records and the manifest must share the recorder's session
+        # epoch.  Model/camera startup before this point is preflight, not
+        # monitored session time.
+        session_io_lock = threading.RLock()
+
+        def _write_session(method, record, *, t_rel_s=None) -> None:
+            nonlocal abort_code
+            try:
+                with session_io_lock:
+                    timestamp = recorder.elapsed_s() if t_rel_s is None else t_rel_s
+                    method(record, t_rel_s=timestamp)
+            except OSError:
+                abort_code = "DISK_ERROR"
+                raise
+
+        def _health_transition(transition) -> None:
+            _write_session(
+                recorder.write_telemetry,
+                transition.as_record(),
+                t_rel_s=transition.t_rel_s,
+            )
+
+        health = HealthMonitor(
+            stale_after_s=2.0,
+            on_transition=_health_transition,
+        )
+
+        def _health_call(method, *args, **kwargs):
+            # Timestamp sampling, state transition and callback persistence are
+            # serialized with every other session write.  A watchdog tick can
+            # therefore never overtake an earlier main-loop observation.
+            with session_io_lock:
+                return method(recorder.elapsed_s(), *args, **kwargs)
+
+        watchdog_stop = threading.Event()
+
+        def _watch_capture() -> None:
+            while not watchdog_stop.wait(0.5):
+                try:
+                    _health_call(health.tick)
+                except Exception as exc:  # surfaced by the main loop or finalizer
+                    watchdog_errors.append(exc)
+                    return
+
+        watchdog_thread = threading.Thread(
+            target=_watch_capture,
+            name="ahfd-collection-watchdog",
+            daemon=True,
+        )
+        watchdog_thread.start()
+        typer.echo("session: " + str(recorder.path))
+        typer.echo(
+            "markers: 1 reclined  2 rising  3 upright-in-bed  4 shifting  "
+            "5 edge-sitting  6 stand  7 out  0 unknown"
+        )
+        typer.echo("target: [ / ] explicitly bind the one consented participant")
+        typer.echo(
+            "context: x return  p pause  f fast  z slide  r rail  i assisted  "
+            "c staff-occlusion  v blanket  a bed-articulation  t track-error  "
+            "u unsure  q planned-complete  Esc requested/safety-stop"
+        )
+
+        for frame in src:
+            if watchdog_errors:
+                if abort_code != "DISK_ERROR":
+                    abort_code = "DISK_OR_WATCHDOG_ERROR"
+                raise RuntimeError("collection watchdog failed") from watchdog_errors[0]
+            processing_frame = True
+            t_rel = recorder.elapsed_s()
+            _health_call(health.note_frame)
+            if not intrinsics_checked:
+                if not _intrinsics_match(calib.ground.intrinsics, frame.intrinsics):
+                    abort_code = "CALIBRATION_MISMATCH"
+                    _health_call(
+                        health.mark_unavailable,
+                        HealthReason.CALIBRATION_DRIFT,
+                        details={"check": "INTRINSICS_MISMATCH"},
+                    )
+                    raise RuntimeError(
+                        "live D435i intrinsics do not match the approved calibration"
+                    )
+                intrinsics_checked = True
+            orientation_delta = _imu_orientation_delta(calib, frame.gravity)
+            if orientation_delta is not None:
+                orientation_samples.append(
+                    (t_rel, orientation_delta[0], orientation_delta[1])
+                )
+            while orientation_samples and t_rel - orientation_samples[0][0] > 3.0:
+                orientation_samples.popleft()
+
+            pose = tracker.update(estimator.estimate(frame))
+            live = set(tracker.live_ids)
+            new_ids = live - previous_live
+            current_observed_tracks = {
+                int(person.track_id)
+                for person in pose.people
+                if person.track_id is not None
+            }
+            credible_person_count = _credible_pose_count(
+                pose.people, min_person_score=cfg.pose.min_score
+            )
+            previously_missing = set(recently_missing_tracks)
+            returned_ids = _returned_associations(
+                current_observed_tracks, recently_missing_tracks
+            )
+            new_observed_ids = current_observed_tracks - previous_observed_tracks
+            replacement_seen = bool(
+                new_observed_ids
+                and (previously_missing - current_observed_tracks)
+            )
+            reassociated = bool(returned_ids or replacement_seen)
+
+            # Collection consent is bound to one explicitly selected tracker
+            # association.  Do not persist opportunistically detected staff,
+            # visitors, or neighbouring patients under that participant ID.
+            scope_violation = _collection_scope_violation(
+                participant_id,
+                current_observed_tracks,
+                credible_person_count=credible_person_count,
+            )
+            if scope_violation == "UNEXPECTED_PERSON_IN_EMPTY_ROOM":
+                abort_code = scope_violation
+                _health_call(
+                    health.mark_unavailable,
+                    HealthReason.PRIVACY_SCOPE_VIOLATION,
+                    details={"condition": "PERSON_IN_EMPTY_ROOM"},
+                )
+                raise RuntimeError(
+                    "person detected during empty-room protocol; stopped before body data was written"
+                )
+            if scope_violation == "UNAPPROVED_PERSON_PRESENT":
+                abort_code = scope_violation
+                _health_call(
+                    health.mark_unavailable,
+                    HealthReason.PRIVACY_SCOPE_VIOLATION,
+                    details={"condition": "MULTIPLE_PEOPLE"},
+                )
+                raise RuntimeError(
+                    "more than one person detected; stopped before non-target body data was written"
+                )
+
+            for missing_id in previous_observed_tracks - current_observed_tracks:
+                recently_missing_tracks[missing_id] = t_rel
+            for track_id in returned_ids:
+                recently_missing_tracks.pop(track_id, None)
+            recently_missing_tracks = {
+                track_id: missing_t
+                for track_id, missing_t in recently_missing_tracks.items()
+                if track_id in live and track_id not in current_observed_tracks
+            }
+            for track_id in sorted(new_ids | returned_ids):
+                epoch_counter += 1
+                epochs[track_id] = epoch_counter
+            if reassociated:
+                _write_session(
+                    recorder.write_telemetry,
+                    {
+                        "kind": "association_reset",
+                        "returned_track_ids": sorted(returned_ids),
+                        "new_track_ids": sorted(new_observed_ids),
+                        "association_epochs": [
+                            {
+                                "track_id": track_id,
+                                "association_epoch": epochs[track_id],
+                            }
+                            for track_id in sorted(new_ids | returned_ids)
+                            if track_id in epochs
+                        ],
+                    },
+                )
+
+            # Any missed observation breaks identity continuity, even if the
+            # tracker later reuses the same numeric ID.  Clear every stateful
+            # filter before processing the returned pose and require the
+            # operator to bind the participant again.
+            if returned_ids:
+                if smoother is not None:
+                    for track_id in returned_ids:
+                        smoother.forget(track_id)
+                extractor.retain_only(live - returned_ids)
+                machine.retain_only(live - returned_ids)
+                for track_id in returned_ids:
+                    temporal.reset(track_id)
+                if selected_track_id in returned_ids:
+                    selected_track_id = None
+                    typer.echo("target association was lost; select the participant again")
+            if selected_track_id is not None and selected_track_id not in current_observed_tracks:
+                temporal.mark_unobserved(selected_track_id, pose.t)
+                selected_track_id = None
+                typer.echo("target is not observable; select the participant again when visible")
+
+            if smoother is not None:
+                smoother.retain_only(tracker.live_ids)
+                pose = pose.with_people(
+                    tuple(
+                        person.with_keypoints(
+                            smoother.smooth(person.track_id, pose.t, person.keypoints)
+                        )
+                        for person in pose.people
+                    )
+                )
+            pose = attach_depth_heights(
+                pose,
+                frame,
+                extractor.ground,
+                min_score=cfg.pose.min_keypoint_score,
+            )
+            previous_observed_tracks = current_observed_tracks
+            previous_live = live
+
+            extractor.retain_only(live)
+            machine.retain_only(live)
+            temporal.retain_only(
+                {selected_track_id} if selected_track_id is not None else set()
+            )
+            observed_ids: set[int] = set()
+            people_rows = []
+            # A participant-free session is the explicit empty-room protocol;
+            # no person there is a valid observation. In a participant session,
+            # losing every usable pose is degraded coverage, never a negative.
+            pose_confident = participant_id is None and not pose.people
+            states = {}
+            target_depth_fraction: float | None = None
+            target_depth_provenance: dict[str, float | None] | None = None
+            for person in pose.people:
+                if person.track_id is None:
+                    continue
+                features = extractor.extract(person, pose.t)
+                if features is None:
+                    continue
+                observed_ids.add(person.track_id)
+                events = machine.update_all(features)
+                bed_snapshot = machine.bed_snapshot_of(person.track_id, pose.t)
+                states[person.track_id] = machine.state_of(person.track_id)
+                is_target = (
+                    participant_id is not None
+                    and selected_track_id == person.track_id
+                )
+                if not is_target:
+                    continue
+                # The training validity mask must use the same full gate as
+                # the bed activity machine.  In particular, an excluded-zone
+                # observation is unavailable even if its keypoints/geometry
+                # happen to look numerically good.
+                feature_valid = _bed_observation_valid(bed_snapshot)
+                pose_confident = pose_confident or feature_valid
+                for event in events:
+                    sink.emit(event)
+                    event_count += 1
+                    event_record = {
+                        "event_id": "evt_" + uuid.uuid4().hex[:16],
+                        "type": event.type,
+                        "track_id": int(event.track_id),
+                        "association_epoch": int(
+                            epochs.get(int(event.track_id), 0)
+                        ),
+                        "frame_index": int(frame.index),
+                        "source_t_s": _finite_or_none(frame.t),
+                        "severity": int(event.severity),
+                        "zone": event.zone,
+                        "trigger_t_s": _finite_or_none(event.t_trigger),
+                        "alert_t_s": _finite_or_none(event.t_alert),
+                        "evidence": event.evidence,
+                    }
+                    pending_events.append(event_record)
+                    # Feature rows are intentionally capped at 10 Hz, but an
+                    # event must survive a crash or abort before the next row.
+                    # Keep this append-only event copy in telemetry as the
+                    # durable, immediate record; the frame copy retains local
+                    # feature context for offline analysis.
+                    _write_session(
+                        recorder.write_telemetry,
+                        {"kind": "shadow_event", **event_record},
+                    )
+                measured_ankle = _standing_depth_ankle_height(
+                    person,
+                    features,
+                    states[person.track_id],
+                    min_score=cfg.pose.min_keypoint_score,
+                    feature_valid=feature_valid,
+                )
+                if measured_ankle is not None:
+                    ankle_heights.append((t_rel, measured_ankle))
+                provenance = _depth_provenance(
+                    person, min_score=cfg.pose.min_keypoint_score
+                )
+                target_depth_fraction = provenance["joint_depth_valid_fraction"]
+                target_depth_provenance = provenance
+                temporal_summary = temporal.update(
+                    features,
+                    valid=feature_valid,
+                    context={
+                        "edge_velocity_mps": (
+                            bed_snapshot.edge_velocity_mps if bed_snapshot else None
+                        ),
+                        "cusum_z": bed_snapshot.cusum_z if bed_snapshot else None,
+                        "cusum_g": bed_snapshot.cusum_g if bed_snapshot else None,
+                        "cusum_onset": (
+                            1.0
+                            if bed_snapshot and "cusum_onset" in bed_snapshot.reasons
+                            else 0.0
+                        ),
+                        "cusum_armed": (
+                            1.0 if bed_snapshot and bed_snapshot.cusum_armed else 0.0
+                        ),
+                        "joint_depth_valid_fraction": provenance[
+                            "joint_depth_valid_fraction"
+                        ],
+                        "shoulder_depth_available": provenance[
+                            "shoulder_depth_available"
+                        ],
+                        "torso_depth_available": provenance[
+                            "torso_depth_available"
+                        ],
+                        "imu_pitch_delta_deg": (
+                            orientation_delta[0] if orientation_delta else None
+                        ),
+                        "imu_roll_delta_deg": (
+                            orientation_delta[1] if orientation_delta else None
+                        ),
+                        "episode_reclined": (
+                            1.0
+                            if bed_snapshot and bed_snapshot.phase == "RECLINED"
+                            else 0.0
+                        ),
+                    },
+                )
+                people_rows.append(
+                    _collection_person_record(
+                        person,
+                        features,
+                        machine,
+                        epochs.get(person.track_id, 0),
+                        temporal_summary,
+                    )
+                )
+            if (
+                participant_id is not None
+                and selected_track_id is not None
+                and selected_track_id not in observed_ids
+            ):
+                temporal.mark_unobserved(selected_track_id, pose.t)
+                selected_track_id = None
+                typer.echo("target features unavailable; select the participant again")
+            machine.mark_frame_unobserved(pose.t, live, observed_ids)
+
+            depth_fraction = 0.0
+            if frame.depth_raw is not None and frame.depth_raw.size:
+                depth_fraction = float(np.count_nonzero(frame.depth_raw)) / float(
+                    frame.depth_raw.size
+                )
+            while ankle_heights and t_rel - ankle_heights[0][0] > 3.0:
+                ankle_heights.popleft()
+            ankle_values = [value for _, value in ankle_heights]
+            ankle_span = (
+                ankle_heights[-1][0] - ankle_heights[0][0]
+                if len(ankle_heights) >= 2
+                else 0.0
+            )
+            # Compare with the baseline measured during this exact mount's
+            # approved staff preflight; the ankle keypoint is not floor zero.
+            # A two-second window avoids one-frame stereo-edge aborts.
+            ankle_ready = len(ankle_values) >= 15 and ankle_span >= 2.0
+            calibration_valid = (
+                not ankle_ready
+                or drift_check(
+                    ankle_values,
+                    tolerance_m=0.10,
+                    baseline_m=calib.ankle_height_baseline_m,
+                )
+            )
+            calibration_check = (
+                "NOT_CHECKED"
+                if not ankle_values
+                else (
+                    "WARMING"
+                    if not ankle_ready
+                    else ("OK" if calibration_valid else "DRIFT")
+                )
+            )
+            ankle_mean = (
+                round(float(np.mean(ankle_values)), 4) if ankle_values else None
+            )
+            orientation_span = (
+                orientation_samples[-1][0] - orientation_samples[0][0]
+                if len(orientation_samples) >= 2
+                else 0.0
+            )
+            orientation_ready = (
+                len(orientation_samples) >= 15 and orientation_span >= 2.0
+            )
+            pitch_delta = (
+                float(np.median([value[1] for value in orientation_samples]))
+                if orientation_samples
+                else None
+            )
+            roll_delta = (
+                float(np.median([value[2] for value in orientation_samples]))
+                if orientation_samples
+                else None
+            )
+            imu_missing = not orientation_samples and t_rel >= 2.0
+            orientation_valid = (
+                not imu_missing
+                and (
+                    not orientation_ready
+                    or (
+                        abs(float(pitch_delta)) <= 2.0
+                        and abs(float(roll_delta)) <= 2.0
+                    )
+                )
+            )
+            if orientation_ready and orientation_valid:
+                imu_orientation_ready = True
+            orientation_check = (
+                "MISSING"
+                if imu_missing
+                else (
+                    "WARMING"
+                    if not orientation_ready
+                    else ("OK" if orientation_valid else "DRIFT")
+                )
+            )
+            calibration_valid = calibration_valid and orientation_valid
+            complete_wall = time.monotonic()
+            if last_complete_wall is not None and complete_wall > last_complete_wall:
+                instantaneous_fps = 1.0 / (complete_wall - last_complete_wall)
+                fps_ema = (
+                    instantaneous_fps
+                    if fps_ema is None
+                    else 0.9 * fps_ema + 0.1 * instantaneous_fps
+                )
+            last_complete_wall = complete_wall
+            try:
+                disk_free_bytes = _collection_disk_free_bytes(recorder.path)
+            except OSError as exc:
+                abort_code = "DISK_ERROR"
+                _health_call(
+                    health.mark_unavailable,
+                    HealthReason.DISK_ERROR,
+                )
+                raise RuntimeError(
+                    "cannot inspect free space in the approved output volume"
+                ) from exc
+            if t_rel - last_heartbeat_t >= 10.0:
+                _write_session(
+                    recorder.write_telemetry,
+                    {
+                        "kind": "heartbeat",
+                        "frames_seen": frames_seen,
+                        "effective_fps": round(fps_ema, 3) if fps_ema is not None else None,
+                        "disk_free_bytes": int(disk_free_bytes),
+                        "monitoring": health.snapshot(),
+                    }
+                )
+                last_heartbeat_t = t_rel
+            if disk_free_bytes < 512 * 1024 * 1024:
+                abort_code = "DISK_SPACE_LOW"
+                _health_call(
+                    health.mark_unavailable,
+                    HealthReason.DISK_ERROR,
+                    details={"disk_free_bytes": int(disk_free_bytes)},
+                )
+                raise RuntimeError("less than 512 MiB free in the approved output volume")
+            health_details = {
+                    "people": len(people_rows),
+                    "frame_depth_valid_fraction": round(depth_fraction, 4),
+                    "target_joint_depth_fraction": (
+                        round(target_depth_fraction, 4)
+                        if target_depth_fraction is not None
+                        else None
+                    ),
+                    "ankle_drift_samples": len(ankle_heights),
+                    "ankle_drift_span_s": round(ankle_span, 3),
+                    "ankle_height_mean_m": ankle_mean,
+                    "calibration_check": calibration_check,
+                    "imu_orientation_check": orientation_check,
+                    "imu_pitch_delta_deg": (
+                        round(pitch_delta, 3) if pitch_delta is not None else None
+                    ),
+                    "imu_roll_delta_deg": (
+                        round(roll_delta, 3) if roll_delta is not None else None
+                    ),
+                    "effective_fps": round(fps_ema, 3) if fps_ema is not None else None,
+                    "disk_free_bytes": int(disk_free_bytes),
+                }
+            if participant_id is not None and selected_track_id is None:
+                _health_call(
+                    health.mark_unavailable,
+                    HealthReason.TARGET_NOT_BOUND,
+                    details=health_details,
+                )
+            else:
+                depth_valid = (
+                    depth_fraction > 0.05
+                    if participant_id is None
+                    else _target_depth_healthy(target_depth_provenance or {})
+                )
+                _health_call(
+                    health.observe_frame,
+                    pose_confident=pose_confident,
+                    depth_valid=depth_valid,
+                    reassociated=reassociated,
+                    calibration_valid=calibration_valid,
+                    details=health_details,
+                )
+            # The planned model rate is 10 Hz.  Processing may run faster for
+            # tracking/health, but writing keyed temporal rows more often adds
+            # storage and frame correlation without useful signal.
+            if t_rel + 1e-9 >= next_derived_write_t:
+                monitoring_snapshot = health.snapshot()
+                _write_session(
+                    recorder.write_derived,
+                    {
+                        "kind": "frame_observation",
+                        "frame_index": int(frame.index),
+                        "source_t_s": _finite_or_none(frame.t),
+                        "monitoring": monitoring_snapshot,
+                        "people": people_rows,
+                        "events": list(pending_events),
+                    },
+                )
+                if _is_labeled_available_target_row(
+                    participant_id,
+                    selected_track_id,
+                    epochs.get(selected_track_id, 0)
+                    if selected_track_id is not None
+                    else 0,
+                    people_rows,
+                    monitoring_snapshot,
+                    current_phase_by_association,
+                ):
+                    labeled_available_rows += 1
+                pending_events.clear()
+                while next_derived_write_t <= t_rel + 1e-9:
+                    next_derived_write_t += 0.1
+            if not calibration_valid:
+                abort_code = "CALIBRATION_DRIFT"
+                raise RuntimeError(
+                    "calibration drift or missing IMU detected; "
+                    "session aborted -- secure the mount and recalibrate"
+                )
+
+            key = -1
+            if view:
+                canvas = render_skeleton(
+                    pose,
+                    min_keypoint_score=cfg.pose.min_keypoint_score,
+                    states=states,
+                    fps=None,
+                )
+                health_snapshot = health.snapshot()
+                status = health_snapshot["status"]
+                reasons = ",".join(health_snapshot["reasons"]) or "OK"
+                status_color = (
+                    (80, 220, 80)
+                    if status == "AVAILABLE"
+                    else ((0, 210, 255) if status == "DEGRADED" else (50, 50, 230))
+                )
+                cv2.putText(
+                    canvas,
+                    "RESEARCH SHADOW | "
+                    + status
+                    + " | "
+                    + reasons
+                    + " | %.1f fps" % (fps_ema or 0.0)
+                    + " | depth %.0f%%" % (100.0 * depth_fraction)
+                    + " | disk %.1f GB" % (disk_free_bytes / (1024**3)),
+                    (12, 24),
+                    cv2.FONT_HERSHEY_SIMPLEX,
+                    0.48,
+                    status_color,
+                    2,
+                    cv2.LINE_AA,
+                )
+                candidates = sorted(observed_ids)
+                if selected_track_id not in observed_ids:
+                    selected_track_id = None
+                target_text = (
+                    "LABEL TARGET: track " + str(selected_track_id)
+                    if selected_track_id is not None
+                    else "LABEL TARGET: NONE  ([ / ] to select)"
+                )
+                cv2.putText(
+                    canvas,
+                    target_text,
+                    (12, max(24, canvas.shape[0] - 18)),
+                    cv2.FONT_HERSHEY_SIMPLEX,
+                    0.55,
+                    (0, 255, 255),
+                    2,
+                    cv2.LINE_AA,
+                )
+                cv2.imshow(window, canvas)
+                key = cv2.waitKey(1) & 0xFF
+                if key in (ord("["), ord("]")):
+                    if candidates:
+                        next_track_id, target_changed = _next_collection_target(
+                            candidates,
+                            selected_track_id,
+                            step=-1 if key == ord("[") else 1,
+                        )
+                        if target_changed:
+                            selected_track_id = next_track_id
+                            # Pre-binding observations must not seed CUSUM, dwell,
+                            # velocity or smoothing state for the recorded target.
+                            # Begin one clean causal association at the operator's
+                            # explicit binding action.
+                            if smoother is not None:
+                                smoother.forget(selected_track_id)
+                            extractor.retain_only(live - {selected_track_id})
+                            machine.retain_only(live - {selected_track_id})
+                            temporal.reset(selected_track_id)
+                            _write_session(
+                                recorder.write_telemetry,
+                                {
+                                    "kind": "target_binding",
+                                    "track_id": selected_track_id,
+                                    "association_epoch": epochs[selected_track_id],
+                                },
+                            )
+                            typer.echo("label target: track " + str(selected_track_id))
+                        else:
+                            typer.echo(
+                                "label target unchanged: track "
+                                + str(selected_track_id)
+                            )
+                    else:
+                        selected_track_id = None
+                        typer.echo("label target: none visible")
+                elif key in phase_keys:
+                    marker = _collection_marker(
+                        "phase_marker",
+                        phase_keys[key],
+                        selected_track_id,
+                        observed_ids,
+                        epochs,
+                    )
+                    if marker is None:
+                        typer.echo("marker ignored: select one visible target with [ / ]")
+                    else:
+                        _write_session(recorder.write_label, marker)
+                        association = marker["associations"][0]
+                        current_phase_by_association[
+                            (
+                                association["track_id"],
+                                association["association_epoch"],
+                            )
+                        ] = marker["phase"]
+                elif key in context_keys:
+                    marker = _collection_marker(
+                        "context_marker",
+                        context_keys[key],
+                        selected_track_id,
+                        observed_ids,
+                        epochs,
+                    )
+                    if marker is None:
+                        typer.echo("marker ignored: select one visible target with [ / ]")
+                    else:
+                        _write_session(recorder.write_label, marker)
+                        if context_keys[key] == "BED_ARTICULATION":
+                            abort_code = "BED_ARTICULATION_RECALIBRATE"
+                            raise RuntimeError(
+                                "bed articulation changes calibrated geometry; "
+                                "session aborted -- recalibrate and start a new session"
+                            )
+                elif key == 27:
+                    stop_reason = HealthReason.REQUESTED_STOP
+                    requested_abort = True
+                    processing_frame = False
+                    break
+                elif key == ord("q"):
+                    stop_reason = HealthReason.PROTOCOL_COMPLETE
+                    processing_frame = False
+                    break
+
+            frames_seen += 1
+            processing_frame = False
+            if max_frames and frames_seen >= max_frames:
+                stop_reason = HealthReason.SESSION_LIMIT
+                break
+            if seconds and t_rel >= seconds:
+                stop_reason = HealthReason.SESSION_LIMIT
+                break
+
+        if stop_reason is None:
+            abort_code = "SOURCE_ENDED"
+            if watchdog_stop is not None:
+                watchdog_stop.set()
+            if watchdog_thread is not None:
+                watchdog_thread.join(timeout=2.0)
+            _health_call(health.mark_unavailable, HealthReason.SOURCE_ENDED)
+            raise RuntimeError("live D435i source ended unexpectedly")
+        if watchdog_stop is not None:
+            watchdog_stop.set()
+        if watchdog_thread is not None:
+            watchdog_thread.join(timeout=2.0)
+        completion_issues = _collection_completion_issues(
+            participant_id,
+            labeled_available_rows=labeled_available_rows,
+            imu_orientation_ready=imu_orientation_ready,
+        )
+        if not requested_abort and completion_issues:
+            completion_abort_reason = "PROTOCOL_INCOMPLETE"
+            stop_reason = HealthReason.PROTOCOL_INCOMPLETE
+            typer.echo(
+                "protocol incomplete: " + ", ".join(completion_issues)
+            )
+        # Any failure from the terminal health write or recorder finalization is
+        # not a camera disconnect.  A lower-level OSError still overrides this
+        # with DISK_ERROR in _write_session.
+        abort_code = "FINALIZATION_ERROR"
+        _health_call(health.mark_unavailable, stop_reason)
+        _finalize_collection_recorder(
+            recorder,
+            requested_abort=requested_abort,
+            abort_reason=completion_abort_reason,
+        )
+    except KeyboardInterrupt:
+        if watchdog_stop is not None:
+            watchdog_stop.set()
+        if watchdog_thread is not None:
+            watchdog_thread.join(timeout=2.0)
+        if health is not None:
+            try:
+                _health_call(health.mark_unavailable, HealthReason.OPERATOR_STOP)
+            except Exception:
+                pass
+        if recorder is not None and recorder.status == "incomplete":
+            recorder.abort("OPERATOR_INTERRUPT")
+        typer.echo("aborted by operator; the flushed derived prefix is retained")
+        return
+    except Exception:
+        if watchdog_stop is not None:
+            watchdog_stop.set()
+        if watchdog_thread is not None:
+            watchdog_thread.join(timeout=2.0)
+        classified_abort_code = _collection_exception_abort_code(
+            abort_code, processing_frame=processing_frame
+        )
+        if classified_abort_code == "CAMERA_DISCONNECTED" and health is not None:
+            abort_code = classified_abort_code
+            try:
+                _health_call(
+                    health.mark_unavailable,
+                    HealthReason.CAMERA_DISCONNECTED,
+                )
+            except Exception:
+                pass
+        else:
+            abort_code = classified_abort_code
+        if recorder is not None and recorder.status == "incomplete":
+            recorder.abort(abort_code)
+        raise
+    finally:
+        if watchdog_stop is not None:
+            watchdog_stop.set()
+        if watchdog_thread is not None and watchdog_thread.is_alive():
+            watchdog_thread.join(timeout=2.0)
+        src.close()
+        if sink is not None:
+            sink.close()
+        if view:
+            cv2.destroyAllWindows()
+
+    if requested_abort:
+        final_status = "aborted (requested/safety stop)"
+    elif completion_abort_reason is not None:
+        final_status = "aborted (protocol incomplete)"
+    else:
+        final_status = "complete"
+    typer.echo(
+        final_status + ": " + str(frames_seen) + " frames, " + str(event_count)
+        + " shadow events -> " + str(recorder.path if recorder else out_root)
+    )
+
+
+@app.command(name="compare-bed-exit")
+def compare_bed_exit(
+    sessions: list[Path] = typer.Argument(
+        ..., help="Two or more complete derived-only ses_* directories."
+    ),
+    group_by: str = typer.Option(
+        "subject", help="Cross-validation group: subject (preferred) or session (development only)."
+    ),
+    out_dir: Path = typer.Option(
+        None,
+        help=(
+            "Optional new directory for aggregate report + fitted research models; "
+            "it must be beneath an external custodian-approved site root."
+        ),
+    ),
+) -> None:
+    """Compare logistic/tree temporal baselines on causal onsite summaries.
+
+    This reports out-of-fold frame-level development metrics for activity phase
+    and 5/10/20-second exit horizons. It does not coalesce alert events, measure
+    clinical response, or enable either model in the live dashboard.
+    """
+    import hashlib
+    import json
+    import platform
+    from collections import Counter
+    from dataclasses import replace
+    from datetime import datetime, timezone
+    from importlib.metadata import PackageNotFoundError, version
+
+    from ahfd.ml.bed_dataset import HORIZONS_S, load_bed_sessions
+    from ahfd.ml.temporal import compare_grouped
+
+    if group_by not in ("subject", "session"):
+        raise typer.BadParameter("--group-by must be subject or session")
+    dataset = load_bed_sessions(sessions)
+    if group_by == "subject" and len(dataset.participant_ids) < 2:
+        raise typer.BadParameter(
+            "subject-held-out comparison needs at least two explicit participants"
+        )
+    if group_by == "session":
+        typer.echo(
+            "WARNING: session-held-out scores are development-only; repeated people "
+            "can still leak person-specific movement."
+        )
+    if out_dir is not None:
+        _validate_comparator_output(out_dir, sessions)
+        out_dir.mkdir(parents=True, exist_ok=False)
+
+    typer.echo(
+        "FRAME-LEVEL RESEARCH BASELINE ONLY -- not an event-level or clinical validation"
+    )
+    typer.echo(
+        "loaded "
+        + str(len(dataset.session_ids))
+        + " session(s), "
+        + str(len(dataset.participant_ids))
+        + " participant(s), sampled causally at "
+        + format(dataset.sample_hz, ".1f")
+        + " Hz"
+    )
+
+    tasks = [("phase", dataset.phase)] + [
+        ("exit_" + str(horizon) + "s", dataset.for_horizon(horizon))
+        for horizon in HORIZONS_S
+    ]
+    report = {
+        "schema": "ahfd.bed_exit_comparator.v1",
+        "created_utc": datetime.now(timezone.utc).isoformat(),
+        "research_shadow_only": True,
+        "live_inference_enabled": False,
+        "metric_scope": "out_of_fold_frame_level",
+        "group_by": group_by,
+        "session_ids": list(dataset.session_ids),
+        "participant_ids": list(dataset.participant_ids),
+        "inputs": [],
+        "tasks": {},
+    }
+    dependency_versions = {"python": platform.python_version()}
+    for package in ("numpy", "scikit-learn", "joblib"):
+        try:
+            dependency_versions[package] = version(package)
+        except PackageNotFoundError:
+            dependency_versions[package] = "unavailable"
+    report["dependency_versions"] = dict(sorted(dependency_versions.items()))
+    for session_path in sessions:
+        manifest_path = Path(session_path) / "manifest.json"
+        manifest_bytes = manifest_path.read_bytes()
+        manifest = json.loads(manifest_bytes)
+        report["inputs"].append(
+            {
+                "session_id": manifest["session_id"],
+                "manifest_sha256": hashlib.sha256(manifest_bytes).hexdigest(),
+                "code_hash": manifest["inputs"]["code_hash"],
+                "config_sha256": manifest["inputs"]["config_sha256"],
+                "calibration_sha256": manifest["inputs"]["calibration_sha256"],
+            }
+        )
+
+    successful = 0
+    for task_name, supervised in tasks:
+        counts = Counter(supervised.labels)
+        typer.echo(
+            "\n"
+            + task_name
+            + ": "
+            + str(len(supervised))
+            + " eligible rows; "
+            + ", ".join(label + "=" + str(count) for label, count in sorted(counts.items()))
+        )
+        try:
+            result = compare_grouped(
+                *supervised.compare_args(),
+                group_by=group_by,
+            )
+        except ValueError as exc:
+            typer.echo("  SKIPPED: " + str(exc))
+            report["tasks"][task_name] = {
+                "status": "skipped",
+                "reason": str(exc),
+                "n_rows": len(supervised),
+                "class_counts": dict(sorted(counts.items())),
+            }
+            continue
+
+        successful += 1
+        score_rows = []
+        for score in result.scores:
+            per_group_accuracy = dict(score.per_group_accuracy)
+            row = {
+                "model": score.model_kind,
+                "accuracy": score.accuracy,
+                "balanced_accuracy": score.balanced_accuracy,
+                "macro_f1": score.macro_f1,
+                "macro_average_precision": score.macro_average_precision,
+                "brier_score": score.brier_score,
+                "per_class_average_precision": dict(score.per_class_average_precision),
+                "per_group_accuracy": per_group_accuracy,
+                "group_macro_accuracy": (
+                    sum(per_group_accuracy.values()) / len(per_group_accuracy)
+                    if per_group_accuracy
+                    else None
+                ),
+                "group_macro_unit": group_by,
+                "positive_class": score.positive_class,
+                "positive_precision": score.positive_precision,
+                "positive_recall": score.positive_recall,
+                "false_positive_rate": score.false_positive_rate,
+            }
+            score_rows.append(row)
+            line = (
+                "  "
+                + score.model_kind.ljust(9)
+                + " macro-F1="
+                + format(score.macro_f1, ".3f")
+                + " bal-acc="
+                + format(score.balanced_accuracy, ".3f")
+                + " AP="
+                + format(score.macro_average_precision, ".3f")
+                + " Brier="
+                + format(score.brier_score, ".3f")
+            )
+            if score.positive_class == "exit":
+                line += (
+                    " exit-precision="
+                    + format(score.positive_precision or 0.0, ".3f")
+                    + " exit-recall="
+                    + format(score.positive_recall or 0.0, ".3f")
+                    + " FPR="
+                    + format(score.false_positive_rate or 0.0, ".3f")
+                )
+            typer.echo(line)
+
+        report["tasks"][task_name] = {
+            "status": "ok",
+            "n_rows": len(supervised),
+            "class_counts": dict(sorted(counts.items())),
+            "classes": list(result.classes),
+            "folds": [
+                {
+                    "train_groups": list(fold.train_groups),
+                    "test_groups": list(fold.test_groups),
+                    "n_train": fold.n_train,
+                    "n_test": fold.n_test,
+                }
+                for fold in result.folds
+            ],
+            "scores": score_rows,
+        }
+        if out_dir is not None:
+            import joblib
+
+            for model_kind, model in result.models.items():
+                horizon_s = (
+                    int(task_name.removeprefix("exit_").removesuffix("s"))
+                    if task_name.startswith("exit_")
+                    else None
+                )
+                model.metadata = replace(
+                    model.metadata,
+                    task=task_name,
+                    horizon_s=horizon_s,
+                    input_manifest_sha256=tuple(
+                        item["manifest_sha256"] for item in report["inputs"]
+                    ),
+                    dependency_versions=tuple(sorted(dependency_versions.items())),
+                )
+                joblib.dump(model, out_dir / (task_name + "_" + model_kind + ".joblib"))
+
+    if successful == 0:
+        if out_dir is not None:
+            (out_dir / "report.json").write_text(
+                json.dumps(report, indent=2, sort_keys=True) + "\n",
+                encoding="utf-8",
+            )
+        raise typer.BadParameter(
+            "no task had enough class-complete independent groups for comparison"
+        )
+    if out_dir is not None:
+        (out_dir / "report.json").write_text(
+            json.dumps(report, indent=2, sort_keys=True) + "\n",
+            encoding="utf-8",
+        )
+        typer.echo("\nwrote research-only comparator artifacts to " + str(out_dir))
+    typer.echo(
+        "\nNext gate: coalesce predictions into events and measure false alerts per "
+        "available hour plus lead time before considering any live shadow inference."
+    )
+
+
 @app.command()
 def extract(
     source: str = typer.Argument(..., help="Source URI: file://, seq://, webcam://, bag://"),
     out: Path = typer.Argument(..., help="Output tracks.jsonl path."),
     config: Path = typer.Option(None, help="Path to a YAML config (for the pose backend)."),
     max_frames: int = typer.Option(0, help="Stop after N frames. 0 = whole clip."),
+    depth: bool = typer.Option(
+        False, "--depth",
+        help="Also measure each joint's height above the floor from depth and "
+        "store it in the tracks (adds the dh_* features to training). Needs a "
+        "RealSense depth source: bag://<clip>.bag or rs://.",
+    ),
+    height: float = typer.Option(2.5, help="Camera mount height above the floor (m), for --depth."),
+    pitch: float = typer.Option(
+        MOUNT_PITCH_DEG,
+        help="Mount downtilt in degrees, for --depth on a camera with no IMU (D435f). "
+        "Defaults to MOUNT_PITCH_DEG (set once at the top of cli.py). Ignored when the "
+        "clip carries IMU gravity (D435i).",
+    ),
 ) -> None:
     """Run pose once over a clip and write keypoints to tracks.jsonl.
 
@@ -275,6 +2437,11 @@ def extract(
     the frames, extracts keypoints, and discards the pixels. Everything after
     this -- replay, sweep, eval -- works on the keypoints alone, so it is fast,
     deterministic, and privacy-safe. Run it once per clip; it is the slow step.
+
+    With --depth (on a .bag recorded by `ahfd record-depth`), it also samples
+    the aligned depth at each joint and stores the joint's height above the
+    floor -- keypoint scalars, never a depth image. Those feed the dh_* depth
+    features; clips extracted without --depth simply lack them and train as RGB.
     """
     from ahfd.capture import open_source
     from ahfd.io import TracksWriter
@@ -283,7 +2450,22 @@ def extract(
 
     cfg = load_config(config)
 
-    src = open_source(source)
+    if depth:
+        # Depth needs a RealSense stream that carries the aligned depth + IMU.
+        if source.startswith("bag://"):
+            from ahfd.capture.realsense import BagSource
+
+            src = BagSource(source[len("bag://") :], with_depth=True)
+        elif source.startswith("rs://"):
+            from ahfd.capture.realsense import RealSenseSource
+
+            src = RealSenseSource(with_depth=True)
+        else:
+            raise typer.BadParameter(
+                "--depth needs a RealSense source (bag://<clip>.bag or rs://); got " + source
+            )
+    else:
+        src = open_source(source)
     typer.echo(
         "source:  " + source + "  "
         + str(src.meta.width) + "x" + str(src.meta.height)
@@ -302,9 +2484,17 @@ def extract(
         else None
     )
     typer.echo("model:   " + estimator.name)
+    if depth:
+        import numpy as _np
+
+        from ahfd.geometry.depth_height import keypoint_heights_from_depth
+        from ahfd.geometry.ground import GroundPlane
+
+        typer.echo("depth:   ON -- storing joint heights above floor (mount " + str(height) + " m)")
 
     writer = TracksWriter(out)
     n = 0
+    depth_frames = 0
     try:
         for frame in src:
             pose = estimator.estimate(frame)
@@ -317,6 +2507,35 @@ def extract(
                         for p in pose.people
                     )
                 )
+            if (
+                depth
+                and frame.depth_raw is not None
+                and frame.intrinsics is not None
+                and pose.people
+            ):
+                # Ground tilt from the live IMU (D435i), or the fixed --pitch when
+                # the recording has no gravity (D435f). depth_raw = measurement
+                # depth (no hole filling), the right one for a per-joint reading.
+                if frame.gravity is not None:
+                    gp = GroundPlane.from_gravity(frame.intrinsics, height, _np.asarray(frame.gravity))
+                elif pitch is not None:
+                    gp = GroundPlane(intrinsics=frame.intrinsics, height_m=height,
+                                     pitch_deg=float(pitch), roll_deg=0.0)
+                else:
+                    gp = None
+                if gp is not None:
+                    depth_m = frame.depth_raw.astype(_np.float32) * float(frame.depth_scale)
+                    pose = pose.with_people(
+                        tuple(
+                            p.with_heights(
+                                keypoint_heights_from_depth(
+                                    p.keypoints, p.scores, depth_m, frame.intrinsics, gp
+                                )
+                            )
+                            for p in pose.people
+                        )
+                    )
+                    depth_frames += 1
             writer.write(pose)
             n += 1
             if max_frames and n >= max_frames:
@@ -326,6 +2545,15 @@ def extract(
         writer.close()
 
     typer.echo("wrote " + str(writer.count) + " frames to " + str(out))
+    if depth:
+        if depth_frames:
+            typer.echo("depth:   heights attached on " + str(depth_frames) + " frames")
+        else:
+            typer.echo(
+                "WARNING: --depth was set but no heights were stored. Needs depth + a "
+                "tilt: an IMU (D435i) or --pitch <deg> (D435f). Is this a depth .bag "
+                "from `ahfd record-depth`?"
+            )
 
 
 @app.command()
@@ -380,8 +2608,7 @@ def replay(
                 features = extractor.extract(person, pose.t)
                 if features is None:
                     continue
-                event = machine.update(features)
-                if event is not None:
+                for event in machine.update_all(features):
                     sink.emit(event)
                     events_seen += 1
             if render:
@@ -479,8 +2706,7 @@ def _replay_events(clip, extractor, machine, read_tracks):
             features = extractor.extract(person, pose.t)
             if features is None:
                 continue
-            event = machine.update(features)
-            if event is not None:
+            for event in machine.update_all(features):
                 events.append(
                     PredictedEvent(
                         type=event.type,
@@ -662,7 +2888,10 @@ def calibrate_zones(
                         default="0.4",
                     )
                 )
-                risk = typer.prompt("  risk_level (none/low/medium/high)", default="high")
+                risk = typer.prompt(
+                    "  risk_level -- Morse Fall Scale band: low (0-24) / moderate (25-44) / high (>=45)",
+                    default="high",
+                )
                 plane_z = top_m
             else:
                 top_m, risk, plane_z = None, "unknown", 0.0
@@ -1193,9 +3422,18 @@ def derive_falls(
 
 @app.command()
 def label_postures(
-    clip: Path = typer.Argument(..., help="Video clip to label, e.g. data/clips/fall_slump_02.mp4."),
+    clip: Path = typer.Argument(..., help="Clip to label: an .mp4, or a depth .db3/.bag (auto colour-exported)."),
     out: Path = typer.Option(
         None, help="Posture JSON to write. Default: data/postures/<clip>.json."
+    ),
+    config: Path = typer.Option(
+        None,
+        help="For .bag/.db3 only: YAML whose privacy.allow_raw_capture is true.",
+    ),
+    consent: bool = typer.Option(
+        False,
+        "--i-understand-raw-capture",
+        help="Required to label a .db3/.bag directly (it writes a temp colour mp4).",
     ),
 ) -> None:
     """Scrub a clip and mark posture segments -- a little video labeller.
@@ -1207,8 +3445,12 @@ def label_postures(
     saves and quits. Leave gaps between segments for transitions -- they are
     excluded from training on purpose.
 
-    Only the label JSON is written; no frame is ever saved. Run it on the
-    laptop (it needs a display), not the headless Jetson.
+    A depth .db3/.bag can be labelled directly: the colour stream is exported to
+    a temporary .mp4 (the labeller cannot scrub a .db3), labelled, then deleted.
+    The label's <clip>.json stem matches the <clip>.jsonl tracks either way.
+
+    Only the label JSON is kept; any temp mp4 is removed. Run it on the laptop
+    (it needs a display), not the headless Jetson.
     """
     from ahfd.annotate import run_labeler
 
@@ -1216,10 +3458,41 @@ def label_postures(
         raise typer.BadParameter("clip not found: " + str(clip))
     out_path = out or (Path("data/postures") / (clip.stem + ".json"))
 
+    # A depth recording is not a video the labeller can open, so colour-export
+    # it to a temp .mp4 first (transparently) and remove it afterwards.
+    tmp_mp4 = None
+    label_src = clip
+    if clip.suffix.lower() in (".db3", ".bag"):
+        if not consent:
+            raise typer.BadParameter(
+                "labelling a .db3/.bag writes a temporary colour mp4; pass "
+                "--i-understand-raw-capture (consented staged data only)."
+            )
+        import tempfile
+
+        from ahfd.debug.color_export import export_color
+
+        cfg = load_config(config)
+        tmp_mp4 = Path(tempfile.gettempdir()) / (clip.stem + "_label.mp4")
+        typer.echo("colour-exporting " + clip.name + " -> temp mp4 for labelling ...")
+        frames = export_color(
+            clip,
+            tmp_mp4,
+            config_flag=cfg.privacy.allow_raw_capture,
+            cli_flag=consent,
+        )
+        typer.echo("exported " + str(frames) + " frames; opening labeller ...")
+        label_src = tmp_mp4
+
     typer.echo("labelling " + clip.stem + "  ->  " + str(out_path))
     typer.echo("  s/SPACE=start  f=end  1-4=posture  u=undo  w=save  q=save+quit")
     typer.echo("  click/drag the timeline to seek   c=cancel mark   r=remove segment here")
-    n = run_labeler(clip, out_path)
+    try:
+        n = run_labeler(label_src, out_path)
+    finally:
+        if tmp_mp4 is not None and tmp_mp4.exists():
+            tmp_mp4.unlink()
+            typer.echo("removed temp colour mp4")
     typer.echo("saved " + str(n) + " segment(s) to " + str(out_path))
 
 
@@ -1241,6 +3514,11 @@ def compare_posture(
     ),
     show_rules: bool = typer.Option(
         True, "--show-rules/--no-show-rules", help="Print the learned tree thresholds."
+    ),
+    rgb_only: bool = typer.Option(
+        False, "--rgb-only",
+        help="Ignore the depth (dh_*) features. Run with and without this on the "
+        "same clips to isolate what depth adds (paired RGB vs RGB+depth).",
     ),
 ) -> None:
     """Train the posture classifier several ways and rank them, honestly.
@@ -1330,7 +3608,9 @@ def compare_posture(
         + ", ".join(k + "=" + str(v) for k, v in sorted(dist.items()))
     )
 
-    result = compare(rows, labels_list, groups, holdout=holdout)
+    result = compare(rows, labels_list, groups, holdout=holdout, rgb_only=rgb_only)
+    if rgb_only:
+        typer.echo("(RGB-only: depth dh_* features masked out)")
 
     typer.echo("")
     if holdout is not None:
@@ -1391,6 +3671,72 @@ def compare_posture(
 
 
 @app.command()
+def classify_view(
+    source: str = typer.Argument(..., help="Depth recording to replay: bag://<clip>.db3 or the path."),
+    calibration: Path = typer.Option(Path("calib/d435i.yaml"), help="Calibration YAML (ground + zones)."),
+    height: float = typer.Option(2.5, help="Camera mount height above the floor (m)."),
+    labels: Path = typer.Option(Path("data/postures_depth"), help="Dir of posture-label JSONs (for ground truth + training)."),
+    tracks: Path = typer.Option(Path("data/tracks_depth"), help="Dir of extracted depth tracks (for training)."),
+    backend: str = typer.Option("rtmo", help="Pose backend: rtmo | rtmpose | yolo."),
+    runtime: str = typer.Option("openvino", help="Pose runtime: openvino (iGPU) | onnxruntime."),
+    device: str = typer.Option("gpu", help="Pose device: gpu (iGPU) | cpu | cuda."),
+    dmin: float = typer.Option(2.5, help="Near clip for the depth colour ramp (m)."),
+    dmax: float = typer.Option(5.5, help="Far clip for the depth colour ramp (m)."),
+    rebuild: bool = typer.Option(
+        False, "--rebuild",
+        help="Force re-processing instead of loading the saved cache (use after retraining).",
+    ),
+    config: Path = typer.Option(
+        None,
+        help="YAML whose privacy.allow_raw_capture is true for the RGB frame cache.",
+    ),
+    consent: bool = typer.Option(
+        False,
+        "--i-understand-raw-capture",
+        help="Required because the scrubber cache persists JPEG RGB/depth panes.",
+    ),
+    pitch: float = typer.Option(
+        MOUNT_PITCH_DEG,
+        help="Mount downtilt in degrees for a D435f recording (no IMU). Defaults to "
+        "MOUNT_PITCH_DEG. Ignored when the clip carries IMU gravity (D435i).",
+    ),
+) -> None:
+    """Replay a clip with pose + posture on BOTH panes: RGB model vs RGB+depth.
+
+    The colour pane shows the skeleton and the RGB-only model's posture call; the
+    depth pane shows the skeleton and the RGB+depth model's call. The recording's
+    own person is held out of training, so both calls are honest, and the
+    ground-truth posture is shown when a label exists -- so you can watch where
+    depth fixes a wrong RGB call (the sitting / nadir frames).
+    """
+    from ahfd.viz.classify_view import run_classify_viewer
+    from ahfd.privacy import require_raw_capture
+
+    cfg = load_config(config)
+    require_raw_capture(
+        config_flag=cfg.privacy.allow_raw_capture,
+        cli_flag=consent,
+    )
+
+    run_classify_viewer(
+        source,
+        calibration=calibration,
+        height_m=height,
+        labels_dir=str(labels),
+        tracks_dir=str(tracks),
+        backend=backend,
+        runtime=runtime,
+        device=device,
+        dmin=dmin,
+        dmax=dmax,
+        rebuild=rebuild,
+        pitch=pitch,
+        raw_config_flag=cfg.privacy.allow_raw_capture,
+        raw_cli_flag=consent,
+    )
+
+
+@app.command()
 def depth_view(
     source: str = typer.Option("rs://", help="rs:// for the live D435i, or a path to a .bag recording."),
     height: float = typer.Option(2.5, help="Camera mount height above the floor (m) -- used by the height-above-floor colour mode."),
@@ -1399,6 +3745,19 @@ def depth_view(
     colormap: str = typer.Option("turbo", help="turbo | jet | viridis | inferno | magma."),
     raw: bool = typer.Option(False, "--raw", help="Show measurement depth (holes visible) instead of the hole-filled display depth."),
     color: bool = typer.Option(False, "--color", help="Show the RGB image beside the depth."),
+    long_range: bool = typer.Option(False, "--long-range", help="Max the projector power for denser depth at 4-6 m, and point the colour ramp there. Live camera only."),
+    max_range: float = typer.Option(6.0, help="Far depth cut in metres (the threshold filter). Raise it (e.g. 10) to see past 6 m; farther = noisier. Live camera only."),
+    smooth: int = typer.Option(2, help="Spatial-filter strength 1-5 (smoothing passes). Higher = less noise but rounder edges. Live camera only."),
+    pose: bool = typer.Option(False, "--pose", help="Overlay the skeleton + each joint's depth-measured height above the floor, and a coarse posture guess. Validates depth for posture before wiring it into detection."),
+    backend: str = typer.Option("rtmo", help="Pose backend for --pose: rtmo | rtmpose | yolo."),
+    runtime: str = typer.Option("openvino", help="Pose runtime for --pose: openvino (iGPU) | onnxruntime."),
+    device: str = typer.Option("gpu", help="Pose device for --pose: gpu (iGPU) | cpu | cuda."),
+    pitch: float = typer.Option(
+        MOUNT_PITCH_DEG,
+        help="Mount downtilt in degrees for the D435f (no IMU): supplies the tilt for "
+        "height mode / --pose heights when there is no live gravity. Defaults to "
+        "MOUNT_PITCH_DEG (set once at the top of cli.py). The D435i ignores it.",
+    ),
 ) -> None:
     """Live depth viewer for tuning: denoised RealSense depth with a clamped colour ramp.
 
@@ -1423,7 +3782,88 @@ def depth_view(
         colormap=colormap,
         hole_filled=not raw,
         show_color=color,
+        long_range=long_range,
+        max_range_m=max_range,
+        smooth=smooth,
+        pose=pose,
+        backend=backend,
+        runtime=runtime,
+        device=device,
+        pitch=pitch,
     )
+
+
+@app.command()
+def estimate_ground(
+    source: str = typer.Option("rs://", help="rs:// live, or bag://<clip>.db3 / a path."),
+    frames: int = typer.Option(30, help="Frames to sample; the median is reported."),
+) -> None:
+    """Recover the mount tilt + height from the FLOOR in depth -- no IMU needed.
+
+    Fits the floor plane in each depth frame and reports the median pitch / roll /
+    height. Use it to self-calibrate the D435f (no IMU): compare the printed pitch
+    to the D435i's IMU reading on the same mount, then use it as --pitch. Prints
+    only -- it does not touch detection.
+    """
+    import numpy as np
+
+    from ahfd.geometry.plane_fit import ground_from_floor
+
+    path = source[len("bag://"):] if source.startswith("bag://") else source
+    if source.startswith("bag://") or str(source).lower().endswith((".bag", ".db3")):
+        from ahfd.capture.realsense import BagSource
+
+        src = BagSource(path, with_depth=True)
+    else:
+        from ahfd.capture.realsense import RealSenseSource
+
+        src = RealSenseSource(with_depth=True)
+
+    typer.echo("sampling the floor plane from depth ...")
+    got = []
+    n = 0
+    try:
+        for frame in src:
+            if frame.depth_raw is None or frame.intrinsics is None:
+                continue
+            depth_m = frame.depth_raw.astype(float) * float(frame.depth_scale)
+            est = ground_from_floor(depth_m, frame.intrinsics)
+            if est is not None:
+                got.append(est)
+            n += 1
+            if n >= frames:
+                break
+    finally:
+        src.close()
+
+    if not got:
+        typer.echo("no floor plane found -- aim the camera so the floor is visible.")
+        return
+    arr = np.array(got)
+    typer.echo(
+        "recovered from floor (median of %d):  pitch %.1f deg   roll %.1f deg   height %.2f m"
+        % (len(got), float(np.median(arr[:, 0])), float(np.median(arr[:, 1])), float(np.median(arr[:, 2])))
+    )
+    typer.echo("compare the pitch to the D435i IMU on the same mount to validate, then pass it as --pitch.")
+
+
+@app.command()
+def compare_depth(
+    dmin: float = typer.Option(1.0, help="Near clip for the depth colour ramp (m)."),
+    dmax: float = typer.Option(6.0, help="Far clip for the depth colour ramp (m)."),
+) -> None:
+    """Live side-by-side depth from BOTH RealSense cameras, with quality gauges.
+
+    Opens the two connected cameras (e.g. D435i + D435f) at once and shows each
+    one's colourised depth with a centre-ROI readout -- fill %, mean distance,
+    noise spread -- so you point both at the same target and see which gives
+    denser, cleaner depth. Two projectors interfere (representative of a
+    multi-camera ward); press 1/2 to toggle a camera's projector to isolate it.
+    Keys: 1/2 projector on/off, q quit.
+    """
+    from ahfd.viz.compare_cameras import run_compare_cameras
+
+    run_compare_cameras(dmin=dmin, dmax=dmax)
 
 
 @app.command()
@@ -1540,6 +3980,7 @@ def dashboard(
 def record(
     out: Path = typer.Argument(..., help="Output .mp4 path for the raw recording."),
     source: str = typer.Option("webcam://0", help="Source URI to record."),
+    config: Path = typer.Option(None, help="YAML whose privacy.allow_raw_capture is true."),
     seconds: float = typer.Option(0.0, help="Auto-stop after N seconds. 0 = until you press q."),
     consent: bool = typer.Option(
         False,
@@ -1558,30 +3999,18 @@ def record(
     keypoints, then DELETE the video and keep only the tracks.jsonl. The footage
     is scaffolding for tuning, not something to retain.
 
-    Requires the explicit --i-understand-raw-capture flag: invoking this command
-    with that flag is the deliberate, informed intent the privacy gate exists to
-    check. (The stricter triple-switch gate stays on `run`/`dashboard`, where raw
-    capture would be an accident rather than the whole point.)
+    Requires all three privacy switches: the YAML flag, ``AHFD_ALLOW_RAW=1``
+    and the explicit command-line acknowledgement.  Staged volunteer capture
+    must not weaken the same gate the rest of the application promises.
     """
-    import os
-
     import cv2
 
     from ahfd.capture import open_source
     from ahfd.debug import RawRecorder
-    from ahfd.privacy import ENV_VAR
+    from ahfd.privacy import require_raw_capture
 
-    if not consent:
-        raise typer.BadParameter(
-            "raw recording is off unless you pass --i-understand-raw-capture. "
-            "This tool writes video to disk; use it only for consented staged "
-            "sessions with volunteers, never patients or a live ward."
-        )
-
-    # The explicit flag IS the consent, so satisfy the gate here rather than
-    # making the user also juggle an env var for a tool whose only job is to
-    # record. The banner and the deliberate flag keep it non-accidental.
-    os.environ[ENV_VAR] = "1"
+    cfg = load_config(config)
+    require_raw_capture(config_flag=cfg.privacy.allow_raw_capture, cli_flag=consent)
 
     src = open_source(source)
     typer.echo(
@@ -1592,7 +4021,7 @@ def record(
 
     recorder = RawRecorder(
         out, src.meta.width, src.meta.height, src.meta.fps,
-        config_flag=True, cli_flag=True,
+        config_flag=cfg.privacy.allow_raw_capture, cli_flag=consent,
     )
     window = "ahfd RECORDING -- raw video"
     try:
@@ -1612,6 +4041,104 @@ def record(
 
     typer.echo("saved " + str(recorder.count) + " frames to " + str(out))
     typer.echo("next: ahfd extract file://" + str(out) + " data/tracks/<clip>.jsonl  (then delete the .mp4)")
+
+
+@app.command()
+def record_depth(
+    out: Path = typer.Argument(..., help="Output .bag path (stores colour + depth + IMU)."),
+    config: Path = typer.Option(None, help="YAML whose privacy.allow_raw_capture is true."),
+    seconds: float = typer.Option(0.0, help="Auto-stop after N seconds. 0 = until you press q."),
+    rgb: str = typer.Option(
+        "1080", help="RGB resolution: 1080 (1920x1080) or 720 (1280x720). 1080 keeps "
+        "more detail on far/small subjects (multi-bed); use 720 for a close per-bed "
+        "mount to halve the file size.",
+    ),
+    consent: bool = typer.Option(
+        False,
+        "--i-understand-raw-capture",
+        help="Required. Confirms this session is consented raw capture.",
+    ),
+) -> None:
+    """Record a depth `.bag` for a consented staged-fall session.
+
+    Like `record`, but saves a RealSense `.bag` holding colour + DEPTH + IMU
+    together -- the colour-only `record` (.mp4) path cannot carry depth. This is
+    how you collect data for the depth-vs-RGB comparison: one `.bag` yields both
+    the monocular and the depth features from the *same* frames, so the only
+    difference between the two feature sets is depth itself.
+
+    Raw capture: staged, consented volunteers only -- never patients, never a
+    live ward. Delete the `.bag` once features are extracted.
+    """
+    from ahfd.debug.bag_writer import record_bag
+    from ahfd.privacy import require_raw_capture
+
+    cfg = load_config(config)
+    require_raw_capture(config_flag=cfg.privacy.allow_raw_capture, cli_flag=consent)
+    if out.suffix.lower() not in (".bag", ".db3"):
+        raise typer.BadParameter(
+            "output must be a .bag or .db3 file (it stores depth + IMU); got "
+            + repr(out.suffix or out.name)
+            + ". Newer librealsense builds require .db3 (rosbag2); older ones use .bag."
+        )
+
+    color_size = {"720": (1280, 720), "1080": (1920, 1080)}.get(str(rgb))
+    if color_size is None:
+        raise typer.BadParameter("--rgb must be 720 or 1080; got " + repr(rgb))
+
+    typer.echo("RECORDING depth .bag -> " + str(out)
+               + "  (colour %dx%d + depth + IMU-if-present)" % color_size)
+    typer.echo("press q in the window to stop; the projector is on for depth.")
+    n = record_bag(
+        out,
+        seconds=seconds,
+        color_size=color_size,
+        config_flag=cfg.privacy.allow_raw_capture,
+        cli_flag=consent,
+    )
+    typer.echo("saved ~" + str(n) + " framesets to " + str(out))
+    typer.echo("next: ahfd depth-view --pose --source " + str(out) + "  (verify), then extract features + DELETE the .bag")
+
+
+@app.command()
+def export_color(
+    bag: Path = typer.Argument(..., help="Depth .bag/.db3 to pull the colour stream from."),
+    out: Path = typer.Argument(..., help="Output .mp4 for the posture labeller."),
+    config: Path = typer.Option(None, help="YAML whose privacy.allow_raw_capture is true."),
+    consent: bool = typer.Option(
+        False,
+        "--i-understand-raw-capture",
+        help="Required. Confirms this is consented staged data.",
+    ),
+) -> None:
+    """Export a depth .bag/.db3's colour stream to an .mp4 so you can label it.
+
+    The posture labeller (`ahfd label-postures`) reads an .mp4, not a .db3, so
+    depth clips can't be labelled directly. This re-encodes just the colour into
+    an .mp4 whose stem matches the clip, so the resulting <clip>.json label pairs
+    with the <clip>.jsonl tracks. Label times line up because `compare-posture`
+    normalises each clip's track timestamps to start at zero.
+
+    Raw imagery: staged, consented volunteers only. Delete the .mp4 once the
+    clip is labelled, the same as the .bag.
+    """
+    from ahfd.debug.color_export import export_color as _export
+    from ahfd.privacy import require_raw_capture
+
+    cfg = load_config(config)
+    require_raw_capture(config_flag=cfg.privacy.allow_raw_capture, cli_flag=consent)
+    if out.suffix.lower() != ".mp4":
+        raise typer.BadParameter("output must be an .mp4 (the labeller reads video).")
+
+    typer.echo("exporting colour  " + str(bag) + "  ->  " + str(out))
+    n = _export(
+        bag,
+        out,
+        config_flag=cfg.privacy.allow_raw_capture,
+        cli_flag=consent,
+    )
+    typer.echo("wrote " + str(n) + " frames to " + str(out))
+    typer.echo("next: ahfd label-postures " + str(out) + "   then DELETE the .mp4")
 
 
 @app.command(name="eval")
@@ -1743,6 +4270,204 @@ def level(
         print()  # newline after the in-place line
 
 
+@app.command(name="measure-ankle-baseline")
+def measure_ankle_baseline(
+    calibration: Path = typer.Argument(
+        ..., help="External onsite calibration YAML to update."
+    ),
+    config: Path = typer.Option(
+        Path("configs/onsite_collection.yaml"), help="Pose/depth preflight config."
+    ),
+    source: str = typer.Option(
+        None, help="Depth-enabled D435i URI; defaults to the config source."
+    ),
+    seconds: float = typer.Option(
+        6.0, help="Seconds of one consenting staff member standing still."
+    ),
+    view: bool = typer.Option(
+        True, "--view/--headless", help="Show a live skeleton; no imagery is saved."
+    ),
+) -> None:
+    """Measure the sparse-depth ankle baseline used by the drift fail-safe.
+
+    Run during physical preflight with exactly one consenting staff member
+    standing naturally in the approved bed area. The command persists one
+    scalar median, never RGB or dense depth, and resets the human verification
+    latch to false so the rest of the checklist must still be completed.
+    """
+    import os
+    import re
+    import shutil
+    import tempfile
+
+    import cv2
+    import numpy as np
+    import yaml
+
+    from ahfd.capture import open_source
+    from ahfd.capture.factory import parse_realsense_uri
+    from ahfd.features import FeatureExtractor, attach_depth_heights
+    from ahfd.geometry.calibration import load_calibration
+    from ahfd.pose import build_estimator
+    from ahfd.viz import render_skeleton
+
+    if seconds < 3.0:
+        raise typer.BadParameter("--seconds must be at least 3 for a stable baseline")
+    if _containing_git_worktree(calibration) is not None:
+        raise typer.BadParameter(
+            "onsite calibration may reveal ward geometry and must live outside Git"
+        )
+    cfg = load_config(config)
+    uri = source or cfg.source
+    options = parse_realsense_uri(uri) if str(uri).startswith("rs://") else {}
+    if (
+        not options.get("with_depth")
+        or options.get("emitter") is not True
+        or not options.get("max_laser")
+    ):
+        raise typer.BadParameter(
+            "baseline measurement requires rs:// with depth=1, emitter=1 and max_laser=1"
+        )
+    device_serial, device_hash = _probe_onsite_d435i()
+    calib = load_calibration(calibration)
+    if not re.fullmatch(r"cam_[0-9a-f]{8}", calib.camera_id):
+        raise typer.BadParameter("camera_id must be cam_ plus exactly 8 random hex characters")
+    if calib.device_serial_sha256 != device_hash:
+        raise typer.BadParameter("connected D435i does not match this calibration")
+
+    src = open_source(
+        uri,
+        width=cfg.capture.width,
+        height=cfg.capture.height,
+        device_serial=device_serial,
+        strict_depth_controls=True,
+    )
+    try:
+        src.preflight()
+        _check_calibration_resolution(calib, src.meta)
+        typer.echo(
+            "loading pose model; keep exactly one consenting staff member standing still..."
+        )
+        estimator = build_estimator(cfg.pose)
+        extractor = FeatureExtractor(
+            calib.ground,
+            zones=calib.zones,
+            min_keypoint_score=cfg.pose.min_keypoint_score,
+        )
+    except Exception:
+        # preflight starts the pipeline; setup failures must not leave it owned
+        # until interpreter exit.
+        src.close()
+        raise
+    values: list[float] = []
+    orientation: list[tuple[float, float]] = []
+    started = None
+    window = "ahfd ankle baseline -- skeleton only"
+    try:
+        for frame in src:
+            if started is None:
+                started = time.monotonic()
+            if not _intrinsics_match(calib.ground.intrinsics, frame.intrinsics):
+                raise typer.BadParameter("live intrinsics do not match this calibration")
+            delta = _imu_orientation_delta(calib, frame.gravity)
+            if delta is not None:
+                orientation.append(delta)
+            pose = estimator.estimate(frame)
+            pose = attach_depth_heights(
+                pose,
+                frame,
+                calib.ground,
+                min_score=cfg.pose.min_keypoint_score,
+            )
+            if len(pose.people) > 1:
+                raise typer.BadParameter(
+                    "ankle preflight requires exactly one consenting staff member in view"
+                )
+            if len(pose.people) == 1:
+                person = pose.people[0].with_track_id(0)
+                features = extractor.extract(person, pose.t)
+                eligible = _standing_preflight_eligible(features, cfg)
+                value = _standing_depth_ankle_height(
+                    person,
+                    features,
+                    "UPRIGHT",
+                    min_score=cfg.pose.min_keypoint_score,
+                    feature_valid=eligible,
+                )
+                if value is not None:
+                    values.append(value)
+            if view:
+                canvas = render_skeleton(
+                    pose,
+                    min_keypoint_score=cfg.pose.min_keypoint_score,
+                    fps=None,
+                )
+                cv2.putText(
+                    canvas,
+                    "STAND STILL | valid samples " + str(len(values)),
+                    (12, 24),
+                    cv2.FONT_HERSHEY_SIMPLEX,
+                    0.6,
+                    (0, 255, 255),
+                    2,
+                    cv2.LINE_AA,
+                )
+                cv2.imshow(window, canvas)
+                if (cv2.waitKey(1) & 0xFF) == ord("q"):
+                    break
+            if time.monotonic() - started >= seconds:
+                break
+    finally:
+        src.close()
+        if view:
+            cv2.destroyAllWindows()
+
+    if not orientation:
+        raise typer.BadParameter("no D435i IMU orientation was observed")
+    pitch_delta = float(np.median([item[0] for item in orientation]))
+    roll_delta = float(np.median([item[1] for item in orientation]))
+    if abs(pitch_delta) > 2.0 or abs(roll_delta) > 2.0:
+        raise typer.BadParameter(
+            "mount orientation differs from calibration by more than 2 degrees"
+        )
+    try:
+        baseline = _robust_ankle_baseline(values)
+    except ValueError as exc:
+        raise typer.BadParameter(str(exc)) from exc
+
+    document = yaml.safe_load(calibration.read_text(encoding="utf-8")) or {}
+    document["ankle_height_baseline_m"] = round(baseline, 4)
+    document["verified_for_onsite"] = False
+    rendered = yaml.safe_dump(document, sort_keys=False)
+    backup = calibration.with_name(calibration.name + ".pre-baseline.bak")
+    if backup.exists():
+        raise typer.BadParameter(
+            "refusing to overwrite existing calibration backup " + str(backup)
+        )
+    shutil.copy2(calibration, backup)
+    descriptor, temporary_name = tempfile.mkstemp(
+        prefix=calibration.name + ".", suffix=".tmp", dir=str(calibration.parent)
+    )
+    temporary = Path(temporary_name)
+    try:
+        with os.fdopen(descriptor, "w", encoding="utf-8", newline="\n") as handle:
+            handle.write(rendered)
+            handle.flush()
+            os.fsync(handle.fileno())
+        shutil.copystat(calibration, temporary)
+        os.replace(temporary, calibration)
+    finally:
+        if temporary.exists():
+            temporary.unlink()
+    typer.echo(
+        "wrote ankle_height_baseline_m="
+        + format(baseline, ".4f")
+        + "; verified_for_onsite reset to false"
+    )
+    typer.echo("complete the remaining physical checklist, then set the latch true")
+    typer.echo("previous calibration backup: " + str(backup))
+
+
 @app.command()
 def info() -> None:
     """Report versions and whether a RealSense is actually present.
@@ -1810,7 +4535,14 @@ def info() -> None:
 
 
 def _write_calibration_yaml(
-    path, camera_id, intrinsics, height_m, gravity=None, pitch_deg=None, roll_deg=0.0
+    path,
+    camera_id,
+    intrinsics,
+    height_m,
+    gravity=None,
+    pitch_deg=None,
+    roll_deg=0.0,
+    device_serial_sha256=None,
 ):
     """Write a calibration YAML that load_calibration reads back.
 
@@ -1836,10 +4568,14 @@ def _write_calibration_yaml(
 
     doc = {
         "camera_id": camera_id,
+        "verified_for_onsite": False,
+        "ankle_height_baseline_m": None,
         "camera": camera,
         "zones": [],  # add beds/floor next -- see calib/example_ward6.yaml
         "notes": "Auto-generated by `ahfd calibrate`. Add zones before detection.",
     }
+    if device_serial_sha256 is not None:
+        doc["device_serial_sha256"] = device_serial_sha256
     from pathlib import Path as _P
 
     _P(path).parent.mkdir(parents=True, exist_ok=True)
@@ -1873,7 +4609,10 @@ def calibrate(
     from ahfd.capture import open_source
     from ahfd.types import Intrinsics
 
-    src = open_source(source)
+    device_identity = _probe_onsite_d435i() if source.startswith("rs://") else None
+    device_serial = device_identity[0] if device_identity is not None else None
+    device_serial_sha256 = device_identity[1] if device_identity is not None else None
+    src = open_source(source, device_serial=device_serial)
     cam_id = camera_id or Path(out).stem
 
     # Grab the first frame that carries what we need.
@@ -1906,11 +4645,24 @@ def calibrate(
     if pitch is not None:
         # A supplied angle is a deliberate measurement and wins over the IMU.
         _write_calibration_yaml(
-            out, cam_id, intrinsics, height, pitch_deg=pitch, roll_deg=roll
+            out,
+            cam_id,
+            intrinsics,
+            height,
+            pitch_deg=pitch,
+            roll_deg=roll,
+            device_serial_sha256=device_serial_sha256,
         )
         typer.echo("using your --pitch " + format(pitch, ".1f") + " deg (measurement overrides IMU)")
     elif frame.gravity is not None:
-        _write_calibration_yaml(out, cam_id, intrinsics, height, gravity=frame.gravity)
+        _write_calibration_yaml(
+            out,
+            cam_id,
+            intrinsics,
+            height,
+            gravity=frame.gravity,
+            device_serial_sha256=device_serial_sha256,
+        )
         typer.echo("using the IMU tilt (pass --pitch to override with your own measurement)")
     else:
         raise typer.BadParameter(

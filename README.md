@@ -8,8 +8,9 @@ system aims to augment that, not replace it.
 
 ## The privacy property
 
-Pose estimation runs on RGB **in memory**, and only joint coordinates are ever
-persisted. No video, no stills, no faces.
+Pose estimation runs on RGB **in memory**, and only approved derived values
+(joint coordinates/confidence, optional sparse joint-height scalars, features
+and state evidence) are persisted. No video, stills, faces or dense depth.
 
 That claim is enforced rather than promised:
 
@@ -54,9 +55,11 @@ visible: what you see on screen is everything the system keeps.
 Detecting falls end to end on a plain webcam — no depth camera required:
 
 ```
-capture → pose → tracking → One-Euro smoothing
-        → ground-plane geometry → metric features → fall state machine → alerts
-                                                                → evaluation
+capture → pose → tracking → One-Euro smoothing → sparse depth heights
+        → ground/bed geometry → metric features ┬→ fall state machine
+                                                ├→ bed-activity + CUSUM
+                                                └→ causal temporal summaries
+                                                   → shadow events/evaluation
 ```
 
 Camera sources: webcam, video, image sequences (`seq://`, for public datasets),
@@ -82,8 +85,10 @@ ahfd sweep detect.vz_trigger --range -1.5:-0.5:0.1 \
 ahfd eval data/annotations/ data/events/ --out eval/report.md
 ```
 
-`tracks.jsonl` is keypoints only — no imagery — so it is fast to replay, safe to
-keep, and the basis of the committed golden regression test.
+`tracks.jsonl` is keypoints only — no imagery — so it is fast to replay and is
+the basis of the staged golden regression test. Derived onsite patient data is
+still sensitive behavioural/health data: keep it only in the approved encrypted
+hospital store and never commit it to GitHub.
 
 ## Quick start
 
@@ -98,15 +103,22 @@ ahfd run --view overlay          # skeleton on live video + live metric readout
 ahfd calibrate cal.yaml --source rs:// --height 2.6   # calibrate a real camera
 ahfd run --config configs/detect_dev.yaml   # full pipeline, detection on
 ahfd dashboard --config configs/detect_dev.yaml   # nurse web dashboard
+ahfd collect --help              # derived-only onsite shadow collection
+ahfd compare-bed-exit --help     # causal logistic/tree baseline after collection
 ahfd bench                       # pose backend bake-off (RTMO vs RTMPose)
 ahfd eval <annotations/> <events/>   # recall, false alarms/hour, latency
-pytest                           # 364 tests, no camera needed
+pytest                           # full camera-free regression suite
 ```
 
 The first `run` downloads pose weights (cached afterwards).
 
 **Full how-to** — sources (webcam/RealSense), backends (RTMO/RTMPose/YOLO),
 devices, calibration, tuning: **[docs/USAGE.md](docs/USAGE.md)**.
+
+Temporal bed-exit design and the next-week experiment plan:
+**[docs/BED_EXIT_TEMPORAL_PLAN.md](docs/BED_EXIT_TEMPORAL_PLAN.md)**. The
+hospital collection SOP and exact derived-only command are in
+**[docs/ONSITE_COLLECTION.md](docs/ONSITE_COLLECTION.md)**.
 
 ## Two pose backends
 
@@ -244,8 +256,10 @@ impact is a fraction of a second (too fast for a nurse to reach), while a bed
 exit unfolds over tens of seconds and is visible in advance.
 
 The problem this raises: alerting on *every* bed exit is useless, because many
-patients are cleared to mobilise on their own. The answer is a **graded response
-keyed to per-bed fall risk**, not a binary alarm:
+patients are cleared to mobilise on their own. Activity recognition and care
+policy are therefore separate. The repository's early-warning output is
+**shadow-only by default**; it records an explainable candidate for nurse review
+without paging anyone. A future approved policy may grade the response:
 
 | Bed risk | Bed-exit response |
 |---|---|
@@ -254,12 +268,17 @@ keyed to per-bed fall risk**, not a binary alarm:
 | medium / unknown | warning |
 | high (should not exit unassisted) | alert — page a nurse |
 
-Risk attaches to the **bed** (a zone attribute, `risk_level` in the calibration),
-not to the patient — so it is identity-free, and it comes from the fall-risk
-assessment nurses already do on admission (Morse / Hendrich), set once per
-admission. This is what keeps alarm volume tolerable and sidesteps the privacy
-concern of per-patient profiling. See `BED_EXIT_SEVERITY_BY_RISK` in
-[detect/state_machine.py](src/ahfd/detect/state_machine.py).
+The committed development calibration contains physical geometry only. Onsite
+collection uses an external, pseudonym-coded calibration bound to the exact
+D435i by a hashed serial and a measured ankle baseline. It requires bed
+`risk_level: unknown`; any time-scoped assistance/care profile must
+remain in the hospital-controlled clinical system and must not become a
+behaviour-model feature or a source-controlled value. Nurse workflow review and
+prospective validation are required before connecting a warning to paging.
+The collector additionally requires a fresh external approval record bound to
+the calibration hash and a custodian-provisioned encrypted-output marker. It
+persists only one explicitly bound participant association and aborts before
+recording a second detected person.
 
 Where the ward has a **bed pressure sensor** (binary on/off-bed), it is the
 authoritative bed-exit trigger and the vision layer classifies the *safety* of

@@ -41,7 +41,11 @@ from dataclasses import dataclass, field
 import numpy as np
 
 from ahfd.geometry.ground import GroundPlane
-from ahfd.geometry.zones import ZoneMap
+from ahfd.geometry.zones import (
+    ZoneMap,
+    point_in_polygon,
+    signed_distance_to_polygon,
+)
 from ahfd.pose.skeleton import ANKLES, HEAD, HIPS, SHOULDERS
 from ahfd.types import PersonPose
 
@@ -102,12 +106,29 @@ class Features:
     bed_top_m: float | None = None
     bed_risk: str | None = None  # risk level of the associated bed, if any
     in_excluded_zone: bool = False
+    # Fraction of confident keypoints that land inside a bed's footprint when
+    # projected onto the bed surface. A location cue: separates a body lying ON
+    # a bed from one on the floor, which pose SHAPE cannot (both are flat). None
+    # when there are no bed zones. See FeatureExtractor._bed_overlap.
+    bed_overlap: float | None = None
     # Angle of the shoulders->hips torso vector from image-vertical, degrees:
     # ~0 upright/seated (torso stands up in frame), ~90 lying (torso flat). An
     # image-space angle, so it does NOT depend on camera height or calibration
     # -- which is why it can tell close-range sitting from lying even when the
     # metric heights are ambiguous.
     torso_tilt: float | None = None
+    # Shoulder elevation is the preferred rise signal.  When depth joint
+    # heights are attached it is measured directly; otherwise it falls back to
+    # the calibrated monocular estimate.
+    h_shoulder: float | None = None
+    # Bed association is separate from physical support: a person may remain
+    # associated while perched on the edge or just after standing.
+    associated_bed: str | None = None
+    # Signed distance of the torso/hip anchor to the nearest bed boundary in
+    # metres: positive inside, zero at the edge, negative outside.  The nearest
+    # edge is only an engineering default; onsite calibration may later mark a
+    # specific egress edge.
+    bed_edge_distance_m: float | None = None
 
     @property
     def height_spread(self) -> float | None:
@@ -154,6 +175,17 @@ class FeatureExtractor:
         contact: tuple[float, float],
         valid: np.ndarray,
     ) -> float | None:
+        # Direct depth measurements win when present.  They avoid the vertical
+        # body-line assumption that becomes biased once a patient reclines.
+        if person.heights is not None:
+            measured = [
+                float(person.heights[i])
+                for i in indices
+                if valid[i] and i < len(person.heights) and np.isfinite(person.heights[i])
+            ]
+            if measured:
+                return float(np.mean(measured))
+
         values = []
         for i in indices:
             if not valid[i]:
@@ -335,6 +367,56 @@ class FeatureExtractor:
 
     # --------------------------------------------------------------- public
 
+    def _bed_overlap(self, person: PersonPose, valid: np.ndarray) -> float | None:
+        """Fraction of confident keypoints that fall inside a bed footprint.
+
+        Each keypoint is projected onto the bed's SURFACE plane (its ``top_m``)
+        and tested against the bed polygon; the max over all bed zones is
+        returned. This is a location cue the pose-shape features lack: a body
+        lying ON a bed and one lying on the floor are the same SHAPE, but the
+        bed one projects inside the bed footprint and the floor one does not.
+        None when there are no bed zones (then it imputes away -- no change).
+        """
+        idx = np.flatnonzero(valid)
+        if idx.size == 0:
+            return None
+        beds = [z for z in self.zones.zones if z.kind == "bed" and z.top_m is not None]
+        if not beds:
+            return None
+        best = 0.0
+        for bed in beds:
+            inside = 0
+            for i in idx:
+                pt = self.ground.pixel_to_plane(
+                    float(person.keypoints[i, 0]), float(person.keypoints[i, 1]), bed.top_m
+                )
+                if pt is not None and point_in_polygon(pt, bed.polygon):
+                    inside += 1
+            best = max(best, inside / idx.size)
+        return best
+
+    def _bed_edge_distance(self, person: PersonPose, valid: np.ndarray, bed) -> float | None:
+        """Signed bed-edge distance for a torso/hip anchor on the bed plane."""
+        if bed is None or bed.top_m is None:
+            return None
+        anchors = [i for i in HIPS + SHOULDERS if valid[i]]
+        if not anchors:
+            return None
+        points = []
+        for i in anchors:
+            point = self.ground.pixel_to_plane(
+                float(person.keypoints[i, 0]), float(person.keypoints[i, 1]), bed.top_m
+            )
+            if point is not None:
+                points.append(point)
+        if not points:
+            return None
+        centre = (
+            float(np.mean([p[0] for p in points])),
+            float(np.mean([p[1] for p in points])),
+        )
+        return signed_distance_to_polygon(centre, bed.polygon)
+
     def extract(self, person: PersonPose, t: float) -> Features | None:
         """Metric features for one tracked person. None if untracked."""
         if person.track_id is None:
@@ -366,6 +448,7 @@ class FeatureExtractor:
             )
 
         torso = self._mean_height(person, SHOULDERS + HIPS, contact, valid)
+        shoulder = self._mean_height(person, SHOULDERS, contact, valid)
         head = self._mean_height(person, HEAD, contact, valid)
 
         all_heights = []
@@ -379,15 +462,22 @@ class FeatureExtractor:
         # Ankle height specifically: the calibration sanity signal. A standing
         # person's ankles read ~0.05 m; if that drifts, the mount has moved.
         ankle_heights = []
-        for i in ANKLES:
-            if valid[i]:
-                h = self.ground.joint_height(
-                    float(person.keypoints[i, 0]),
-                    float(person.keypoints[i, 1]),
-                    contact,
-                )
-                if h is not None:
-                    ankle_heights.append(h)
+        if person.heights is not None:
+            ankle_heights = [
+                float(person.heights[i])
+                for i in ANKLES
+                if valid[i] and i < len(person.heights) and np.isfinite(person.heights[i])
+            ]
+        if not ankle_heights:
+            for i in ANKLES:
+                if valid[i]:
+                    h = self.ground.joint_height(
+                        float(person.keypoints[i, 0]),
+                        float(person.keypoints[i, 1]),
+                        contact,
+                    )
+                    if h is not None:
+                        ankle_heights.append(h)
 
         if torso is not None:
             history.heights.append((t, torso))
@@ -430,7 +520,11 @@ class FeatureExtractor:
             bed_top_m=bed.top_m if bed else None,
             bed_risk=assoc_bed.risk_level if assoc_bed else None,
             in_excluded_zone=self.zones.is_excluded(contact),
+            bed_overlap=self._bed_overlap(person, valid),
             torso_tilt=self._torso_tilt(person, valid),
+            h_shoulder=shoulder,
+            associated_bed=assoc_bed.name if assoc_bed else None,
+            bed_edge_distance_m=self._bed_edge_distance(person, valid, assoc_bed),
         )
 
     def retain_only(self, live_ids: set[int]) -> None:

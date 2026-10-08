@@ -1,0 +1,14 @@
+{
+  "clip_id": "fall_slump_01_label",
+  "duration_s": 66.07,
+  "segments": [
+    { "start_s": 1, "end_s": 9, "posture": "upright" },
+    { "start_s": 11, "end_s": 20, "posture": "sitting" },
+    { "start_s": 22, "end_s": 27, "posture": "on_ground" },
+    { "start_s": 33, "end_s": 43, "posture": "sitting" },
+    { "start_s": 44, "end_s": 49, "posture": "on_ground" },
+    { "start_s": 54, "end_s": 66, "posture": "sitting" },
+    { "start_s": 68, "end_s": 72, "posture": "on_ground" },
+    { "start_s": 75, "end_s": 78.7, "posture": "upright" }
+  ]
+}

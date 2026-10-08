@@ -36,6 +36,7 @@ from typing import Any
 # Which event types are a standing alert a nurse must clear, versus
 # informational. Drives the triage queue and the "open alerts" count.
 ALERTING_TYPES = frozenset({"FALL_CONFIRMED", "PERSON_DOWN"})
+STALE_FRAME_S = 3.0
 
 
 @cache
@@ -69,6 +70,7 @@ class DashboardState:
         self._rgb_enabled: bool | None = None
         self._counts: dict[str, int] = {}  # cumulative per event type
         self._fps = 0.0
+        self._last_frame_wall: float | None = None
         self._started = time.time()
         self._last_alert_ts = 0.0  # wall-clock of the most recent alerting event
         # Control plane: which pipeline may publish, and what it is doing.
@@ -104,6 +106,7 @@ class DashboardState:
             self._tracks = list(tracks)
             self._people = len(tracks)
             self._fps = fps
+            self._last_frame_wall = time.time()
 
     def publish_event(self, event: dict[str, Any], gen: int = 0) -> None:
         with self._lock:
@@ -146,6 +149,7 @@ class DashboardState:
             self._gen += 1
             self._switch_seq += 1
             self._fps = 0.0
+            self._last_frame_wall = None
             self._tracks = []
             self._people = 0
             self._status = "switching"
@@ -240,11 +244,34 @@ class DashboardState:
 
     def latest_frame(self) -> tuple[bytes | None, int]:
         with self._lock:
+            stale = (
+                self._status == "running"
+                and self._last_frame_wall is not None
+                and time.time() - self._last_frame_wall > STALE_FRAME_S
+            )
+            if stale or self._status in ("error", "stopped"):
+                return _privacy_frame(), self._seq
             return self._jpeg, self._seq
 
     def snapshot(self) -> dict[str, Any]:
         """A small JSON-ready view of current state."""
         with self._lock:
+            now = time.time()
+            frame_age = (
+                now - self._last_frame_wall
+                if self._last_frame_wall is not None
+                else None
+            )
+            if self._status == "running" and frame_age is not None and frame_age <= STALE_FRAME_S:
+                monitoring, monitoring_reason = "AVAILABLE", None
+            elif self._status in ("starting", "switching") or (
+                self._status == "running" and frame_age is None
+            ):
+                monitoring, monitoring_reason = "DEGRADED", "WAITING_FOR_FRAME"
+            elif self._status == "running":
+                monitoring, monitoring_reason = "UNAVAILABLE", "STALE_FRAME"
+            else:
+                monitoring, monitoring_reason = "UNAVAILABLE", self._status.upper()
             events = list(self._events)
             acked = set(self._acked)
             counts = dict(self._counts)
@@ -280,6 +307,11 @@ class DashboardState:
                 # _runtime can never shadow them.
                 "runtime": {
                     **self._runtime,
+                    "monitoring": monitoring,
+                    "monitoring_reason": monitoring_reason,
+                    "last_frame_age_s": (
+                        round(frame_age, 1) if frame_age is not None else None
+                    ),
                     # A pipeline may have read its flag before an off request;
                     # the control-plane policy is authoritative, not that read.
                     **(

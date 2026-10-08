@@ -123,6 +123,20 @@ class TestUprightMeasurement:
         assert f.h_head is not None and f.h_torso is not None
         assert f.h_head > f.h_torso
 
+    def test_sparse_depth_heights_override_monocular_height_and_survive_smoothing_copy(self):
+        person = standing(0.0, 5.0)
+        heights = np.full(NUM_KEYPOINTS, np.nan, dtype=float)
+        heights[5:7] = 0.82
+        heights[11:13] = 0.58
+        measured = person.with_heights(heights)
+        copied = measured.with_keypoints(measured.keypoints.copy())
+        assert copied.heights is heights
+
+        f = extractor().extract(copied, 0.0)
+        assert f is not None
+        assert f.h_shoulder == pytest.approx(0.82)
+        assert f.h_torso == pytest.approx(0.70)
+
     def test_range_is_reported(self):
         f = extractor().extract(standing(0.0, 6.0), t=0.0)
         assert f is not None
@@ -270,6 +284,12 @@ class TestZoneIntegration:
         assert f is not None
         assert f.supported_by_bed == "bed_2"
         assert f.bed_top_m == 0.6
+        assert f.associated_bed == "bed_2"
+        assert f.bed_edge_distance_m is not None
+        # This synthetic bed's long axis is deliberately perpendicular to the
+        # synthetic body's, so the torso anchor sits just beyond its boundary;
+        # the cue must preserve that signed crossing rather than clamp it.
+        assert f.bed_edge_distance_m < 0.0
 
     def test_outside_all_zones_is_empty(self):
         bed = Zone(

@@ -13,8 +13,8 @@ from __future__ import annotations
 
 import dataclasses
 
-from ahfd.config import DetectConfig
-from ahfd.detect import FallThresholds
+from ahfd.config import BedActivityConfig, DetectConfig
+from ahfd.detect import BedExitThresholds, FallThresholds
 
 
 def test_shared_defaults_agree():
@@ -47,3 +47,12 @@ def test_every_threshold_field_is_in_the_config():
             field.name + " is a FallThresholds knob with no DetectConfig field, "
             "so it cannot be set from config"
         )
+
+
+def test_bed_activity_defaults_match_and_early_warning_is_shadow_only():
+    cfg = BedActivityConfig()
+    built = cfg.to_thresholds()
+    direct = BedExitThresholds()
+    for field in dataclasses.fields(BedExitThresholds):
+        assert getattr(built, field.name) == getattr(direct, field.name)
+    assert built.emit_early_warning is False

@@ -27,6 +27,13 @@ smoothing:
   beta: 0.007
   d_cutoff: 1.0
 
+bed_activity:
+  enabled: true
+  # Research/shadow defaults. Candidate warnings are visible and recorded, but
+  # never promoted to an alert until the ward agrees a reviewed policy.
+  emit_early_warning: false
+  emit_exit_event: true
+
 view:
   # "skeleton" renders joints on black -- this is the privacy demo: what you see
   # is all the system retains. "none" runs headless.
