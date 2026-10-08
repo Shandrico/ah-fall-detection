@@ -133,7 +133,11 @@ def make_handler(state: DashboardState, controller=None):
             same_origin = self._same_origin()
             # The switch and replay handlers parse a body; every other route
             # has to discard one before replying. See _drain.
-            if path not in ("/api/switch", "/api/replay") or not same_origin:
+            if path not in (
+                "/api/switch",
+                "/api/replay",
+                "/api/bed-mode",
+            ) or not same_origin:
                 self._drain()
 
             if not same_origin:
@@ -148,6 +152,8 @@ def make_handler(state: DashboardState, controller=None):
                 self._switch()
             elif path == "/api/replay":
                 self._replay()
+            elif path == "/api/bed-mode":
+                self._bed_mode()
             elif path == "/api/rescan":
                 if controller is None:
                     self._json(503, {"ok": False, "error": "controls unavailable"})
@@ -184,6 +190,24 @@ def make_handler(state: DashboardState, controller=None):
             action = _clean(body.get("action"))
             ok = state.replay_control(action, body.get("value")) if action else False
             self._json(200 if ok else 400, {"ok": ok})
+
+        def _bed_mode(self) -> None:
+            """Set runtime alert policy for one bed in the active calibration."""
+
+            body = self._body()
+            if body is None:
+                self._json(400, {"ok": False, "error": "expected a small JSON object"})
+                return
+            bed_id = _clean(body.get("bed_id"))
+            mode = _clean(body.get("mode"))
+            if bed_id is None or mode is None:
+                self._json(400, {"ok": False, "error": "bed_id and mode are required"})
+                return
+            ok, error = state.set_bed_mode(bed_id, mode)
+            self._json(
+                200 if ok else 400,
+                {"ok": ok, "bed_id": bed_id, "mode": mode, "error": error},
+            )
 
         def _stream(self) -> None:
             """MJPEG multipart stream of the latest annotated frame."""

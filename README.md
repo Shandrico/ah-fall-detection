@@ -120,6 +120,29 @@ Temporal bed-exit design and the next-week experiment plan:
 hospital collection SOP and exact derived-only command are in
 **[docs/ONSITE_COLLECTION.md](docs/ONSITE_COLLECTION.md)**.
 
+## Per-bed dashboard modes
+
+The dashboard exposes an independent runtime mode for every calibrated bed:
+
+| Mode | Dashboard alert policy |
+|---|---|
+| **Low** | Confirmed falls and person-down events only. Bed activity remains visible but does not alert. |
+| **Medium** | Low mode plus a completed, temporally confirmed transition out of bed. |
+| **High** | Medium mode plus an early warning after rest-trained CUSUM is corroborated by sustained edge-directed/support-loss progression. Raw motion or CUSUM alone does not alert. |
+
+Changing a mode resets warning/CUSUM evidence, but preserves physical bed
+support and never resets the independent fall detector.
+The selection is runtime care policy and is never written into camera
+calibration. For a two-bed view, calibration must contain exactly two uniquely
+named, non-overlapping measured bed polygons. Ambiguous polygons fail closed:
+bed alerts and selectors are disabled while fall detection continues.
+
+The D435i dashboard source enables aligned depth explicitly with
+`rs://?depth=1&emitter=1&max_laser=1&max_range=6`. Pose still runs on RGB; sparse
+non-hole-filled depth supplies metric joint heights to the temporal and fall
+features. The page reports `depth active` and the number of joints with valid
+depth so an RGB fallback cannot be mistaken for depth operation.
+
 ## Two pose backends
 
 | Backend | How | Speed (iGPU, ~5 people) | Best for |

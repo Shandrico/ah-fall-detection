@@ -34,6 +34,59 @@ class TestDashboardState:
         assert snap["open_alerts"] == []
         assert snap["open_count"] == 0
         assert snap["people"] == 0
+        assert snap["beds"] == []
+
+    def test_two_beds_have_independent_runtime_modes(self):
+        s = DashboardState()
+        s.register_beds([("bed_a", "low"), ("bed_b", "high")])
+        assert s.snapshot()["beds"] == [
+            {"bed_id": "bed_a", "mode": "low"},
+            {"bed_id": "bed_b", "mode": "high"},
+        ]
+        assert s.set_bed_mode("bed_a", "medium") == (True, None)
+        assert s.bed_mode("bed_a") == "medium"
+        assert s.bed_mode("bed_b") == "high"
+
+    def test_unknown_bed_and_mode_fail_closed(self):
+        s = DashboardState()
+        s.register_beds([("bed_a", "medium")])
+        assert s.bed_mode("bed_missing") is None
+        assert s.set_bed_mode("bed_missing", "high")[0] is False
+        assert s.set_bed_mode("bed_a", "critical")[0] is False
+
+    def test_source_generation_clears_bed_policy_scope(self):
+        s = DashboardState()
+        s.register_beds([("bed_a", "high")])
+        s.begin_generation(source="other-camera")
+        assert s.snapshot()["beds"] == []
+        assert s.bed_mode("bed_a") is None
+
+    def test_same_source_scope_preserves_modes_and_policy_revision(self):
+        s = DashboardState()
+        first = s.begin_generation(bed_policy_scope=("rs://", "calib/a.yaml"))
+        s.register_beds([("bed_a", "medium")], gen=first)
+        initial_revision = s.bed_policy("bed_a")[1]
+        assert s.set_bed_mode("bed_a", "high") == (True, None)
+        high_revision = s.bed_policy("bed_a")[1]
+        assert high_revision > initial_revision
+
+        second = s.begin_generation(bed_policy_scope=("rs://", "calib/a.yaml"))
+        s.register_beds([("bed_a", "medium")], gen=second)
+        assert s.bed_policy("bed_a") == ("high", high_revision)
+
+        assert s.set_bed_mode("bed_a", "low") == (True, None)
+        assert s.set_bed_mode("bed_a", "high") == (True, None)
+        assert s.bed_policy("bed_a")[1] > high_revision
+
+    def test_different_calibration_scope_does_not_inherit_mode(self):
+        s = DashboardState()
+        first = s.begin_generation(bed_policy_scope=("rs://", "calib/a.yaml"))
+        s.register_beds([("bed_a", "medium")], gen=first)
+        s.set_bed_mode("bed_a", "high")
+
+        second = s.begin_generation(bed_policy_scope=("rs://", "calib/b.yaml"))
+        s.register_beds([("bed_a", "medium")], gen=second)
+        assert s.bed_mode("bed_a") == "medium"
 
     def test_publish_frame_increments_seq(self):
         s = DashboardState()
@@ -110,6 +163,49 @@ class TestDashboardState:
         snap = s.snapshot()
         assert snap["open_count"] == 1  # BED_EXIT is not an alerting type
         assert snap["open_alerts"][0]["event_id"] == "a"
+
+    def test_explicit_medium_bed_alert_enters_queue(self):
+        s = DashboardState()
+        s.publish_event(
+            {
+                "event_id": "exit",
+                "type": "BED_EXIT",
+                "severity": 2,
+                "alerting": True,
+            }
+        )
+        assert s.snapshot()["open_alerts"][0]["event_id"] == "exit"
+
+    def test_warning_and_exit_share_one_incident_and_escalation_reopens(self):
+        s = DashboardState()
+        warning = {
+            "event_id": "incident",
+            "type": "BED_EXIT_WARNING",
+            "severity": 3,
+            "alerting": True,
+        }
+        s.publish_event(warning)
+        assert s.snapshot()["open_count"] == 1
+        s.publish_event(
+            {
+                **warning,
+                "type": "BED_EXIT",
+                "reopen_on_escalation": True,
+            }
+        )
+        snap = s.snapshot()
+        assert snap["open_count"] == 1
+        assert snap["open_alerts"][0]["type"] == "BED_EXIT"
+        s.acknowledge("incident")
+        assert s.snapshot()["open_count"] == 0
+        s.publish_event(
+            {
+                **warning,
+                "type": "BED_EXIT",
+                "reopen_on_escalation": True,
+            }
+        )
+        assert s.snapshot()["open_count"] == 1
 
     def test_acknowledge_clears_open_alert(self):
         s = DashboardState()

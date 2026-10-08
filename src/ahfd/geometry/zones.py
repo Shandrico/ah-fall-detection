@@ -24,12 +24,9 @@ from typing import Literal
 
 ZoneKind = Literal["bed", "chair", "floor", "exclude"]
 
-# Per-bed fall-risk level. This is the answer to alarm fatigue: the same bed
-# exit is a quiet dashboard status for a low-risk patient and a real alert for a
-# high-risk one, so risk attaches to the bed (a zone attribute), not to the
-# person -- which also keeps it identity-free. It comes from the fall-risk
-# assessment nurses already do on admission (Morse / Hendrich), set once per
-# admission, not per frame.
+# Legacy per-bed risk metadata. New onsite calibrations keep this ``unknown``:
+# geometry belongs to the fixed camera/mount, while the dashboard's Low/Medium/
+# High care policy is runtime state and must not be committed with calibration.
 RiskLevel = Literal["none", "low", "medium", "high", "unknown"]
 VALID_RISK = ("none", "low", "medium", "high", "unknown")
 

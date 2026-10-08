@@ -18,6 +18,8 @@ class Sample:
     contact_xy: tuple[float, float] | None = (0.0, 4.0)
     h_torso: float | None = 0.60
     h_shoulder: float | None = 0.60
+    h_torso_source: str | None = "depth"
+    h_shoulder_source: str | None = "depth"
     n_valid_kp: int = 15
     mean_conf: float = 0.9
     in_excluded_zone: bool = False
@@ -132,6 +134,77 @@ def test_fast_support_loss_works_when_edge_distance_disappears_outside_zone():
     )
     assert machine.phase_of(1) == "OUT_OF_BED"
     assert len(events) == 1
+
+
+def test_walking_through_bed_footprint_is_not_a_bed_exit():
+    """Association alone is not proof that the mattress supported the track."""
+
+    machine = BedExitStateMachine()
+    t, events = feed(
+        machine,
+        0.0,
+        0.8,
+        h_shoulder=1.10,
+        torso_tilt=15.0,
+        supported_by_bed=None,
+        bed_overlap=0.0,
+        bed_support_fraction=0.0,
+        bed_edge_distance_m=0.60,
+        motion=0.1,
+    )
+    _t, later = feed(
+        machine,
+        t,
+        0.8,
+        h_shoulder=1.10,
+        torso_tilt=15.0,
+        supported_by_bed=None,
+        bed_overlap=0.0,
+        bed_support_fraction=0.0,
+        values=lambda i, _n: {"bed_edge_distance_m": 0.50 - i * 0.12},
+        motion=0.2,
+    )
+    assert events + later == []
+    assert machine.phase_of(1) != "OUT_OF_BED"
+
+
+def test_policy_evidence_reset_preserves_support_for_an_exit_in_progress():
+    machine = BedExitStateMachine()
+    t = establish_recline(machine)
+    t, events = feed(
+        machine,
+        t,
+        0.7,
+        h_shoulder=0.95,
+        torso_tilt=30.0,
+        supported_by_bed=None,
+        bed_overlap=0.40,
+        bed_support_fraction=0.40,
+        bed_edge_distance_m=0.12,
+        motion=0.1,
+    )
+    assert events == []
+    assert machine.snapshot_of(1).support == "PARTIAL"
+
+    machine.reset_alert_evidence(1)
+    snap = machine.snapshot_of(1)
+    assert snap.bed_id == "ward-A-2026-10-08"
+    assert snap.support == "PARTIAL"
+    assert not snap.cusum_armed
+
+    _t, events = feed(
+        machine,
+        t,
+        0.8,
+        h_shoulder=1.10,
+        torso_tilt=15.0,
+        supported_by_bed=None,
+        bed_overlap=0.0,
+        bed_support_fraction=0.0,
+        bed_edge_distance_m=-0.12,
+        motion=0.3,
+    )
+    assert [event.type for event in events] == ["BED_EXIT"]
 
 
 def test_reclined_slide_reaches_shifting_without_a_rise():
@@ -322,8 +395,50 @@ def test_early_warning_requires_explicit_opt_in_and_emits_once():
         values=lambda i, _n: {"bed_edge_distance_m": 0.65 - i * 0.02},
     )
     assert len(events) == 1
+    assert events[0].type == "BED_EXIT_WARNING"
     assert events[0].evidence["trigger"] == "early_warning"
     assert "baseline_mean" in events[0].evidence
+
+
+def test_static_near_edge_rise_does_not_become_operational_warning():
+    machine = BedExitStateMachine(
+        BedExitThresholds(emit_early_warning=True, emit_exit_event=False)
+    )
+    t = establish_recline(machine)
+    _t, events = feed(
+        machine,
+        t,
+        2.0,
+        h_shoulder=0.92,
+        torso_tilt=45.0,
+        motion=0.02,
+        bed_edge_distance_m=0.15,
+    )
+    assert events == []
+    assert not machine.snapshot_of(1).early_warning_candidate
+
+
+def test_depth_dropout_fallback_cannot_accumulate_as_cusum_movement():
+    machine = BedExitStateMachine(
+        BedExitThresholds(emit_early_warning=True, emit_exit_event=False)
+    )
+    t = establish_recline(machine)
+    _t, events = feed(
+        machine,
+        t,
+        2.0,
+        torso_tilt=50.0,
+        motion=0.1,
+        values=lambda i, _n: {
+            "h_shoulder": 1.40 if i % 2 == 0 else 0.60,
+            "h_shoulder_source": "monocular" if i % 2 == 0 else "depth",
+            "bed_edge_distance_m": 0.65 - i * 0.01,
+        },
+    )
+    assert events == []
+    snap = machine.snapshot_of(1)
+    assert not snap.cusum_armed
+    assert not snap.early_warning_candidate
 
 
 def test_tracks_are_independent_and_lifecycle_is_explicit():

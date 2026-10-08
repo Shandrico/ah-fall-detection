@@ -9,13 +9,15 @@ EventType = Literal[
     "FALL_SUSPECTED",  # on screen only, fast
     "FALL_CONFIRMED",  # pages a nurse, after the person stays down
     "PERSON_DOWN",  # slow slump, or a fall we joined late
-    "BED_EXIT",  # sitting on the bed edge -- a precursor, not an incident
+    "BED_EXIT_WARNING",  # corroborated CUSUM + bed-edge progression
+    "BED_EXIT",  # completed transition out of the associated bed
     "NEAR_MISS",  # went down and got straight back up
 ]
 
 # What each event is worth waking someone for.
 SEVERITY: dict[str, int] = {
     "BED_EXIT": 1,
+    "BED_EXIT_WARNING": 1,
     "NEAR_MISS": 1,
     "FALL_SUSPECTED": 2,
     "PERSON_DOWN": 3,
@@ -41,9 +43,8 @@ class Event:
     zone: str | None = None
     evidence: dict[str, Any] = field(default_factory=dict)
     # Some events grade their own urgency rather than taking it from the type.
-    # A bed exit is the case that matters: the same action is a quiet status for
-    # a low-risk patient and a real alert for a high-risk one, so its severity
-    # is set per event from the bed's risk level, not fixed by "BED_EXIT".
+    # The dashboard sets bed-event severity from its runtime per-bed mode;
+    # legacy non-dashboard paths may still supply calibration risk metadata.
     severity_override: int | None = None
 
     @property

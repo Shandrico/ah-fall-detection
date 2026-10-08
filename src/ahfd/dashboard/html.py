@@ -47,7 +47,7 @@ DASHBOARD_HTML = r"""<!doctype html>
   .pill.switching, .pill.starting { background:var(--warn); color:#000; }
   .pill.error, .pill.ended, .pill.stopped { background:var(--crit); color:#fff; }
   .feed.switching img { opacity:.3; filter:grayscale(1); transition:opacity .2s; }
-  .metrics { display:grid; grid-template-columns:repeat(6,1fr); gap:10px; padding:14px 14px 0; }
+  .metrics { display:grid; grid-template-columns:repeat(auto-fit,minmax(140px,1fr)); gap:10px; padding:14px 14px 0; }
   @media (max-width:1100px){ .metrics{ grid-template-columns:repeat(3,1fr);} }
   .metric { background:var(--panel); border:1px solid var(--line); border-radius:10px; padding:10px 12px; }
   .metric .k { font-size:10.5px; text-transform:uppercase; letter-spacing:.7px; color:var(--muted); }
@@ -101,6 +101,13 @@ DASHBOARD_HTML = r"""<!doctype html>
   .note code { color:var(--ink); background:var(--panel2); border-radius:4px;
                padding:1px 4px; font-size:11px; }
   .queue { max-height:32vh; overflow:auto; } .log { max-height:40vh; overflow:auto; }
+  .bed-card { display:grid; grid-template-columns:1fr auto; gap:8px 12px; align-items:center;
+              padding:9px 10px; border-radius:8px; background:var(--panel2); margin-bottom:7px; }
+  .bed-card .name { font-weight:650; font-size:13px; }
+  .bed-card .desc { color:var(--muted); font-size:11px; grid-column:1 / -1; }
+  .mode-low { border-color:var(--ok); }
+  .mode-medium { border-color:var(--warn); }
+  .mode-high { border-color:var(--crit); }
 </style>
 </head>
 <body>
@@ -136,6 +143,8 @@ DASHBOARD_HTML = r"""<!doctype html>
   <div class="metric crit"><div class="k">Open alerts</div><div class="v" id="m-open">0</div></div>
   <div class="metric crit"><div class="k">Confirmed falls</div><div class="v" id="m-falls">0</div></div>
   <div class="metric warn"><div class="k">Bed exits</div><div class="v" id="m-bed">0</div></div>
+  <div class="metric warn"><div class="k">Early warnings</div><div class="v" id="m-warning">0</div></div>
+  <div class="metric"><div class="k">Depth</div><div class="v" id="m-depth">off</div></div>
   <div class="metric"><div class="k">Uptime</div><div class="v" id="m-up">0s</div></div>
 </section>
 
@@ -171,6 +180,10 @@ DASHBOARD_HTML = r"""<!doctype html>
       <div class="queue" id="queue"><div class="empty">no open alerts</div></div>
     </div>
     <div class="panel">
+      <h2>Bed monitoring modes</h2>
+      <div id="beds"><div class="empty">no calibrated beds</div></div>
+    </div>
+    <div class="panel">
       <h2>People in view</h2>
       <div id="tracks"><div class="empty">none</div></div>
     </div>
@@ -182,11 +195,13 @@ DASHBOARD_HTML = r"""<!doctype html>
 </div>
 
 <script>
-const RANK = {LOW:0, BED_EXIT:1, NEAR_MISS:1, FALL_SUSPECTED:2, PERSON_DOWN:3, FALL_CONFIRMED:4};
+const RANK = {LOW:0, BED_EXIT:2, BED_EXIT_WARNING:3, NEAR_MISS:1, FALL_SUSPECTED:2, PERSON_DOWN:3, FALL_CONFIRMED:4};
 let soundOn = false, lastAlertCount = 0;
 let opts = null, lastSwitchSeq = -1;
+let lastBedsSignature = '';
 
 function esc(s){ return String(s).replace(/[&<>]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;'}[c])); }
+function escAttr(s){ return String(s).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
 function evi(e){ return e.evidence ? Object.entries(e.evidence).map(([k,v])=>k+'='+v).join('  ') : ''; }
 function fmtUp(s){ s=Math.round(s); const m=Math.floor(s/60), h=Math.floor(m/60);
   return h?`${h}h${m%60}m`: m?`${m}m${s%60}s`:`${s}s`; }
@@ -202,6 +217,13 @@ function beep(){
 
 async function ack(id){ await fetch('/api/ack/'+id,{method:'POST'}); refresh(); }
 window._ack = ack;
+
+async function setBedMode(bedId, mode){
+  const r = await post('/api/bed-mode', {bed_id:bedId, mode});
+  if(!r.ok) hint(r.error || 'could not update bed mode');
+  lastBedsSignature = '';
+  refresh();
+}
 
 function hint(msg){ document.getElementById('rt-detail').textContent = msg; }
 
@@ -290,7 +312,7 @@ function syncSelects(rt){
 
 function card(e, withAck){
   const sev = e.severity||0;
-  const btn = (withAck && sev>=3 && !e.acknowledged)
+  const btn = (withAck && e.alerting && !e.acknowledged)
     ? `<button onclick="window._ack('${e.event_id}')">Acknowledge</button>` : '';
   return `<div class="ev sev${sev} ${e.acknowledged?'ack':''}">
     <div class="t"><span>${esc(e.type)}</span><span class="badge">track ${e.track_id}</span></div>
@@ -306,10 +328,15 @@ async function refresh(){
   document.getElementById('m-open').textContent = s.open_count;
   document.getElementById('m-falls').textContent = s.counts.fall_confirmed + s.counts.person_down;
   document.getElementById('m-bed').textContent = s.counts.bed_exit;
+  document.getElementById('m-warning').textContent = s.counts.bed_exit_warning;
   document.getElementById('m-up').textContent = fmtUp(s.uptime_s);
   document.getElementById('q-count').textContent = s.open_count;
 
   const rt = s.runtime || {};
+  const depthText = rt.depth_active
+    ? `active ${Math.round((rt.depth_valid_fraction||0)*100)}%`
+    : rt.depth_stream_enabled ? 'no usable signal' : 'off';
+  document.getElementById('m-depth').textContent = depthText;
   renderPlayer(s.replay, rt.source_fps);
   const busy = rt.status === 'switching' || rt.status === 'starting';
   const pill = document.getElementById('rt-status');
@@ -321,10 +348,12 @@ async function refresh(){
 
   hint(
       rt.status === 'error' ? (rt.error || 'error')
+    : rt.bed_policy_warning ? rt.bed_policy_warning
     : rt.warning ? rt.warning
     : (rt.status === 'starting' && rt.since_s > 3)
         ? 'loading model \u2014 the first use of a backend downloads weights (~35 MB)'
     : [rt.model, rt.resolution, rt.show_rgb ? 'RGB' : 'skeleton only',
+       'depth ' + depthText,
        rt.detect === false ? 'detection off' : null]
         .filter(Boolean).join(' \u00b7 '));
 
@@ -345,10 +374,35 @@ async function refresh(){
     : '<div class="empty">no open alerts</div>';
   document.getElementById('queue').innerHTML = q;
 
+  const beds = s.beds || [];
+  const bedSignature = JSON.stringify(beds);
+  if(bedSignature !== lastBedsSignature){
+    lastBedsSignature = bedSignature;
+    document.getElementById('beds').innerHTML = beds.length ? beds.map(b=>{
+      const descriptions = {
+        low:'Falls only; bed activity stays observational.',
+        medium:'Falls plus confirmed temporal out-of-bed alert.',
+        high:'Adds CUSUM warning only with sustained edge/support progression.'
+      };
+      return `<div class="bed-card"><span class="name">${esc(b.bed_id)}</span>
+        <select class="mode-${escAttr(b.mode)}" data-bed="${escAttr(b.bed_id)}">
+          <option value="low" ${b.mode==='low'?'selected':''}>Low</option>
+          <option value="medium" ${b.mode==='medium'?'selected':''}>Medium</option>
+          <option value="high" ${b.mode==='high'?'selected':''}>High</option>
+        </select><span class="desc">${esc(descriptions[b.mode] || '')}</span></div>`;
+    }).join('') : '<div class="empty">no safe calibrated bed zones</div>';
+    document.querySelectorAll('#beds select').forEach(el=>{
+      el.addEventListener('change', e=>setBedMode(e.target.dataset.bed, e.target.value));
+    });
+  }
+
   const tr = s.tracks.length ? s.tracks.map(t=>{
-    const extra = (t.height_m!=null?` &middot; ${t.height_m} m`:'') + (t.zone?` &middot; ${esc(t.zone)}`:'');
+    const depth = t.depth_valid_joints!=null
+      ? ` &middot; depth ${t.depth_valid_joints}/${t.depth_total_joints}` : '';
+    const extra = (t.height_m!=null?` &middot; ${t.height_m} m`:'') +
+      (t.zone?` &middot; ${esc(t.zone)}`:'') + depth;
     const bed = t.bed_phase
-      ? `<div class="sub">bed ${esc(t.bed_phase)} &middot; ${esc(t.bed_support || 'UNKNOWN')} &middot; ${esc(t.observation || 'MONITORING_UNAVAILABLE')}${t.warning_candidate?' &middot; warning candidate':''}</div>`
+      ? `<div class="sub">${esc(t.bed_id || 'unassociated')} &middot; ${esc(t.bed_mode || 'unassigned')} &middot; ${esc(t.bed_phase)} &middot; ${esc(t.bed_support || 'UNKNOWN')} &middot; ${esc(t.observation || 'MONITORING_UNAVAILABLE')}${t.warning_candidate?' &middot; warning candidate':''}</div>`
       : '';
     return `<div class="chip"><span>Track ${t.track_id}${extra}${bed}</span>
       <span class="badge s-${esc(t.state)}">${esc(t.state)}</span></div>`;

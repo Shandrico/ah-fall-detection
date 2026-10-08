@@ -37,6 +37,7 @@ from __future__ import annotations
 import math
 from collections import deque
 from dataclasses import dataclass, field
+from typing import Literal
 
 import numpy as np
 
@@ -77,6 +78,7 @@ ANKLE_KEYPOINT_HEIGHT_M = 0.08
 # lying in a bed. Measured: a prone body spreads ~1.6 m at any range, an
 # upright one 5 m at 4 m range and over 7 m at 6 m.
 UPRIGHT_SPREAD_M = 4.0
+HeightSource = Literal["depth", "monocular"]
 
 
 @dataclass(frozen=True)
@@ -103,6 +105,9 @@ class Features:
     mean_conf: float
     zones: tuple[str, ...] = ()
     supported_by_bed: str | None = None  # name of the bed holding them up
+    # Beds and chairs both prevent a supported body from being classified as a
+    # floor fall, but only a real bed may own bed-exit state or care policy.
+    supported_by_surface: str | None = None
     bed_top_m: float | None = None
     bed_risk: str | None = None  # risk level of the associated bed, if any
     in_excluded_zone: bool = False
@@ -121,6 +126,8 @@ class Features:
     # heights are attached it is measured directly; otherwise it falls back to
     # the calibrated monocular estimate.
     h_shoulder: float | None = None
+    h_shoulder_source: HeightSource | None = None
+    h_torso_source: HeightSource | None = None
     # Bed association is separate from physical support: a person may remain
     # associated while perched on the edge or just after standing.
     associated_bed: str | None = None
@@ -150,6 +157,7 @@ class _History:
     positions: deque[tuple[float, float, float]] = field(
         default_factory=lambda: deque(maxlen=64)
     )
+    height_source: HeightSource | None = None
 
 
 class FeatureExtractor:
@@ -174,7 +182,7 @@ class FeatureExtractor:
         indices: tuple[int, ...],
         contact: tuple[float, float],
         valid: np.ndarray,
-    ) -> float | None:
+    ) -> tuple[float | None, HeightSource | None]:
         # Direct depth measurements win when present.  They avoid the vertical
         # body-line assumption that becomes biased once a patient reclines.
         if person.heights is not None:
@@ -184,7 +192,7 @@ class FeatureExtractor:
                 if valid[i] and i < len(person.heights) and np.isfinite(person.heights[i])
             ]
             if measured:
-                return float(np.mean(measured))
+                return float(np.mean(measured)), "depth"
 
         values = []
         for i in indices:
@@ -195,7 +203,9 @@ class FeatureExtractor:
             )
             if h is not None:
                 values.append(h)
-        return float(np.mean(values)) if values else None
+        if values:
+            return float(np.mean(values)), "monocular"
+        return None, None
 
     def _contact_point(
         self, person: PersonPose, valid: np.ndarray
@@ -447,9 +457,13 @@ class FeatureExtractor:
                 mean_conf=mean_conf,
             )
 
-        torso = self._mean_height(person, SHOULDERS + HIPS, contact, valid)
-        shoulder = self._mean_height(person, SHOULDERS, contact, valid)
-        head = self._mean_height(person, HEAD, contact, valid)
+        torso, torso_source = self._mean_height(
+            person, SHOULDERS + HIPS, contact, valid
+        )
+        shoulder, shoulder_source = self._mean_height(
+            person, SHOULDERS, contact, valid
+        )
+        head, _head_source = self._mean_height(person, HEAD, contact, valid)
 
         all_heights = []
         for i in np.flatnonzero(valid):
@@ -479,6 +493,11 @@ class FeatureExtractor:
                     if h is not None:
                         ankle_heights.append(h)
 
+        if torso_source != history.height_source:
+            # Do not differentiate across a depth-hole fallback: direct depth
+            # and monocular geometry have different posture-dependent biases.
+            history.heights.clear()
+            history.height_source = torso_source
         if torso is not None:
             history.heights.append((t, torso))
         history.positions.append((t, contact[0], contact[1]))
@@ -490,9 +509,16 @@ class FeatureExtractor:
         # floor contact -- see _supporting_bed. Fall back to a plain floor
         # lookup so an upright person standing in a bed bay still reports the
         # zone they are in.
-        bed = self._supporting_bed(person, valid, floor_spread)
-        if bed is not None and bed.name not in [z.name for z in zones_here]:
-            zones_here = list(zones_here) + [bed]
+        support_surface = self._supporting_bed(person, valid, floor_spread)
+        if support_surface is not None and support_surface.name not in [
+            z.name for z in zones_here
+        ]:
+            zones_here = list(zones_here) + [support_surface]
+        bed = (
+            support_surface
+            if support_surface is not None and support_surface.kind == "bed"
+            else None
+        )
 
         # The bed this person is associated with, for the graded bed-exit
         # response: the one supporting them if any, else the bed zone their
@@ -517,12 +543,17 @@ class FeatureExtractor:
             mean_conf=mean_conf,
             zones=tuple(z.name for z in zones_here),
             supported_by_bed=bed.name if bed else None,
+            supported_by_surface=(
+                support_surface.name if support_surface is not None else None
+            ),
             bed_top_m=bed.top_m if bed else None,
             bed_risk=assoc_bed.risk_level if assoc_bed else None,
             in_excluded_zone=self.zones.is_excluded(contact),
             bed_overlap=self._bed_overlap(person, valid),
             torso_tilt=self._torso_tilt(person, valid),
             h_shoulder=shoulder,
+            h_shoulder_source=shoulder_source,
+            h_torso_source=torso_source,
             associated_bed=assoc_bed.name if assoc_bed else None,
             bed_edge_distance_m=self._bed_edge_distance(person, valid, assoc_bed),
         )

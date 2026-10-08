@@ -15,6 +15,7 @@ import time
 import types
 import urllib.error
 import urllib.request
+from pathlib import Path
 
 import cv2
 import numpy as np
@@ -197,6 +198,17 @@ class TestSwitching:
         assert wait_for(lambda: len(ctl.made) == 2)
         assert ctl.made[0].cfg.pose.backend == "rtmo"
         assert ctl.made[1].cfg.pose.backend == "rtmpose"
+
+    def test_backend_switch_preserves_per_bed_mode(self):
+        ctl = controller()
+        ctl.start()
+        ctl.state.register_beds([("bed_a", "medium")], gen=ctl.state.generation)
+        assert ctl.state.set_bed_mode("bed_a", "high") == (True, None)
+
+        ctl.switch(backend="rtmpose")
+        assert wait_for(lambda: len(ctl.made) == 2)
+        ctl.state.register_beds([("bed_a", "medium")], gen=ctl.state.generation)
+        assert ctl.state.bed_mode("bed_a") == "high"
 
     def test_each_camera_keeps_its_own_calibration(self):
         """Switching the picker must switch the per-source calibration with it."""
@@ -545,6 +557,13 @@ class TestSourceOptionBuilding:
         assert [o["uri"] for o in out] == ["rs://"]
         assert out[0]["label"] == "Bay A"
 
+    def test_configured_depth_realsense_does_not_add_plain_rgb_duplicate(self):
+        depth_uri = "rs://?depth=1&emitter=1&max_laser=1"
+        cfg = make_cfg(sources=[SourceOption(label="D435i depth", uri=depth_uri)])
+        probe = RealSenseProbe(installed=True, devices=(RealSenseDevice("D435i"),))
+        out = build_source_options(cfg, probe)
+        assert [option["uri"] for option in out] == [depth_uri]
+
     def test_usb2_link_is_called_out(self):
         probe = RealSenseProbe(
             installed=True, devices=(RealSenseDevice("D435i", "1", "2.1"),)
@@ -593,6 +612,34 @@ def run_and_wait(uri, cfg, calib=None, timeout=10.0):
 
 
 class TestRunnerErrorsSurface:
+    def test_bed_incidents_are_isolated_by_track_on_the_same_bed(self):
+        from ahfd.detect.events import Event
+
+        runner = PipelineRunner(
+            "seq://unused", Config(), None, DashboardState(), False
+        )
+        warning_1 = Event("BED_EXIT_WARNING", 1, 1.0, 1.1, zone="bed_a")
+        warning_2 = Event("BED_EXIT_WARNING", 2, 1.0, 1.1, zone="bed_a")
+        assert runner._coalesce_bed_incident(warning_1, "warning-1") == (
+            "warning-1",
+            False,
+        )
+        assert runner._coalesce_bed_incident(warning_2, "warning-2") == (
+            "warning-2",
+            False,
+        )
+
+        exit_1 = Event("BED_EXIT", 1, 1.0, 2.0, zone="bed_a")
+        exit_2 = Event("BED_EXIT", 2, 1.0, 2.0, zone="bed_a")
+        assert runner._coalesce_bed_incident(exit_1, "fresh-1") == (
+            "warning-1",
+            True,
+        )
+        assert runner._coalesce_bed_incident(exit_2, "fresh-2") == (
+            "warning-2",
+            True,
+        )
+
     def test_single_use(self):
         runner = PipelineRunner("seq://nowhere", Config(), None, DashboardState(), False)
         runner.start()
@@ -764,6 +811,41 @@ class TestControlEndpoints:
             srv.shutdown()
             srv.server_close()
 
+    def test_bed_mode_endpoint_updates_only_a_known_bed(self):
+        srv, state, base = serve()
+        state.register_beds([("bed_a", "medium"), ("bed_b", "low")])
+        try:
+            status, body = request(
+                base + "/api/bed-mode", {"bed_id": "bed_a", "mode": "high"}
+            )
+            assert status == 200 and body["ok"] is True
+            assert state.bed_mode("bed_a") == "high"
+            assert state.bed_mode("bed_b") == "low"
+            assert request(
+                base + "/api/bed-mode", {"bed_id": "bed_x", "mode": "high"}
+            )[0] == 400
+            assert request(
+                base + "/api/bed-mode", {"bed_id": "bed_a", "mode": "extreme"}
+            )[0] == 400
+        finally:
+            srv.shutdown()
+            srv.server_close()
+
+    def test_bed_mode_endpoint_is_same_origin_checked(self):
+        srv, state, base = serve()
+        state.register_beds([("bed_a", "medium")])
+        try:
+            status, _body = request(
+                base + "/api/bed-mode",
+                {"bed_id": "bed_a", "mode": "high"},
+                headers={"Origin": "http://evil.example"},
+            )
+            assert status == 403
+            assert state.bed_mode("bed_a") == "medium"
+        finally:
+            srv.shutdown()
+            srv.server_close()
+
     def test_malformed_body_is_refused_without_wedging_the_server(self):
         ctl = FakeController()
         srv, _state, base = serve(ctl)
@@ -931,7 +1013,82 @@ def _posture_setup(tmp_path, n_frames=60):
     return "seq://" + str(frames), str(calib), StandingStub()
 
 
+def _set_bed_zones(calibration, count):
+    import yaml
+
+    path = Path(calibration)
+    data = yaml.safe_load(path.read_text(encoding="utf-8"))
+    data["zones"] = [
+        {
+            "name": "bed_" + chr(ord("a") + index),
+            "kind": "bed",
+            "top_m": 0.55,
+            "risk_level": "unknown",
+            "polygon": [
+                [index * 3.0, 3.0],
+                [index * 3.0 + 1.0, 3.0],
+                [index * 3.0 + 1.0, 5.0],
+                [index * 3.0, 5.0],
+            ],
+        }
+        for index in range(count)
+    ]
+    path.write_text(yaml.safe_dump(data, sort_keys=False), encoding="utf-8")
+
+
 class TestPostureReachesTheDashboard:
+    def test_two_safe_bed_zones_enable_independent_mode_controls(
+        self, tmp_path, monkeypatch
+    ):
+        uri, calib, stub = _posture_setup(tmp_path, n_frames=2)
+        _set_bed_zones(calib, 2)
+        monkeypatch.setattr("ahfd.pose.build_estimator", lambda cfg: stub)
+        cfg = Config()
+        cfg.detect.enabled = True
+        state = DashboardState()
+        runner = PipelineRunner(uri, cfg, calib, state, show_rgb=False)
+        runner.start()
+        assert wait_for(lambda: state.snapshot()["runtime"]["status"] == "ended")
+        runner.stop(timeout=3.0)
+        assert state.snapshot()["beds"] == [
+            {"bed_id": "bed_a", "mode": "medium"},
+            {"bed_id": "bed_b", "mode": "medium"},
+        ]
+
+    def test_wrong_bed_count_disables_modes_but_keeps_fall_detection(
+        self, tmp_path, monkeypatch
+    ):
+        uri, calib, stub = _posture_setup(tmp_path, n_frames=2)
+        _set_bed_zones(calib, 1)
+        monkeypatch.setattr("ahfd.pose.build_estimator", lambda cfg: stub)
+        cfg = Config()
+        cfg.detect.enabled = True
+        state = DashboardState()
+        runner = PipelineRunner(uri, cfg, calib, state, show_rgb=False)
+        runner.start()
+        assert wait_for(lambda: state.snapshot()["runtime"]["status"] == "ended")
+        runner.stop(timeout=3.0)
+        snap = state.snapshot()
+        assert snap["beds"] == []
+        assert snap["runtime"]["detect"] is True
+        assert "exactly two" in snap["runtime"]["bed_policy_warning"]
+
+    def test_temporal_bed_activity_off_disables_modes(self, tmp_path, monkeypatch):
+        uri, calib, stub = _posture_setup(tmp_path, n_frames=2)
+        _set_bed_zones(calib, 2)
+        monkeypatch.setattr("ahfd.pose.build_estimator", lambda cfg: stub)
+        cfg = Config()
+        cfg.detect.enabled = True
+        cfg.bed_activity.enabled = False
+        state = DashboardState()
+        runner = PipelineRunner(uri, cfg, calib, state, show_rgb=False)
+        runner.start()
+        assert wait_for(lambda: state.snapshot()["runtime"]["status"] == "ended")
+        runner.stop(timeout=3.0)
+        snap = state.snapshot()
+        assert snap["beds"] == []
+        assert "temporal bed activity is off" in snap["runtime"]["bed_policy_warning"]
+
     def test_detection_on_reports_a_posture(self, tmp_path, monkeypatch):
         """The regression this guards: chips must not all read TRACKED."""
         uri, calib, stub = _posture_setup(tmp_path)
@@ -972,6 +1129,9 @@ class TestPostureReachesTheDashboard:
 
         assert snap["tracks"][0]["state"] == "TRACKED"
         assert snap["runtime"]["detect"] is False
+        assert snap["runtime"]["depth_stream_enabled"] is False
+        assert snap["runtime"]["depth_active"] is False
+        assert snap["runtime"]["depth_valid_fraction"] == 0.0
 
 
 def test_page_explains_missing_postures():
@@ -986,6 +1146,19 @@ def test_page_has_a_rescan_control():
 
     assert 'id="rescan"' in DASHBOARD_HTML
     assert "/api/rescan" in DASHBOARD_HTML
+
+
+def test_page_has_per_bed_modes_and_depth_status():
+    from ahfd.dashboard.html import DASHBOARD_HTML
+
+    assert "Bed monitoring modes" in DASHBOARD_HTML
+    assert "/api/bed-mode" in DASHBOARD_HTML
+    assert ">Low<" in DASHBOARD_HTML
+    assert ">Medium<" in DASHBOARD_HTML
+    assert ">High<" in DASHBOARD_HTML
+    assert 'id="m-depth"' in DASHBOARD_HTML
+    assert "no usable signal" in DASHBOARD_HTML
+    assert "depth_valid_joints" in DASHBOARD_HTML
 
 
 def test_every_state_has_a_badge_style():

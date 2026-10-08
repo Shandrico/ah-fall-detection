@@ -12,15 +12,18 @@
 # Resolution note: `capture` below is 640x480, which the WEBCAM honours (so it
 # matches calib/laptop_webcam.yaml). The RealSense ignores requested sizes and
 # always streams 1920x1080, which matches calib/d435i.yaml -- so one capture
-# block serves both cameras. To open straight onto the RealSense, change
-# `source` to "rs://".
+# block serves both cameras. The initial source below opens the depth-enabled
+# D435i; the webcam remains available from the picker.
 
-source: "webcam://0"        # initial camera; pick another from the page's dropdown
+source: "rs://?depth=1&emitter=1&max_laser=1&max_range=6"
 
 # Fallback calibration for a clip path typed into the source box (reviewing a
 # recording): those aren't listed cameras, so without this they'd run pose-only.
 # Clips are recorded on the RealSense at 1920x1080, matching calib/d435i.yaml.
 # (Listed cameras below keep their own calibration; this only fills the gap.)
+# NOTE: the current development d435i file contains overlapping draft zones.
+# Fall detection still runs, but bed-mode controls intentionally stay disabled
+# until it is replaced with exactly two measured zones: bed_a and bed_b.
 calibration: "calib/d435i.yaml"
 
 capture:
@@ -47,7 +50,9 @@ detect:
 
 bed_activity:
   enabled: true
-  emit_early_warning: false    # shadow/status only until nurse-reviewed
+  # Plain run/replay stays shadow-only. The dashboard generates candidates and
+  # admits them only for a bed explicitly set to High mode.
+  emit_early_warning: false
   emit_exit_event: true
 
 alert:
@@ -75,7 +80,7 @@ dashboard:
       uri: "webcam://0"
       calibration: "calib/laptop_webcam.yaml"
     - label: "RealSense D435i (RGB + depth features)"
-      uri: "rs://?depth=1&max_laser=1&max_range=6"
+      uri: "rs://?depth=1&emitter=1&max_laser=1&max_range=6"
       calibration: "calib/d435i.yaml"
     # Infrared low-light mode: streams the IR imager with the dot projector off.
     # Needs its OWN calibration (the IR camera is 1280x720 with different

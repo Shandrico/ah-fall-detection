@@ -33,6 +33,8 @@ from collections import deque
 from functools import cache
 from typing import Any
 
+from ahfd.dashboard.bed_modes import DEFAULT_BED_MODE, VALID_BED_MODES, BedMode
+
 # Which event types are a standing alert a nurse must clear, versus
 # informational. Drives the triage queue and the "open alerts" count.
 ALERTING_TYPES = frozenset({"FALL_CONFIRMED", "PERSON_DOWN"})
@@ -80,6 +82,16 @@ class DashboardState:
         self._status_since = time.time()
         self._error: str | None = None
         self._runtime: dict[str, Any] = {}
+        # Active bed geometry comes from the current camera calibration.  The
+        # selected modes are runtime care policy and intentionally never write
+        # back into that calibration. Keep selections across model restarts for
+        # the same source/calibration scope, but clear them when geometry changes
+        # so a bed id can never inherit another camera's policy.
+        self._active_beds: list[str] = []
+        self._bed_modes: dict[str, BedMode] = {}
+        self._bed_mode_revisions: dict[str, int] = {}
+        self._bed_policy_seq = 0
+        self._bed_policy_scope: object | None = None
         # Replay control plane: on only for a seekable file source, so the page
         # can show a scrub bar and play/pause/step. A live camera leaves this
         # off (there is nothing to seek). Small scalars, same short-held lock.
@@ -114,7 +126,12 @@ class DashboardState:
                 return
             self._events.append(event)
             self._counts[event["type"]] = self._counts.get(event["type"], 0) + 1
-            if event.get("type") in ALERTING_TYPES:
+            alerting = bool(
+                event.get("alerting", event.get("type") in ALERTING_TYPES)
+            )
+            if alerting:
+                if event.get("reopen_on_escalation"):
+                    self._acked.discard(event["event_id"])
                 self._last_alert_ts = time.time()
                 if event["event_id"] not in self._acked:
                     self._outstanding_alerts[event["event_id"]] = event
@@ -136,7 +153,9 @@ class DashboardState:
                 self._jpeg = replacement
                 self._seq += 1
 
-    def begin_generation(self, **switching_to: Any) -> int:
+    def begin_generation(
+        self, *, bed_policy_scope: object | None = None, **switching_to: Any
+    ) -> int:
         """Claim the publishing slot for a new pipeline, fencing out the old.
 
         The live metrics are cleared with it: "three people in view" left over
@@ -146,6 +165,10 @@ class DashboardState:
         connects mid-switch.
         """
         with self._lock:
+            preserve_bed_policy = bool(
+                bed_policy_scope is not None
+                and bed_policy_scope == self._bed_policy_scope
+            )
             self._gen += 1
             self._switch_seq += 1
             self._fps = 0.0
@@ -156,6 +179,11 @@ class DashboardState:
             self._status_since = time.time()
             self._error = None
             self._runtime = dict(switching_to)
+            self._active_beds = []
+            if not preserve_bed_policy:
+                self._bed_modes = {}
+                self._bed_mode_revisions = {}
+            self._bed_policy_scope = bed_policy_scope
             # The new source might not be seekable; clear the player until it
             # announces itself. Otherwise stale controls would drive a camera.
             self._replay_seekable = False
@@ -165,6 +193,72 @@ class DashboardState:
             self._replay_seek = None
             self._replay_speed = 1.0
             return self._gen
+
+    def register_beds(
+        self,
+        beds: list[tuple[str, BedMode]],
+        gen: int = 0,
+    ) -> None:
+        """Publish beds from the active calibration without resetting choices."""
+
+        with self._lock:
+            if gen != self._gen:
+                return
+            active: list[str] = []
+            for bed_id, initial_mode in beds:
+                name = str(bed_id).strip()
+                if not name or name in active:
+                    continue
+                mode = (
+                    initial_mode
+                    if initial_mode in VALID_BED_MODES
+                    else DEFAULT_BED_MODE
+                )
+                active.append(name)
+                self._bed_modes.setdefault(name, mode)
+                self._bed_mode_revisions.setdefault(name, 0)
+            self._active_beds = active
+            # Do not retain an inactive bed's policy if a calibration file was
+            # edited in place between restarts.
+            self._bed_modes = {name: self._bed_modes[name] for name in active}
+            self._bed_mode_revisions = {
+                name: self._bed_mode_revisions[name] for name in active
+            }
+
+    def bed_policy(self, bed_id: str | None) -> tuple[BedMode | None, int]:
+        """Atomically snapshot a bed's mode and monotonic policy revision."""
+
+        if not bed_id:
+            return None, -1
+        with self._lock:
+            name = str(bed_id)
+            if name not in self._active_beds:
+                return None, -1
+            return (
+                self._bed_modes.get(name, DEFAULT_BED_MODE),
+                self._bed_mode_revisions.get(name, 0),
+            )
+
+    def bed_mode(self, bed_id: str | None) -> BedMode | None:
+        """Return an active bed's mode; unknown associations fail closed."""
+
+        return self.bed_policy(bed_id)[0]
+
+    def set_bed_mode(self, bed_id: str, mode: str) -> tuple[bool, str | None]:
+        """Apply a future-event policy change for one active calibrated bed."""
+
+        name = str(bed_id).strip()
+        value = str(mode).strip().lower()
+        with self._lock:
+            if name not in self._active_beds:
+                return False, "unknown or inactive bed " + repr(name)
+            if value not in VALID_BED_MODES:
+                return False, "mode must be low, medium, or high"
+            if self._bed_modes.get(name) != value:
+                self._bed_policy_seq += 1
+                self._bed_modes[name] = value  # type: ignore[assignment]
+                self._bed_mode_revisions[name] = self._bed_policy_seq
+            return True, None
 
     @property
     def generation(self) -> int:
@@ -289,6 +383,7 @@ class DashboardState:
                     "person_down": counts.get("PERSON_DOWN", 0),
                     "fall_suspected": counts.get("FALL_SUSPECTED", 0),
                     "bed_exit": counts.get("BED_EXIT", 0),
+                    "bed_exit_warning": counts.get("BED_EXIT_WARNING", 0),
                     "near_miss": counts.get("NEAR_MISS", 0),
                 },
                 "open_alerts": open_alerts,
@@ -301,6 +396,10 @@ class DashboardState:
                 "events": [
                     {**e, "acknowledged": e.get("event_id") in acked}
                     for e in reversed(events)
+                ],
+                "beds": [
+                    {"bed_id": bed_id, "mode": self._bed_modes[bed_id]}
+                    for bed_id in self._active_beds
                 ],
                 # Which camera and model are running, and whether a switch is
                 # in flight. The authoritative keys go last so a stale entry in
@@ -347,6 +446,10 @@ class DashboardState:
             self._acked.discard(event_id)
             for event in reversed(self._events):
                 if event.get("event_id") == event_id:
-                    if event.get("type") in ALERTING_TYPES:
+                    if bool(
+                        event.get(
+                            "alerting", event.get("type") in ALERTING_TYPES
+                        )
+                    ):
                         self._outstanding_alerts[event_id] = event
                     break

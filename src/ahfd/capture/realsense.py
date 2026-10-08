@@ -205,10 +205,10 @@ class _RealSenseBase:
         device_serial: str | None = None,
         strict_depth_controls: bool = False,
     ):
-        # with_depth defaults OFF: nothing downstream consumes depth (the
-        # geometry is homography-based), but capturing + filtering + aligning it
-        # every frame is the reason the RealSense ran at <15 fps while the webcam
-        # hit 40-60. RGB-only makes the RealSense as fast as any 1080p source.
+        # with_depth defaults OFF because capturing, filtering and aligning it
+        # costs throughput. When enabled, the detector samples sparse joint
+        # heights from aligned raw depth; RGB-only remains available for faster
+        # development and cameras without depth.
         # The IMU stays on (it is cheap and calibration needs it).
         #
         # infrared streams the left IR imager instead of colour -- a grayscale
@@ -735,7 +735,7 @@ class BagSource(_RealSenseBase):
             width=self._color_size[0],
             height=self._color_size[1],
             fps=float(self._fps),
-            has_depth=True,
+            has_depth=self._with_depth,
         )
 
     def __iter__(self) -> Iterator[Frame]:

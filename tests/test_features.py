@@ -136,6 +136,23 @@ class TestUprightMeasurement:
         assert f is not None
         assert f.h_shoulder == pytest.approx(0.82)
         assert f.h_torso == pytest.approx(0.70)
+        assert f.h_shoulder_source == "depth"
+        assert f.h_torso_source == "depth"
+
+    def test_depth_to_monocular_fallback_resets_vertical_velocity_history(self):
+        ex = extractor()
+        person = standing(0.0, 5.0)
+        heights = np.full(NUM_KEYPOINTS, np.nan, dtype=float)
+        heights[5:7] = 0.82
+        heights[11:13] = 0.58
+        measured = person.with_heights(heights)
+        for i in range(3):
+            ex.extract(measured, i * 0.1)
+
+        fallback = ex.extract(person, 0.3)
+        assert fallback is not None
+        assert fallback.h_torso_source == "monocular"
+        assert fallback.v_z == 0.0
 
     def test_range_is_reported(self):
         f = extractor().extract(standing(0.0, 6.0), t=0.0)
@@ -290,6 +307,31 @@ class TestZoneIntegration:
         # synthetic body's, so the torso anchor sits just beyond its boundary;
         # the cue must preserve that signed crossing rather than clamp it.
         assert f.bed_edge_distance_m < 0.0
+
+    def test_chair_support_never_becomes_a_bed_policy_association(self):
+        chair = Zone(
+            name="chair_a",
+            kind="chair",
+            polygon=rectangle((0.0, 6.0), length=2.4, width=1.4, angle_deg=0.0),
+            top_m=0.6,
+        )
+        pts = [
+            project(WARD, np.array([lateral, 6.0 + (height - 0.08), 0.60]))
+            for height, lateral in BODY
+        ]
+        supported = PersonPose(
+            keypoints=np.array(pts, dtype=np.float32),
+            scores=np.ones(NUM_KEYPOINTS, dtype=np.float32),
+            score=1.0,
+            track_id=1,
+        )
+
+        f = extractor(ZoneMap([chair])).extract(supported, 0.0)
+        assert f is not None
+        assert f.supported_by_surface == "chair_a"
+        assert f.supported_by_bed is None
+        assert f.associated_bed is None
+        assert f.bed_top_m is None
 
     def test_outside_all_zones_is_empty(self):
         bed = Zone(

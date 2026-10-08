@@ -26,7 +26,9 @@ app = typer.Typer(add_completion=False, help="Privacy-preserving fall detection.
 MOUNT_PITCH_DEG = 15.0
 
 
-def _build_detection(cfg, calib_path, meta):
+def _build_detection(
+    cfg, calib_path, meta, *, emit_bed_early_warning: bool | None = None
+):
     """Wire up feature extractor + state machine + sinks from a calibration.
 
     Shared by `run` and `replay` so the detection path is defined once. Returns
@@ -52,9 +54,16 @@ def _build_detection(cfg, calib_path, meta):
     extractor = FeatureExtractor(
         calib.ground, zones=calib.zones, min_keypoint_score=cfg.pose.min_keypoint_score
     )
+    bed_thresholds = cfg.bed_activity.to_thresholds()
+    if emit_bed_early_warning is not None:
+        from dataclasses import replace
+
+        bed_thresholds = replace(
+            bed_thresholds, emit_early_warning=emit_bed_early_warning
+        )
     machine = DetectionEngine(
         cfg.detect.to_thresholds(),
-        cfg.bed_activity.to_thresholds(),
+        bed_thresholds,
         bed_activity_enabled=cfg.bed_activity.enabled,
     )
 
@@ -2889,8 +2898,8 @@ def calibrate_zones(
                     )
                 )
                 risk = typer.prompt(
-                    "  risk_level -- Morse Fall Scale band: low (0-24) / moderate (25-44) / high (>=45)",
-                    default="high",
+                    "  risk_level (legacy metadata; dashboard mode is selected at runtime)",
+                    default="unknown",
                 )
                 plane_z = top_m
             else:

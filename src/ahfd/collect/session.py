@@ -183,6 +183,7 @@ _ALLOWED_RECORD_KEYS = frozenset(
         "alert_t_s",
         "evidence",
         "trigger",
+        "height_source",
         "bed_risk",
         "onset_to_alert_s",
         "support_fraction",

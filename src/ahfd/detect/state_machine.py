@@ -272,7 +272,10 @@ class FallStateMachine:
         elevated body, so the number it produces has no fixed relationship to
         the bed's height.
         """
-        return f.supported_by_bed is not None
+        return (
+            getattr(f, "supported_by_surface", None) is not None
+            or f.supported_by_bed is not None
+        )
 
     def _height_lost(self, ts: _TrackState, now: float, current: float) -> float:
         """Height dropped within the recent window, metres."""

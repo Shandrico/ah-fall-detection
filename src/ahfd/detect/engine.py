@@ -62,3 +62,15 @@ class DetectionEngine:
         self.fall.retain_only(set())
         if self.bed is not None:
             self.bed.reset()
+
+    def reset_bed(self, track_id: int) -> None:
+        """Reset the full bed track after reassociation to another bed."""
+
+        if self.bed is not None:
+            self.bed.reset(track_id)
+
+    def reset_bed_alert_evidence(self, track_id: int) -> None:
+        """Reset CUSUM/warning dwell while retaining bed support and phase."""
+
+        if self.bed is not None:
+            self.bed.reset_alert_evidence(track_id)

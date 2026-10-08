@@ -223,8 +223,10 @@ it must say `incomplete`, `derived_only: true`, `imagery_persisted: false`, and
 that maps the random session code to the approved consent/protocol record.
 
 After completing the physical checklist for the exact mount, use a random
-camera code such as `cam_01234567`, pseudonymous unique zone names (`bed_a`,
-`floor_1`), keep every bed's committed `risk_level: unknown`, confirm the
+camera code such as `cam_01234567`. For this two-bed deployment, create exactly
+two measured, non-overlapping bed zones named `bed_a` and `bed_b`; use the same
+pseudonymous scheme for any other zones (for example `floor_1`). Keep every
+bed's committed `risk_level: unknown`, confirm the
 hashed device identity and measured `ankle_height_baseline_m`, and set
 `verified_for_onsite: true` in that calibration.
 That latch is deliberately written as `false` by `ahfd calibrate`; software

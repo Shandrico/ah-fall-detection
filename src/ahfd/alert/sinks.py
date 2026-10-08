@@ -35,6 +35,7 @@ class ConsoleSink:
         "FALL_CONFIRMED": "!!",
         "PERSON_DOWN": "!!",
         "FALL_SUSPECTED": " !",
+        "BED_EXIT_WARNING": " !",
         "BED_EXIT": " ~",
         "NEAR_MISS": " .",
     }

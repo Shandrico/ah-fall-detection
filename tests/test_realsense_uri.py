@@ -6,6 +6,7 @@ import pytest
 
 from ahfd.capture.factory import open_source, parse_realsense_uri
 from ahfd.capture.realsense import (
+    BagSource,
     RealSenseVerificationError,
     _RealSenseBase,
     _apply_strict_depth_controls,
@@ -13,6 +14,17 @@ from ahfd.capture.realsense import (
     _verify_active_usb3,
     _verify_active_device_serial,
 )
+
+
+def test_bag_meta_reports_whether_depth_was_enabled_without_opening_hardware():
+    bag = object.__new__(BagSource)
+    bag._path = "clip.bag"
+    bag._color_size = (1920, 1080)
+    bag._fps = 30
+    bag._with_depth = False
+    assert bag.meta.has_depth is False
+    bag._with_depth = True
+    assert bag.meta.has_depth is True
 
 
 class TestParseRealsenseUri:

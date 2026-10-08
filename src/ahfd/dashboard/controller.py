@@ -44,7 +44,11 @@ def build_source_options(cfg, probe, current: str | None = None) -> list[dict]:
             seen.add(s.uri)
             out.append({"label": s.label, "uri": s.uri, "detected": None})
 
-    if probe.devices and "rs://" not in seen:
+    if (
+        probe.devices
+        and not any(uri.startswith("rs://") for uri in seen)
+        and not (current and current.startswith("rs://"))
+    ):
         # One entry even for two cameras: open_source("rs://") takes no serial,
         # so a second would be a button that opens the first one anyway.
         d = probe.devices[0]
@@ -127,6 +131,7 @@ class DashboardController:
     def start(self) -> None:
         self._spawn(
             self.state.begin_generation(
+                bed_policy_scope=(self.source, self.calib_path),
                 source=self.source,
                 source_label=self._label(self.source),
                 backend=self.cfg.pose.backend,
@@ -229,6 +234,7 @@ class DashboardController:
     def _do_switch(self, source, backend, show_rgb) -> None:
         try:
             uri = source or self.source
+            next_calib = self._calib_for(uri)
             # A copy, not a mutation: the old runner is still reading cfg.pose.*
             # on its own thread until it notices the stop event.
             cfg = self.cfg.model_copy(deep=True)
@@ -238,6 +244,7 @@ class DashboardController:
                 self.set_rgb(show_rgb)
 
             gen = self.state.begin_generation(
+                bed_policy_scope=(uri, next_calib),
                 source=uri,
                 source_label=self._label(uri),
                 backend=cfg.pose.backend,
@@ -250,7 +257,7 @@ class DashboardController:
             # hands self.calib_path to the runner, and the wrong one would fail
             # the resolution guard or produce wrong metres.
             self.cfg, self.source = cfg, uri
-            self.calib_path = self._calib_for(uri)
+            self.calib_path = next_calib
             self._spawn(gen)
         except Exception as exc:  # noqa: BLE001 -- a control-plane bug must not
             self.state.publish_status(  # leave the page stuck on "switching"

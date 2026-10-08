@@ -165,6 +165,7 @@ class _BedTrack:
     support_lost_since: float | None = None
     reasons: tuple[str, ...] = ()
     last_signal: float | None = None
+    signal_source: str | None = None
     last_tilt: float | None = None
     last_support_fraction_seen: float | None = None
     last_cusum: CusumSample | None = None
@@ -255,6 +256,31 @@ class BedExitStateMachine:
             ),
             reasons=ts.reasons,
         )
+
+    def reset_alert_evidence(self, track_id: int) -> None:
+        """Forget warning/dwell evidence while preserving physical bed state.
+
+        A runtime policy toggle must not reuse CUSUM evidence accumulated under
+        another mode, but it also must not erase the fact that this track was
+        supported by the bed.  The latter is required to recognise a completed
+        exit if staff change the mode while the patient is already at the edge.
+        """
+
+        ts = self._tracks.get(track_id)
+        if ts is None:
+            return
+        assert ts.cusum is not None
+        ts.cusum.reset()
+        ts.last_cusum = None
+        ts.onset_t = None
+        ts.warning_candidate_since = None
+        ts.warning_emitted = False
+        ts.candidate_phase = None
+        ts.candidate_since = None
+        ts.edge_velocity = None
+        ts.support_velocity = None
+        ts.last_edge_t = None
+        ts.last_support_t = None
 
     def _quality_ok(self, f: Features) -> bool:
         try:
@@ -381,6 +407,7 @@ class BedExitStateMachine:
             "reasons": list(snap.reasons),
             "cusum_g": round(snap.cusum_g, 3),
             "cusum_z": round(snap.cusum_z, 3),
+            "height_source": ts.signal_source or "unknown",
         }
         for key, value in (
             ("shoulder_elevation_m", snap.shoulder_elevation_m),
@@ -397,7 +424,7 @@ class BedExitStateMachine:
         return evidence
 
     def update(self, f: Features) -> Event | None:
-        """Advance one observed track and optionally emit a ``BED_EXIT`` event."""
+        """Advance one track and optionally emit a warning or completed exit."""
         now = float(f.t)
         ts = self._track(int(f.track_id), now)
         ts.last_update_t = now
@@ -447,8 +474,20 @@ class BedExitStateMachine:
         support_fraction = _finite(raw_support)
         edge = _finite(getattr(f, "bed_edge_distance_m", None))
         signal = _finite(getattr(f, "h_shoulder", None))
+        signal_source = getattr(f, "h_shoulder_source", None)
         if signal is None:
             signal = _finite(getattr(f, "h_torso", None))
+            signal_source = getattr(f, "h_torso_source", None)
+        if signal is not None and signal_source is None:
+            # Backward-compatible synthetic/replay inputs have one stable,
+            # unspecified estimator rather than alternating depth/monocular.
+            signal_source = "unspecified"
+        if ts.signal_source is not None and signal_source != ts.signal_source:
+            # A depth hole may make the extractor fall back to monocular
+            # geometry. Those estimators have different offsets, so their
+            # discontinuity is not patient movement and must not enter CUSUM.
+            self.reset_alert_evidence(ts.track_id)
+        ts.signal_source = signal_source
         tilt = _finite(getattr(f, "torso_tilt", None))
         motion = _finite(getattr(f, "motion", None)) or 0.0
 
@@ -545,10 +584,13 @@ class BedExitStateMachine:
         fast = False
         if stable_reclined:
             desired: BedActivityPhase = "RECLINED"
-        elif bed_known and ts.support == "UNSUPPORTED" and (
+        # A completed *bed exit* requires evidence that this track was actually
+        # supported by the bed earlier in the episode.  Merely walking through
+        # a calibrated bed footprint must not create a medium/high alert.
+        elif bed_known and ts.support_seen and ts.support == "UNSUPPORTED" and (
             outside
             or edge_directed
-            or (ts.support_seen and ts.support_lost_since is not None)
+            or ts.support_lost_since is not None
             or ts.phase in ("SHIFTING_TO_EDGE", "EDGE_SITTING", "ATTEMPTING_STAND")
         ):
             desired = "OUT_OF_BED"
@@ -575,10 +617,13 @@ class BedExitStateMachine:
         ts.reasons = tuple(reasons)
         changed, transition_evidence_t = self._advance(ts, desired, now, fast=fast)
 
-        corroborated = rise_active and (
-            edge_directed
-            or near_edge
-            or ts.phase in ("SHIFTING_TO_EDGE", "EDGE_SITTING", "ATTEMPTING_STAND")
+        # An operational high-mode warning must never be raw CUSUM, and a
+        # static person who merely happens to be near an edge is not enough.
+        # Require the rest-trained CUSUM to have fired *and* current progression
+        # evidence: edge/support movement or the committed stand-attempt phase.
+        # This deliberately trades a little lead time for fewer nuisance pages.
+        corroborated = bool(ts.cusum.fired) and rise_active and (
+            edge_directed or ts.phase == "ATTEMPTING_STAND"
         )
         if corroborated and ts.phase != "OUT_OF_BED":
             if ts.warning_candidate_since is None:
@@ -600,7 +645,7 @@ class BedExitStateMachine:
         ):
             ts.warning_emitted = True
             return Event(
-                type="BED_EXIT",
+                type="BED_EXIT_WARNING",
                 track_id=ts.track_id,
                 t_trigger=(
                     ts.onset_t
