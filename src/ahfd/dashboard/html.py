@@ -84,6 +84,16 @@ DASHBOARD_HTML = r"""<!doctype html>
   .s-RECOVERED { background:#1f6feb33; color:#9dc1f5; border:1px solid #1f6feb66; }
   .s-LOW_CONFIDENCE,.s-UNKNOWN,.s-TRACKED { background:transparent; color:var(--muted);
                                             border:1px dashed var(--line); }
+  /* Bed-exit state, shown as a second badge next to the posture. Graded by how
+     far the body core has moved toward / across the bed edge. */
+  .b-IN_BED_STABLE { background:#1f6feb; color:#fff; }
+  .b-EDGE_APPROACH,.b-LEGS_OVER { background:var(--warn); color:#000; }
+  .b-CORE_CROSSING,.b-EXITED { background:var(--crit); color:#fff; }
+  .b-DEGRADED { background:transparent; color:var(--muted); border:1px dashed var(--warn); }
+  .b-NOT_IN_BED { display:none; }
+  .zoneedit .feed img { cursor:crosshair; }
+  .zonedot { position:absolute; width:12px; height:12px; margin:-6px 0 0 -6px; border-radius:50%;
+             background:var(--accent); border:2px solid #fff; pointer-events:none; }
   .ev { border-left:4px solid var(--line); padding:9px 11px; margin-bottom:8px; background:var(--panel2);
         border-radius:0 8px 8px 0; }
   .ev.sev4 { border-left-color:var(--crit); } .ev.sev3 { border-left-color:var(--warn); }
@@ -126,6 +136,7 @@ DASHBOARD_HTML = r"""<!doctype html>
   <label for="bk">model</label>
   <select id="bk"></select>
   <button id="rgb">RGB: off</button>
+  <button id="zone" title="Click the four corners of a bed on the video">&#9634; Define bed zone</button>
   <span class="hint" id="rt-detail"></span>
 </div>
 
@@ -181,7 +192,9 @@ DASHBOARD_HTML = r"""<!doctype html>
 </div>
 
 <script>
-const RANK = {LOW:0, BED_EXIT:1, NEAR_MISS:1, FALL_SUSPECTED:2, PERSON_DOWN:3, FALL_CONFIRMED:4};
+const RANK = {LOW:0, BED_EXIT:1, NEAR_MISS:1, BED_EXIT_ABORTED:0, BED_EXIT_LIMB:1,
+  BED_MONITORING_DEGRADED:1, BED_EXIT_RISK:2, FALL_SUSPECTED:2,
+  BED_EXIT_CONFIRMED:3, PERSON_DOWN:3, FALL_CONFIRMED:4};
 let soundOn = false, lastAlertCount = 0;
 let opts = null, lastSwitchSeq = -1;
 
@@ -304,7 +317,8 @@ async function refresh(){
   document.getElementById('m-people').textContent = s.people;
   document.getElementById('m-open').textContent = s.open_count;
   document.getElementById('m-falls').textContent = s.counts.fall_confirmed + s.counts.person_down;
-  document.getElementById('m-bed').textContent = s.counts.bed_exit;
+  document.getElementById('m-bed').textContent =
+    (s.counts.bed_exit||0) + (s.counts.bed_exit_confirmed||0);
   document.getElementById('m-up').textContent = fmtUp(s.uptime_s);
   document.getElementById('q-count').textContent = s.open_count;
 
@@ -345,8 +359,10 @@ async function refresh(){
 
   const tr = s.tracks.length ? s.tracks.map(t=>{
     const extra = (t.height_m!=null?` &middot; ${t.height_m} m`:'') + (t.zone?` &middot; ${esc(t.zone)}`:'');
+    const bed = (t.bed_state && t.bed_state !== 'NOT_IN_BED')
+      ? `<span class="badge b-${esc(t.bed_state)}">${esc(t.bed_state.replace(/_/g,' '))}</span>` : '';
     return `<div class="chip"><span>Track ${t.track_id}${extra}</span>
-      <span class="badge s-${esc(t.state)}">${esc(t.state)}</span></div>`;
+      <span style="display:flex;gap:6px">${bed}<span class="badge s-${esc(t.state)}">${esc(t.state)}</span></span></div>`;
   }).join('') : '<div class="empty">none</div>';
   // Without detection there is no posture, only a track id. Say why, or every
   // chip reading TRACKED looks like a broken state machine.
@@ -397,6 +413,54 @@ document.getElementById('rgb').addEventListener('click', async function(){
   if(r.ok) this.textContent = 'RGB: ' + (r.show_rgb ? 'on' : 'off');
   else hint(r.error || 'could not change the view');
 });
+
+// --- Bed-zone picker: click the bed's corners on the RGB feed ------------
+// Each click is turned into a SOURCE pixel (the stream's natural resolution),
+// which the server back-projects to floor metres through the camera's
+// calibration. The camera is fixed and calibrated, so the saved zone stays
+// locked to the bed in the image.
+let zoneMode = false, zonePts = [];
+function clearZoneDots(){ document.querySelectorAll('.zonedot').forEach(d=>d.remove()); }
+function exitZone(){
+  zoneMode = false; zonePts = []; clearZoneDots();
+  document.body.classList.remove('zoneedit');
+  document.getElementById('zone').textContent = '▢ Define bed zone';
+}
+function startZone(){
+  if(opts && !opts.allow_rgb){ /* still allowed on skeleton, but RGB helps */ }
+  zoneMode = true; zonePts = []; clearZoneDots();
+  document.body.classList.add('zoneedit');
+  document.getElementById('zone').textContent = 'Click 4 corners — cancel';
+  hint('Click the bed corners head-first: head-left, head-right, foot-right, foot-left.');
+}
+document.getElementById('zone').addEventListener('click', ()=> zoneMode ? exitZone() : startZone());
+document.getElementById('stream').addEventListener('click', function(e){
+  if(!zoneMode) return;
+  const img = this, rect = img.getBoundingClientRect();
+  if(!img.naturalWidth){ hint('waiting for video — switch RGB on to see the bed'); return; }
+  const u = (e.clientX - rect.left) / rect.width  * img.naturalWidth;
+  const v = (e.clientY - rect.top)  / rect.height * img.naturalHeight;
+  zonePts.push([u, v]);
+  const dot = document.createElement('div');
+  dot.className = 'zonedot';
+  dot.style.left = ((e.clientX - rect.left) / rect.width * 100) + '%';
+  dot.style.top  = ((e.clientY - rect.top)  / rect.height * 100) + '%';
+  document.querySelector('.feed').appendChild(dot);
+  hint(zonePts.length + ' / 4 corners');
+  if(zonePts.length >= 4) finishZone();
+});
+async function finishZone(){
+  const name = (prompt('Bed name (e.g. bed_1):', '') || '').trim();
+  const top  = prompt('Bed surface height above the floor, in metres (0.48-0.90):', '0.55');
+  const risk = (prompt('Fall-risk level: none / low / medium / high', 'high') || 'unknown').trim();
+  const pts = zonePts.slice(0, 4);
+  exitZone();
+  const r = await post('/api/bed_zone',
+    {points: pts, name, top_m: parseFloat(top), risk_level: risk});
+  hint(r.ok ? ('bed zone saved: ' + r.name + ' — reloading pipeline')
+            : (r.error || 'could not save bed zone'));
+  refresh();
+}
 
 setupPlayer();
 loadOptions();

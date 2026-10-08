@@ -34,6 +34,33 @@ VALID_RISK = ("none", "low", "medium", "high", "unknown")
 
 Point = tuple[float, float]
 
+# The four named sides of a rectangular bed, in the bed's own frame. The long
+# axis runs head -> foot; "left" and "right" are the long guardrail sides,
+# "head" and "foot" the short unrailed ends.
+BedSide = Literal["left", "right", "head", "foot"]
+
+
+@dataclass(frozen=True)
+class BedEdge:
+    """One side of a bed, and whether a guardrail protects it.
+
+    A guardrail changes what a crossing means. A patient has to clear a raised
+    rail to leave sideways, so the body core crossing a *railed* side is a
+    stronger signal than crossing an open end. Rails rarely run the whole bed:
+    Hill-Rom side rails leave an open gap at the foot, and the patient can slide
+    out through that gap without ever crossing a rail -- so the gap has to be
+    modelled or exits through it are missed.
+
+    `rail_gap_foot_m` is the open length at the FOOT end of this side (0 means
+    the rail runs the whole side). `rail` false means no barrier at all -- an
+    end, or a rail a nurse has lowered for this episode.
+    """
+
+    side: BedSide
+    rail: bool = False
+    rail_height_m: float | None = None
+    rail_gap_foot_m: float = 0.0
+
 
 def point_in_polygon(point: Point, polygon: list[Point]) -> bool:
     """Ray-casting point-in-polygon test.
@@ -72,6 +99,14 @@ class Zone:
     polygon: list[Point]
     top_m: float | None = None  # bed/chair surface height above floor
     risk_level: str = "unknown"  # per-bed fall risk; see RiskLevel
+    # Guardrail description, one entry per side, for bed-exit detection. Empty
+    # for a plain zone; a bed with no edges listed is treated as fully open
+    # (every crossing counts), which is the conservative default.
+    edges: tuple[BedEdge, ...] = ()
+    # Which long-axis end is the foot. The polygon is authored head-first, so
+    # the foot is the far (+ long-axis) end by default. The open rail gap is
+    # measured from here. See features/bed_frame.py.
+    foot_at_far_end: bool = True
 
     def __post_init__(self) -> None:
         if len(self.polygon) < 3:
@@ -126,6 +161,19 @@ class ZoneMap:
         """Build from the `zones:` list in a calibration YAML."""
         zones = []
         for entry in entries:
+            edges = tuple(
+                BedEdge(
+                    side=str(e["side"]),  # type: ignore[arg-type]
+                    rail=bool(e.get("rail", False)),
+                    rail_height_m=(
+                        float(e["rail_height_m"])
+                        if e.get("rail_height_m") is not None
+                        else None
+                    ),
+                    rail_gap_foot_m=float(e.get("rail_gap_foot_m", 0.0)),
+                )
+                for e in entry.get("edges", [])
+            )
             zones.append(
                 Zone(
                     name=str(entry["name"]),
@@ -135,9 +183,23 @@ class ZoneMap:
                         float(entry["top_m"]) if entry.get("top_m") is not None else None
                     ),
                     risk_level=str(entry.get("risk_level", "unknown")),
+                    edges=edges,
+                    foot_at_far_end=bool(entry.get("foot_at_far_end", True)),
                 )
             )
         return cls(zones=zones)
+
+    def beds(self) -> list["Zone"]:
+        """Every bed zone, in declaration order."""
+        return [z for z in self.zones if z.kind == "bed"]
+
+    def by_name(self, name: str | None) -> "Zone | None":
+        if name is None:
+            return None
+        for z in self.zones:
+            if z.name == name:
+                return z
+        return None
 
 
 def polygon_from_pixels(ground, pixels, plane_z: float = 0.0) -> list[Point]:

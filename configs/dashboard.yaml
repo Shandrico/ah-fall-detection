@@ -44,6 +44,14 @@ detect:
   enabled: true
   # Thresholds omitted -> DetectConfig defaults (the ward-geometry starting
   # point: camera ~2.6 m, ~20 deg downtilt). Tune later with `ahfd sweep`.
+  # The dedicated bed-exit branch (below) owns bed exits now, so turn the legacy
+  # "seated near a bed" precursor off to avoid two events for one real exit.
+  legacy_bed_exit: false
+
+bed_exit:
+  enabled: true
+  # Metric thresholds (ward-wide); bed dimensions and rails live per-bed in the
+  # calibration's zones. Untuned starting points -- see docs/BED_EXIT.md.
 
 alert:
   console: true

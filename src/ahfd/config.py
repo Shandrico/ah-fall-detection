@@ -95,6 +95,11 @@ class DetectConfig(BaseModel):
     min_mean_conf: float = 0.40
     cooldown_s: float = 60.0
 
+    # Keep the legacy "seated near a bed" precursor. A ward running the
+    # dedicated bed-exit branch sets this false so one real exit yields one
+    # event, not two. See BedExitConfig and docs/BED_EXIT.md.
+    legacy_bed_exit: bool = True
+
     def to_thresholds(self):
         """Build the detector's threshold object, dropping `enabled`."""
         from ahfd.detect import FallThresholds
@@ -102,6 +107,56 @@ class DetectConfig(BaseModel):
         values = self.model_dump()
         values.pop("enabled", None)
         return FallThresholds(**values)
+
+
+class BedExitConfig(BaseModel):
+    """Bed-exit thresholds, in metres, seconds and metres per second.
+
+    Metric like the fall thresholds, so one set describes a ward rather than a
+    camera. The bed's physical dimensions and guardrails are NOT here -- those
+    are per-bed facts and live in the calibration's `zones:` (see
+    docs/BED_EXIT.md). These are the ward-wide decision thresholds.
+    """
+
+    enabled: bool = True
+
+    evidence_window_s: float = 1.0
+    evidence_fraction: float = 0.60
+    baseline_window_s: float = 30.0
+
+    edge_near_m: float = 0.20
+    approach_delta_m: float = 0.12
+    approach_s: float = 1.5
+
+    legs_quorum: int = 2
+    legs_over_s: float = 0.8
+
+    crossing_margin_m: float = 0.0
+    exit_margin_m: float = 0.10
+    exit_confirm_s: float = 1.0
+
+    return_margin_m: float = 0.08
+    abort_s: float = 3.0
+
+    rapid_core_speed: float = 0.50
+
+    min_joint_conf: float = 0.30
+    min_core_valid: int = 1
+    min_total_valid: int = 4
+    degraded_after_s: float = 2.0
+    recover_s: float = 1.0
+
+    bind_s: float = 5.0
+    unbind_s: float = 5.0
+
+    risk_cooldown_s: float = 30.0
+
+    def to_thresholds(self):
+        """Build the bed-exit threshold object, dropping `enabled`."""
+        from ahfd.detect import BedExitThresholds
+
+        values = self.model_dump()
+        return BedExitThresholds(**values)
 
 
 class AlertConfig(BaseModel):
@@ -167,6 +222,7 @@ class Config(BaseModel):
     pose: PoseConfig = Field(default_factory=PoseConfig)
     smoothing: SmoothingConfig = Field(default_factory=SmoothingConfig)
     detect: DetectConfig = Field(default_factory=DetectConfig)
+    bed_exit: BedExitConfig = Field(default_factory=BedExitConfig)
     alert: AlertConfig = Field(default_factory=AlertConfig)
     view: ViewConfig = Field(default_factory=ViewConfig)
     dashboard: DashboardConfig = Field(default_factory=DashboardConfig)

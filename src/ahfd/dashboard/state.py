@@ -35,7 +35,21 @@ from typing import Any
 
 # Which event types are a standing alert a nurse must clear, versus
 # informational. Drives the triage queue and the "open alerts" count.
+#
+# Bed exits grade their own severity from the bed's fall-risk level, so an exit
+# from a high-risk bed must be able to page even though "BED_EXIT_CONFIRMED" is
+# not in this set. The rule is therefore severity-based: anything at severity 3+
+# is a standing alert, which keeps FALL_CONFIRMED (4) and PERSON_DOWN (3) while
+# letting a high-risk bed exit join them and a low-risk one stay a quiet log.
 ALERTING_TYPES = frozenset({"FALL_CONFIRMED", "PERSON_DOWN"})
+ALERT_SEVERITY = 3
+
+
+def _is_alerting(event: dict) -> bool:
+    return (
+        event.get("severity", 0) >= ALERT_SEVERITY
+        or event.get("type") in ALERTING_TYPES
+    )
 
 
 class DashboardState:
@@ -90,7 +104,7 @@ class DashboardState:
                 return
             self._events.append(event)
             self._counts[event["type"]] = self._counts.get(event["type"], 0) + 1
-            if event.get("type") in ALERTING_TYPES:
+            if _is_alerting(event):
                 self._last_alert_ts = time.time()
 
     # ---- control plane (controller thread) ------------------------------
@@ -213,7 +227,7 @@ class DashboardState:
             open_alerts = [
                 {**e, "acknowledged": e.get("event_id") in acked}
                 for e in reversed(events)
-                if e.get("type") in ALERTING_TYPES and e.get("event_id") not in acked
+                if _is_alerting(e) and e.get("event_id") not in acked
             ]
             return {
                 "fps": round(self._fps, 1),
@@ -226,6 +240,10 @@ class DashboardState:
                     "fall_suspected": counts.get("FALL_SUSPECTED", 0),
                     "bed_exit": counts.get("BED_EXIT", 0),
                     "near_miss": counts.get("NEAR_MISS", 0),
+                    "bed_exit_risk": counts.get("BED_EXIT_RISK", 0),
+                    "bed_exit_confirmed": counts.get("BED_EXIT_CONFIRMED", 0),
+                    "bed_exit_limb": counts.get("BED_EXIT_LIMB", 0),
+                    "bed_monitoring_degraded": counts.get("BED_MONITORING_DEGRADED", 0),
                 },
                 "open_alerts": open_alerts,
                 "open_count": len(open_alerts),

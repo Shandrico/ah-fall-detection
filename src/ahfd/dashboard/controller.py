@@ -35,6 +35,14 @@ from ahfd.pose import AVAILABLE_BACKENDS
 SOURCE_URI_MAX = 512
 
 
+def _clean_name(name) -> str | None:
+    """A safe zone name from user input, or None to auto-name."""
+    if not isinstance(name, str):
+        return None
+    cleaned = "".join(c for c in name.strip() if c.isalnum() or c in "_-")[:40]
+    return cleaned or None
+
+
 def build_source_options(cfg, probe, current: str | None = None) -> list[dict]:
     """The camera picker: the configured list, plus a RealSense if one is here."""
     seen: set[str] = set()
@@ -147,6 +155,100 @@ class DashboardController:
             "allow_custom_source": self.cfg.dashboard.allow_custom_source,
             "allow_rgb": self._rgb_authorised,
         }
+
+    def add_bed_zone(
+        self, points, name=None, top_m=0.55, risk_level="unknown"
+    ) -> tuple[int, dict]:
+        """Add a bed zone drawn on the RGB feed, and persist it.
+
+        The browser sends the four clicked corners in *source pixels*. Each is a
+        ray; intersecting it with the mattress plane at `top_m` (via the current
+        camera's calibration) gives the corner in floor metres -- the same
+        back-projection `ahfd calibrate-zones` uses, so a bed drawn on the page
+        and one authored at the CLI are identical. The zone is written into this
+        camera's calibration file and the pipeline is respawned so detection
+        picks it up. Because the camera is calibrated and fixed, the zone then
+        stays locked to the bed in the image.
+        """
+        import yaml
+
+        from ahfd.features.bed_frame import default_bed_edges
+        from ahfd.geometry.calibration import load_calibration
+        from ahfd.geometry.zones import VALID_RISK, polygon_from_pixels
+
+        if not self.calib_path:
+            return 400, {
+                "ok": False,
+                "error": "this camera has no calibration, so a drawn zone cannot "
+                "be back-projected to metres. Calibrate it first.",
+            }
+        if not isinstance(points, list) or not (3 <= len(points) <= 8):
+            return 400, {"ok": False, "error": "need 3-8 corner points"}
+        try:
+            pts = [(float(p[0]), float(p[1])) for p in points]
+        except (TypeError, ValueError, IndexError):
+            return 400, {"ok": False, "error": "corner points must be [u, v] pixels"}
+        try:
+            top = float(top_m)
+        except (TypeError, ValueError):
+            return 400, {"ok": False, "error": "top_m must be a number (bed height, m)"}
+        if not 0.2 <= top <= 1.3:
+            return 400, {"ok": False, "error": "top_m out of range (0.2-1.3 m)"}
+        risk = str(risk_level or "unknown")
+        if risk not in VALID_RISK:
+            return 400, {"ok": False, "error": "risk must be one of " + repr(VALID_RISK)}
+
+        try:
+            calib = load_calibration(self.calib_path)
+            polygon = polygon_from_pixels(calib.ground, pts, plane_z=top)
+        except Exception as exc:  # noqa: BLE001 -- surfaces to the page as text
+            return 400, {
+                "ok": False,
+                "error": "could not project those corners onto the bed plane: "
+                + str(exc),
+            }
+
+        name = _clean_name(name) or self._next_bed_name(calib)
+        edges = [
+            {
+                "side": e.side,
+                "rail": e.rail,
+                "rail_height_m": e.rail_height_m,
+                "rail_gap_foot_m": e.rail_gap_foot_m,
+            }
+            for e in default_bed_edges()
+        ]
+        entry = {
+            "name": name,
+            "kind": "bed",
+            "top_m": round(top, 3),
+            "risk_level": risk,
+            "polygon": [[round(x, 3), round(y, 3)] for x, y in polygon],
+            "edges": edges,
+        }
+
+        try:
+            data = yaml.safe_load(open(self.calib_path, encoding="utf-8").read()) or {}
+            zones = data.get("zones") or []
+            zones = [z for z in zones if z.get("name") != name]  # replace by name
+            zones.append(entry)
+            data["zones"] = zones
+            with open(self.calib_path, "w", encoding="utf-8") as fh:
+                yaml.safe_dump(data, fh, sort_keys=False, default_flow_style=None)
+        except OSError as exc:
+            return 500, {"ok": False, "error": "could not write calibration: " + str(exc)}
+
+        self._log("added bed zone " + name + " to " + str(self.calib_path))
+        # Respawn onto the same source so a fresh extractor loads the new zone.
+        self.switch(source=self.source)
+        return 200, {"ok": True, "name": name, "polygon": entry["polygon"]}
+
+    def _next_bed_name(self, calib) -> str:
+        existing = {z.name for z in calib.zones.beds()}
+        i = 1
+        while ("bed_" + str(i)) in existing:
+            i += 1
+        return "bed_" + str(i)
 
     def rescan(self) -> tuple[int, dict]:
         """Re-enumerate the cameras and return the refreshed picker.

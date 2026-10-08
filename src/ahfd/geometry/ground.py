@@ -208,6 +208,32 @@ class GroundPlane:
             return None
         return (float(t * d[0]), float(t * d[1]))
 
+    def world_to_pixel(
+        self, x: float, y: float, z: float = 0.0
+    ) -> tuple[float, float] | None:
+        """Project a floor-referenced world point back to a pixel. The inverse
+        of `pixel_to_plane`.
+
+        This is what lets a bed zone -- authored once as a floor polygon in
+        metres -- be drawn *fixed* on the live RGB frame. The camera is static
+        and calibrated, so the same world corner lands on the same pixel every
+        frame regardless of who walks through it: the outline is painted from
+        the geometry, not tracked in the image.
+
+        World is floor-referenced (X right, Y forward, Z up, origin beneath the
+        lens), so the camera sits at (0, 0, height_m). Returns None for a point
+        behind the camera, which has no image position.
+        """
+        rel = np.array([x, y, z - self.height_m], dtype=float)
+        # rotation is camera->world; its transpose takes world back to camera.
+        p_cam = self.rotation.T @ rel
+        if p_cam[2] <= 1e-9:  # behind the image plane
+            return None
+        k = self.intrinsics
+        u = k.fx * (p_cam[0] / p_cam[2]) + k.cx
+        v = k.fy * (p_cam[1] / p_cam[2]) + k.cy
+        return (float(u), float(v))
+
     def pixel_to_floor(self, u: float, v: float) -> tuple[float, float] | None:
         """Where the pixel's ray meets the floor, in metres.
 

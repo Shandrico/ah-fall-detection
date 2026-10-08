@@ -41,9 +41,19 @@ camera:
 zones:
   - name: bed_1
     kind: bed
-    top_m: 0.55        # MEASURE THIS PER BED -- ward beds adjust 0.4-0.8 m
+    top_m: 0.55        # MEASURE THIS PER BED -- ward beds adjust 0.48-0.90 m
     risk_level: high   # from the admission fall-risk assessment; drives bed-exit urgency
     polygon: [[-3.85, 6.15], [-2.44, 5.45], [-1.79, 6.75], [-3.20, 7.45]]
+    # Guardrails for bed-exit detection (optional; omitted beds default to a
+    # rail down each long side with a foot gap). This is a Hill-Rom bed: ~2.2 x
+    # 1.05 m, rails the whole length except a 0.48 m gap at the foot, ends open.
+    # Author the polygon head-first so the foot is the far (+ long-axis) end.
+    foot_at_far_end: true
+    edges:
+      - {side: left,  rail: true,  rail_height_m: 0.38, rail_gap_foot_m: 0.48}
+      - {side: right, rail: true,  rail_height_m: 0.38, rail_gap_foot_m: 0.48}
+      - {side: head,  rail: false}
+      - {side: foot,  rail: false}
 
   - name: bed_2
     kind: bed

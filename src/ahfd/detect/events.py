@@ -9,15 +9,28 @@ EventType = Literal[
     "FALL_SUSPECTED",  # on screen only, fast
     "FALL_CONFIRMED",  # pages a nurse, after the person stays down
     "PERSON_DOWN",  # slow slump, or a fall we joined late
-    "BED_EXIT",  # sitting on the bed edge -- a precursor, not an incident
+    "BED_EXIT",  # legacy: seated on the bed edge -- kept behind a config flag
     "NEAR_MISS",  # went down and got straight back up
+    # --- bed-exit branch (see detect/bed_exit.py) -----------------------
+    "BED_EXIT_LIMB",  # a leg crossed the rail line -- earliest, lowest signal
+    "BED_EXIT_RISK",  # the body core is approaching or beginning to cross
+    "BED_EXIT_CONFIRMED",  # the body core is out, sustained -- the real exit
+    "BED_EXIT_ABORTED",  # core came back inside; a reach-and-return
+    "BED_MONITORING_DEGRADED",  # cannot observe the bed well enough to judge
 ]
 
-# What each event is worth waking someone for.
+# What each event is worth waking someone for. The bed-exit branch grades its
+# own urgency from the bed's fall-risk level via `severity_override`, so these
+# are only the fallbacks for when no override is supplied.
 SEVERITY: dict[str, int] = {
     "BED_EXIT": 1,
     "NEAR_MISS": 1,
+    "BED_EXIT_ABORTED": 0,
+    "BED_EXIT_LIMB": 1,
+    "BED_MONITORING_DEGRADED": 1,
+    "BED_EXIT_RISK": 2,
     "FALL_SUSPECTED": 2,
+    "BED_EXIT_CONFIRMED": 3,
     "PERSON_DOWN": 3,
     "FALL_CONFIRMED": 4,
 }

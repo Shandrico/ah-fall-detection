@@ -38,6 +38,12 @@ detect:
   confirm_s: 4.0
   suspect_s: 1.0
   slow_down_s: 10.0
+  legacy_bed_exit: false   # the dedicated bed-exit branch owns bed exits now
+
+bed_exit:
+  enabled: true
+  # Metric thresholds only; per-bed dimensions/rails live in the calibration.
+  # A desk webcam is poor bed-exit geometry -- plumbing test, not tuning.
 
 alert:
   console: true

@@ -51,6 +51,10 @@ class PipelineRunner:
         self._thread: threading.Thread | None = None
         self._started = False
         self._jpeg_quality = cfg.dashboard.jpeg_quality
+        # Set once detection is built in _run; used to draw the fixed bed zones.
+        self._bed_machine = None
+        self._ground = None
+        self._bed_zones: list = []
 
     @property
     def alive(self) -> bool:
@@ -115,9 +119,12 @@ class PipelineRunner:
                 # error -- not the multi-camera "uncalibrated spare camera" case.
                 from ahfd.cli import _build_detection
 
-                extractor, machine, _sink, _calib = _build_detection(
+                extractor, machine, bed_machine, _sink, _calib = _build_detection(
                     cfg, self.calib_path, src.meta
                 )
+                self._bed_machine = bed_machine
+                self._ground = _calib.ground
+                self._bed_zones = _calib.zones.beds()
 
             estimator = build_estimator(cfg.pose)
             tracker = SimpleTracker(min_keypoint_score=cfg.pose.min_keypoint_score)
@@ -290,6 +297,9 @@ class PipelineRunner:
             if machine is not None and extractor is not None:
                 extractor.retain_only(tracker.live_ids)
                 machine.retain_only(tracker.live_ids)
+                bed_machine = self._bed_machine
+                if bed_machine is not None:
+                    bed_machine.retain_only(tracker.live_ids)
                 for person in pose.people:
                     if person.track_id is None:
                         continue
@@ -298,31 +308,45 @@ class PipelineRunner:
                         "track_id": person.track_id,
                         "state": machine.state_of(person.track_id),
                     }
+                    if bed_machine is not None:
+                        info["bed_state"] = bed_machine.state_of(person.track_id)
                     if features is not None:
                         if features.h_torso is not None:
                             info["height_m"] = round(features.h_torso, 2)
                         if features.zones:
                             info["zone"] = features.zones[0]
                     track_info[person.track_id] = info
-                    if features is None:
-                        continue
-                    event = machine.update(features)
-                    if event is not None:
+
+                    def _publish(ev):
                         self.state.publish_event(
                             {
                                 "event_id": uuid.uuid4().hex[:12],
-                                "type": event.type,
-                                "severity": event.severity,
-                                "track_id": event.track_id,
-                                "t_alert": round(event.t_alert, 1),
+                                "type": ev.type,
+                                "severity": ev.severity,
+                                "track_id": ev.track_id,
+                                "t_alert": round(ev.t_alert, 1),
                                 "clock": time.strftime("%H:%M:%S"),
-                                "zone": event.zone,
-                                "evidence": event.evidence,
+                                "zone": ev.zone,
+                                "evidence": ev.evidence,
                             },
                             gen=self.gen,
                         )
-                        if event.type in ("FALL_CONFIRMED", "PERSON_DOWN"):
-                            alert = event.describe()
+
+                    if features is not None:
+                        event = machine.update(features)
+                        if event is not None:
+                            _publish(event)
+                            if event.type in ("FALL_CONFIRMED", "PERSON_DOWN"):
+                                alert = event.describe()
+                    # The bed-exit branch reads the raw pose (it needs per-joint
+                    # positions), runs in parallel, and shares no state with the
+                    # fall machine. A high-severity exit becomes a banner too.
+                    if bed_machine is not None:
+                        bed_event = bed_machine.update(person, pose.t)
+                        if bed_event is not None:
+                            _publish(bed_event)
+                            if bed_event.severity >= 3:
+                                alert = bed_event.describe()
             else:
                 for person in pose.people:
                     if person.track_id is not None:
@@ -333,6 +357,16 @@ class PipelineRunner:
 
             states = {tid: info["state"] for tid, info in track_info.items()}
 
+            # Per-bed status for the fixed zone overlay: the exit state of the
+            # patient bound to each bed, so the outline turns amber/red as the
+            # core nears and crosses the edge.
+            bed_status: dict[str, str] = {}
+            if self._bed_machine is not None:
+                for tid in track_info:
+                    bed = self._bed_machine.bound_bed_of(tid)
+                    if bed is not None:
+                        bed_status[bed] = self._bed_machine.state_of(tid)
+
             dt = time.perf_counter() - t0
             inst = 1.0 / dt if dt > 0 else 0.0
             fps_ema = inst if fps_ema is None else 0.9 * fps_ema + 0.1 * inst
@@ -342,11 +376,13 @@ class PipelineRunner:
                     frame, pose,
                     min_keypoint_score=cfg.pose.min_keypoint_score,
                     states=states, alert=alert, fps=fps_ema,
+                    ground=self._ground, zones=self._bed_zones, bed_status=bed_status,
                 )
             else:
                 canvas = render_skeleton(
                     pose, min_keypoint_score=cfg.pose.min_keypoint_score,
                     states=states, fps=fps_ema,
+                    ground=self._ground, zones=self._bed_zones, bed_status=bed_status,
                 )
 
             ok, buf = cv2.imencode(

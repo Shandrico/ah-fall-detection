@@ -92,6 +92,79 @@ def draw_people(
             )
 
 
+_BED_STATUS_BGR = {
+    None: (210, 150, 60),            # calm blue -- occupied, stable
+    "NOT_IN_BED": (150, 150, 150),
+    "IN_BED_STABLE": (210, 150, 60),
+    "EDGE_APPROACH": (0, 170, 255),  # amber -- approaching the edge
+    "LEGS_OVER": (0, 170, 255),
+    "CORE_CROSSING": (0, 0, 255),    # red -- the body core is crossing / out
+    "EXITED": (0, 0, 255),
+    "DEGRADED": (120, 120, 120),     # grey -- monitoring unavailable
+}
+
+
+def draw_bed_zones(
+    canvas: np.ndarray,
+    ground,
+    zones,
+    status: dict[str, str] | None = None,
+) -> None:
+    """Draw each bed's footprint and guardrails, fixed to the image, in place.
+
+    The outline is painted from the calibrated geometry -- every bed corner is
+    a floor point projected back to its pixel via `ground.world_to_pixel` -- so
+    it stays locked to the bed regardless of who walks through frame. Drawing it
+    makes a bed exit legible: a nurse sees the body core cross the very line the
+    alert fired on. The rails are drawn thicker than the open edges, and the
+    open gap at the foot is visibly rail-free.
+
+    This draws geometry only; it never touches or stores imagery.
+    """
+    from ahfd.features.bed_frame import BedFrame
+
+    status = status or {}
+    for zone in zones:
+        if zone.kind != "bed" or zone.top_m is None:
+            continue
+        frame = BedFrame.from_zone(zone)
+
+        def to_px(bx: float, by: float):
+            fx = frame.origin[0] + bx * frame.ex[0] + by * frame.ey[0]
+            fy = frame.origin[1] + bx * frame.ex[1] + by * frame.ey[1]
+            uv = ground.world_to_pixel(fx, fy, zone.top_m)
+            return None if uv is None else (int(round(uv[0])), int(round(uv[1])))
+
+        hl, hw = frame.half_length, frame.half_width
+        corners = [to_px(-hl, -hw), to_px(hl, -hw), to_px(hl, hw), to_px(-hl, hw)]
+        if any(c is None for c in corners):
+            continue  # part of the bed is behind the camera; skip rather than guess
+
+        color = _BED_STATUS_BGR.get(status.get(zone.name), _BED_STATUS_BGR[None])
+        pts = np.array(corners, dtype=np.int32)
+        cv2.polylines(canvas, [pts], True, color, 1, lineType=cv2.LINE_AA)
+
+        # Rail segments: each long side from the head end to the foot gap.
+        for side in ("left", "right"):
+            edge = next((e for e in frame.edges if e.side == side), None)
+            if edge is None or not edge.rail:
+                continue
+            by = hw if side == "left" else -hw
+            foot = hl if frame.foot_at_far_end else -hl
+            head = -foot
+            gap_end = foot - edge.rail_gap_foot_m if foot > 0 else foot + edge.rail_gap_foot_m
+            a, b = to_px(head, by), to_px(gap_end, by)
+            if a is not None and b is not None:
+                cv2.line(canvas, a, b, color, 3, lineType=cv2.LINE_AA)
+
+        label = zone.name + " · " + zone.risk_level
+        x, y = corners[0]
+        cv2.putText(
+            canvas, label, (x, max(12, y - 6)),
+            cv2.FONT_HERSHEY_SIMPLEX, 0.45, color, 1, cv2.LINE_AA,
+        )
+
+
 def draw_metrics(
     canvas: np.ndarray,
     pose: PoseFrame,
@@ -168,13 +241,19 @@ def render_skeleton(
     metrics: dict[int, dict] | None = None,
     joint_radius: int = 3,
     bone_thickness: int = 2,
+    ground=None,
+    zones=None,
+    bed_status: dict[str, str] | None = None,
 ) -> np.ndarray:
     """Draw a PoseFrame onto a fresh black canvas.
 
     Takes a PoseFrame, not a Frame: this function cannot draw over video even
-    if someone later wants it to, because it never receives any.
+    if someone later wants it to, because it never receives any. The optional
+    `ground`/`zones` draw the fixed bed outlines; they are geometry, not video.
     """
     canvas = np.zeros((pose.height, pose.width, 3), dtype=np.uint8)
+    if ground is not None and zones:
+        draw_bed_zones(canvas, ground, zones, bed_status)
     draw_people(
         canvas,
         pose,

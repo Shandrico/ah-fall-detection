@@ -125,6 +125,11 @@ class FallThresholds:
 
     # --- bed exit ------------------------------------------------------
     bed_exit_s: float = 3.0
+    # The legacy "seated near a bed for a while" precursor. Kept on by default
+    # so existing behaviour and tests are unchanged, but a ward running the
+    # dedicated bed-exit branch (detect/bed_exit.py) sets this false to avoid two
+    # bed-exit events for one real exit. See docs/BED_EXIT.md.
+    legacy_bed_exit: bool = True
 
     # --- quality gate --------------------------------------------------
     min_valid_kp: int = 8
@@ -485,7 +490,8 @@ class FallStateMachine:
             ts.sitting_since = now
         near_bed = any("bed" in z.lower() for z in f.zones)
         if (
-            near_bed
+            self.th.legacy_bed_exit
+            and near_bed
             and not ts.bed_exit_emitted
             and now - ts.sitting_since >= self.th.bed_exit_s
         ):

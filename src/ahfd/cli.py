@@ -25,14 +25,16 @@ def _build_detection(cfg, calib_path, meta):
     """Wire up feature extractor + state machine + sinks from a calibration.
 
     Shared by `run` and `replay` so the detection path is defined once. Returns
-    (extractor, machine, sink) or raises typer.BadParameter if the calibration
+    (extractor, machine, bed_machine, sink, calib); bed_machine is None when the
+    bed-exit branch is disabled or the calibration lists no beds. Raises
+    typer.BadParameter if the calibration
     is missing or its resolution does not match the stream. Kept out of the
     per-command bodies because getting the resolution guard wrong produces
     plausible-but-wrong metres, and it must be identical everywhere.
     """
     from ahfd.alert import ConsoleSink, JsonlSink, MultiSink
-    from ahfd.detect import FallStateMachine
-    from ahfd.features import FeatureExtractor
+    from ahfd.detect import BedExitStateMachine, FallStateMachine
+    from ahfd.features import BedFrameExtractor, FeatureExtractor
     from ahfd.geometry.calibration import load_calibration
 
     if not calib_path:
@@ -49,12 +51,29 @@ def _build_detection(cfg, calib_path, meta):
     )
     machine = FallStateMachine(cfg.detect.to_thresholds())
 
+    # The bed-exit branch runs in parallel with the fall machine and shares no
+    # state. It needs beds in the calibration to do anything; with none, it
+    # stays idle rather than erroring, so a fall-only camera still works.
+    bed_machine = None
+    if getattr(cfg, "bed_exit", None) is not None and cfg.bed_exit.enabled:
+        bed_extractor = BedFrameExtractor(
+            calib.ground,
+            calib.zones,
+            min_joint_conf=cfg.bed_exit.min_joint_conf,
+            min_core_valid=cfg.bed_exit.min_core_valid,
+            min_total_valid=cfg.bed_exit.min_total_valid,
+        )
+        if bed_extractor.has_beds():
+            bed_machine = BedExitStateMachine(
+                cfg.bed_exit.to_thresholds(), bed_extractor
+            )
+
     sinks: list = []
     if cfg.alert.console:
         sinks.append(ConsoleSink(min_severity=cfg.alert.min_severity))
     if cfg.alert.jsonl_path:
         sinks.append(JsonlSink(cfg.alert.jsonl_path))
-    return extractor, machine, MultiSink(*sinks), calib
+    return extractor, machine, bed_machine, MultiSink(*sinks), calib
 
 
 @app.command()
@@ -133,11 +152,14 @@ def run(
     # confident, meaningless alerts, which is worse than none.
     extractor = None
     machine = None
+    bed_machine = None
     sink = None
 
     calib_path = calibration or cfg.calibration
     if cfg.detect.enabled:
-        extractor, machine, sink, calib = _build_detection(cfg, calib_path, src.meta)
+        extractor, machine, bed_machine, sink, calib = _build_detection(
+            cfg, calib_path, src.meta
+        )
         typer.echo(
             "calib:   "
             + calib.camera_id
@@ -148,6 +170,10 @@ def run(
             + " deg  zones "
             + str(len(calib.zones.zones))
         )
+        if bed_machine is not None:
+            typer.echo(
+                "bed exit: on -- " + str(len(calib.zones.beds())) + " bed(s) watched"
+            )
     else:
         typer.echo("detect:  off -- pose and tracking only")
 
@@ -188,6 +214,8 @@ def run(
             if machine is not None and extractor is not None and sink is not None:
                 extractor.retain_only(tracker.live_ids)
                 machine.retain_only(tracker.live_ids)
+                if bed_machine is not None:
+                    bed_machine.retain_only(tracker.live_ids)
                 for person in pose.people:
                     features = extractor.extract(person, pose.t)
                     if features is None:
@@ -208,6 +236,11 @@ def run(
                         events_seen += 1
                         if event.type in ("FALL_CONFIRMED", "PERSON_DOWN"):
                             last_alert = event.describe()
+                    if bed_machine is not None:
+                        bed_event = bed_machine.update(person, pose.t)
+                        if bed_event is not None:
+                            sink.emit(bed_event)
+                            events_seen += 1
 
             dt = time.perf_counter() - t0
             inst = 1.0 / dt if dt > 0 else 0.0
@@ -355,7 +388,7 @@ def replay(
         raise typer.Exit(code=1)
 
     meta = SourceMeta(uri="tracks://" + str(tracks), width=size[0], height=size[1], fps=0.0)
-    extractor, machine, sink, calib = _build_detection(cfg, calib_path, meta)
+    extractor, machine, bed_machine, sink, calib = _build_detection(cfg, calib_path, meta)
     typer.echo(
         "calib:   " + calib.camera_id
         + "  " + str(size[0]) + "x" + str(size[1])
@@ -376,6 +409,8 @@ def replay(
             live_ids = {p.track_id for p in pose.people if p.track_id is not None}
             extractor.retain_only(live_ids)
             machine.retain_only(live_ids)
+            if bed_machine is not None:
+                bed_machine.retain_only(live_ids)
             for person in pose.people:
                 features = extractor.extract(person, pose.t)
                 if features is None:
@@ -384,6 +419,11 @@ def replay(
                 if event is not None:
                     sink.emit(event)
                     events_seen += 1
+                if bed_machine is not None:
+                    bed_event = bed_machine.update(person, pose.t)
+                    if bed_event is not None:
+                        sink.emit(bed_event)
+                        events_seen += 1
             if render:
                 canvas = render_skeleton(pose, min_keypoint_score=cfg.pose.min_keypoint_score)
                 cv2.imshow("ahfd -- replay (skeleton only)", canvas)
@@ -451,7 +491,7 @@ def sweep(
             if size is None:
                 continue
             meta = SourceMeta(uri=str(clip), width=size[0], height=size[1], fps=0.0)
-            extractor, machine, _sink, _calib = _build_detection(cfg, calib_path, meta)
+            extractor, machine, _bed, _sink, _calib = _build_detection(cfg, calib_path, meta)
 
             events = _replay_events(clip, extractor, machine, read_tracks)
             pairs.append((truth, events))

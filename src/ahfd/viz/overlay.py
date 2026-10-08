@@ -39,9 +39,12 @@ def render_overlay(
     metrics: dict[int, dict] | None = None,
     alert: str | None = None,
     fps: float | None = None,
+    ground=None,
+    zones=None,
+    bed_status: dict[str, str] | None = None,
 ) -> np.ndarray:
     """Return a copy of the frame's BGR with skeletons and status drawn on it."""
-    from ahfd.viz.skeleton_render import draw_metrics, draw_people
+    from ahfd.viz.skeleton_render import draw_bed_zones, draw_metrics, draw_people
 
     if frame.bgr is None:
         # No colour (e.g. a depth-only source): fall back to the black canvas so
@@ -49,10 +52,13 @@ def render_overlay(
         from ahfd.viz.skeleton_render import render_skeleton
 
         return render_skeleton(
-            pose, min_keypoint_score, states=states, metrics=metrics, fps=fps
+            pose, min_keypoint_score, states=states, metrics=metrics, fps=fps,
+            ground=ground, zones=zones, bed_status=bed_status,
         )
 
     canvas = frame.bgr.copy()
+    if ground is not None and zones:
+        draw_bed_zones(canvas, ground, zones, bed_status)
     draw_people(
         canvas,
         pose,

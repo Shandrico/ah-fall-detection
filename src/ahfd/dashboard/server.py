@@ -126,7 +126,7 @@ def make_handler(state: DashboardState, controller=None):
             same_origin = self._same_origin()
             # The switch and replay handlers parse a body; every other route
             # has to discard one before replying. See _drain.
-            if path not in ("/api/switch", "/api/replay") or not same_origin:
+            if path not in ("/api/switch", "/api/replay", "/api/bed_zone") or not same_origin:
                 self._drain()
 
             if not same_origin:
@@ -141,6 +141,8 @@ def make_handler(state: DashboardState, controller=None):
                 self._switch()
             elif path == "/api/replay":
                 self._replay()
+            elif path == "/api/bed_zone":
+                self._bed_zone()
             elif path == "/api/rescan":
                 if controller is None:
                     self._json(503, {"ok": False, "error": "controls unavailable"})
@@ -165,6 +167,24 @@ def make_handler(state: DashboardState, controller=None):
                 source=_clean(body.get("source")),
                 backend=_clean(body.get("backend")),
                 show_rgb=rgb if isinstance(rgb, bool) else None,
+            )
+            self._json(code, result)
+
+        def _bed_zone(self) -> None:
+            """Add a bed zone drawn on the RGB feed (same-origin, body-carrying)."""
+            if controller is None:
+                self._drain()
+                self._json(503, {"ok": False, "error": "controls unavailable"})
+                return
+            body = self._body()
+            if body is None:
+                self._json(400, {"ok": False, "error": "expected a small JSON object"})
+                return
+            code, result = controller.add_bed_zone(
+                points=body.get("points"),
+                name=body.get("name"),
+                top_m=body.get("top_m", 0.55),
+                risk_level=body.get("risk_level", "unknown"),
             )
             self._json(code, result)
 
