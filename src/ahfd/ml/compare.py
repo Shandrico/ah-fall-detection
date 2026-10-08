@@ -275,7 +275,7 @@ class CompareResult:
 
 def compare(
     rows, labels, groups, *, seed: int = 0, holdout: str | None = None,
-    rgb_only: bool = False,
+    rgb_only: bool = False, flat_only: bool = False,
 ) -> CompareResult:
     """Evaluate every model in the zoo on held-out groups, ranked.
 
@@ -321,6 +321,11 @@ def compare(
 
     scores: list[ModelScore] = []
     for name, factory in _model_zoo(seed).items():
+        # The cascade_* and rule_thresholds models hardcode the four posture
+        # names, so they are meaningless on a collapsed label set (e.g. bed-state).
+        # flat_only keeps just the class-agnostic flat models.
+        if flat_only and not name.startswith("flat_"):
+            continue
         if holdout is None:
             # Pooled out-of-fold predictions across every leave-one-group-out fold.
             logo = LeaveOneGroupOut()
