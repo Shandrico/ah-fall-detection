@@ -1,4 +1,4 @@
-# Derived-only D435i research collection. This is shadow instrumentation, not
+# Derived-only D435i/D435f research collection. This is shadow instrumentation, not
 # a clinical alerting configuration. Recreate/verify the calibration for the
 # exact onsite mount and bed geometry before every collection block.
 
@@ -45,7 +45,7 @@ dashboard:
   allow_rgb: false
   allow_custom_source: false
   sources:
-    - label: "Approved D435i"
+    - label: "Approved RealSense"
       uri: "rs://?depth=1&emitter=1&max_laser=1&max_range=6"
       calibration: null
   backends: ["rtmo"]

@@ -99,7 +99,7 @@ def make_handler(state: DashboardState, controller=None):
 
         def do_GET(self) -> None:  # noqa: N802
             path = self.path.split("?", 1)[0]
-            if path in ("/", "/index.html"):
+            if path in ("/", "/index.html", "/dashboard"):
                 self._send(200, "text/html; charset=utf-8", DASHBOARD_HTML.encode())
             elif path == "/api/state":
                 body = json.dumps(state.snapshot()).encode()
@@ -111,6 +111,8 @@ def make_handler(state: DashboardState, controller=None):
                     self._json(200, controller.options())
             elif path == "/stream.mjpg":
                 self._stream()
+            elif path == "/depth.mjpg":
+                self._stream(depth=True)
             else:
                 self._send(404, "text/plain", b"not found")
 
@@ -209,19 +211,22 @@ def make_handler(state: DashboardState, controller=None):
                 {"ok": ok, "bed_id": bed_id, "mode": mode, "error": error},
             )
 
-        def _stream(self) -> None:
+        def _stream(self, *, depth: bool = False) -> None:
             """MJPEG multipart stream of the latest annotated frame."""
             self.send_response(200)
             self.send_header(
                 "Content-Type",
                 "multipart/x-mixed-replace; boundary=" + _BOUNDARY,
             )
+            self.send_header("Cache-Control", "no-store")
             self.end_headers()
 
             last_seq = -1
             try:
                 while True:
-                    jpeg, seq = state.latest_frame()
+                    jpeg, seq = (
+                        state.latest_depth_frame() if depth else state.latest_frame()
+                    )
                     if jpeg is None or seq == last_seq:
                         # Nothing new. Brief pause; do not busy-spin. A stale
                         # connection is still detected on the next real write.

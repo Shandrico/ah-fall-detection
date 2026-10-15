@@ -26,6 +26,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Iterable, Mapping, Sequence
 
+from ahfd.collect.protocol import EXTRA_CONTEXT_KEYS
 from ahfd.ml.temporal import (
     TEMPORAL_FEATURE_NAMES,
     TEMPORAL_FEATURE_ORDER_SHA256,
@@ -64,6 +65,7 @@ CONTROLLED_CONTEXTS: frozenset[str] = frozenset(
         "BED_ARTICULATION",
         "TRACK_ERROR",
         "OBSERVER_UNSURE",
+        *EXTRA_CONTEXT_KEYS.values(),
     }
 )
 _CENSORING_CONTEXTS = frozenset(
@@ -458,7 +460,7 @@ def _validate_manifest(session_dir: Path) -> tuple[dict, str, str, float]:
                 "temporal_schema",
                 "counters",
             }
-        ),
+        ) | (frozenset({"collection_protocol", "protocol_progress"}) if "collection_protocol" in manifest else frozenset()),
         "manifest",
     )
     if (
@@ -501,6 +503,17 @@ def _validate_manifest(session_dir: Path) -> tuple[dict, str, str, float]:
     duration = _finite_nonnegative(manifest.get("duration_s"), "manifest duration_s")
     if duration <= 0:
         raise ValueError("manifest duration_s must be positive")
+    if "collection_protocol" in manifest:
+        from ahfd.collect.protocol import validate_assignment, validate_progress
+
+        protocol = validate_assignment(
+            manifest["collection_protocol"], site_id=site_id, participant_id=participant_id,
+        )
+        progress = validate_progress(
+            manifest["protocol_progress"], protocol["target_usable_s"], complete=True,
+        )
+        if progress["usable_s"] > duration + _EPS:
+            raise ValueError("usable duration exceeds session duration")
 
     privacy = manifest.get("privacy")
     expected_privacy = {
@@ -542,9 +555,13 @@ def _validate_manifest(session_dir: Path) -> tuple[dict, str, str, float]:
     )
     if not isinstance(source, Mapping):
         raise ValueError("manifest source must be an object")
+    if source.get("kind") == "intel_realsense_d435f":
+        source_fields = source_fields | {"orientation_method"}
+        if source.get("orientation_method") != "depth_floor_roi":
+            raise ValueError("D435f manifest requires depth_floor_roi orientation provenance")
     _exact_fields(source, source_fields, "manifest source")
-    if source.get("kind") != "intel_realsense_d435i":
-        raise ValueError("manifest source kind must be intel_realsense_d435i")
+    if source.get("kind") not in {"intel_realsense_d435i", "intel_realsense_d435f"}:
+        raise ValueError("manifest source kind must be intel_realsense_d435i or intel_realsense_d435f")
     if source.get("depth_enabled") is not True:
         raise ValueError("manifest source must have depth_enabled true")
     if source.get("pose_backend") != "rtmo":
@@ -1103,12 +1120,13 @@ def _future_interval_is_observed(
     return True
 
 
-def _metadata(participant: str, session: str, t: float) -> SampleMetadata:
+def _metadata(participant: str, session: str, t: float, block_id: str | None = None) -> SampleMetadata:
     return SampleMetadata(
         subject_id=participant,
         session_id=session,
         clip_id=session,
         t=round(t, 6),
+        block_id=block_id,
     )
 
 
@@ -1127,6 +1145,10 @@ def load_bed_session(
         raise ValueError("max_hold_s must be finite and positive")
     path = Path(session_dir)
     manifest, participant, session, duration = _validate_manifest(path)
+    protocol = manifest.get("collection_protocol")
+    block_id = (
+        protocol["plan"]["plan_id"] + "::" + protocol["block"] if protocol else None
+    )
     # Telemetry carries monitoring gaps, association resets and the immediate
     # copy of each shadow event.  Labels/derived rows embed the state needed by
     # this loader, but a corrupted telemetry stream makes the completed session
@@ -1203,7 +1225,7 @@ def load_bed_session(
             # object across phase/horizon tasks instead of copying 929 fields
             # up to four times for one timestamp.
             row = source.values
-            meta = _metadata(participant, session, t)
+            meta = _metadata(participant, session, t, block_id)
             # OUT_OF_BED is a real observable phase for the phase classifier.
             # A contradictory later marker does not reopen a post-exit episode;
             # only an explicit RECLINED marker does that.

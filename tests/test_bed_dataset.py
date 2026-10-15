@@ -277,6 +277,40 @@ def row_at(dataset, t):
     raise AssertionError("no row at " + str(t))
 
 
+def test_planned_loader_retains_block_group_and_event_markers(tmp_path):
+    from ahfd.collect.protocol import EXTRA_CONTEXT_KEYS, assignment, new_plan
+
+    directory = make_session(tmp_path, duration=250)
+    plan = new_plan("site_0123abcd", "sub_0123456789abcdef",
+                    {"bed_a": "medium", "bed_b": "high"}, 40)
+    mutate_manifest(directory, ["collection_protocol"], assignment(plan, "A", "bed_a"))
+    mutate_manifest(directory, ["protocol_progress"], {"usable_s": 240, "target_bed_observed": True})
+    labels = [phase(0.01, "RECLINED")]
+    labels.extend(context(index + 1, value) for index, value in enumerate(EXTRA_CONTEXT_KEYS.values()))
+    replace_stream(directory, "labels", labels)
+    dataset = load_bed_session(directory)
+    assert dataset.phase.metadata
+    assert {row.block_id for row in dataset.phase.metadata} == {plan["plan_id"] + "::A"}
+    mutate_manifest(directory, ["collection_protocol", "partition"], "validation")
+    with pytest.raises(ValueError, match="frozen plan"):
+        load_bed_session(directory)
+
+
+def test_planned_loader_rejects_incomplete_duration(tmp_path):
+    from ahfd.collect.protocol import assignment, new_plan
+
+    directory = make_session(tmp_path)
+    plan = new_plan("site_0123abcd", "sub_0123456789abcdef",
+                    {"bed_a": "medium", "bed_b": "high"}, 40)
+    mutate_manifest(directory, ["collection_protocol"], assignment(plan, "A", "bed_a"))
+    mutate_manifest(directory, ["protocol_progress"], {"usable_s": 20, "target_bed_observed": True})
+    with pytest.raises(ValueError, match="insufficient"):
+        load_bed_session(directory)
+    mutate_manifest(directory, ["protocol_progress", "usable_s"], 240)
+    with pytest.raises(ValueError, match="exceeds session duration"):
+        load_bed_session(directory)
+
+
 def label_at(dataset, t):
     for label, metadata in zip(dataset.labels, dataset.metadata):
         if metadata.t == pytest.approx(t):

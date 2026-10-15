@@ -1,5 +1,13 @@
 # Onsite hospital collection SOP
 
+For the next 40/60-minute single-volunteer study, follow the additional
+[frozen A-E training scheme](TRAINING_SCHEME.md). `collection-plan` creates the
+external split plan; `collect --plan ... --block A --target-bed bed_a` embeds it
+in each session and requires the target bed plus 240/360 labelled available
+seconds before completion. Both beds of a block stay in the same development
+fold; E is excluded from comparator training. This does not relax any approval,
+privacy, calibration, or single-person scope checks below.
+
 ## Scope and non-negotiable boundary
 
 This procedure is for a **research, shadow-mode study** of early bed-exit
@@ -164,10 +172,11 @@ For every physical mount:
    no unapproved hub or passive extension.
 2. Verify the exact camera code/serial and capture resolution match the approved
    calibration. `ahfd calibrate` stores only a SHA-256 of the factory serial;
-   collection refuses another unit, multiple RealSense devices, a non-D435i,
+   collection refuses another unit, multiple RealSense devices, unsupported models,
    or a USB-2 link. A different camera or resolution needs a new calibration.
-3. Measure lens height. Measure pitch/roll using the D435i IMU or the approved
-   floor-plane procedure. Record the result and calibration SHA-256.
+3. Measure lens height. Use D435i IMU pitch/roll, or measured D435f pitch/roll
+   verified against a selected visible floor patch (see below). Record the
+   result and calibration SHA-256.
 4. Author clean, uniquely coded bed polygons for the actual view. Remove test,
    duplicate, dated, cancelled, or overlapping zones. Measure each current bed
    surface height. Any bed articulation or height change aborts the session;
@@ -178,13 +187,13 @@ For every physical mount:
 6. Check depth fill/noise at the head, shoulders, hips and edge of every covered
    bed. Check for projector interference if more than one depth camera operates.
    The onsite source enables the emitter and requests maximum laser power; the
-   collector must set both controls and read them back from the active D435i.
+   collector must set both controls and read them back from the active camera.
    Missing controls or a mismatched readback is a preflight failure, not a
    warning to override.
 7. With exactly one consenting staff member standing naturally, run
    `ahfd measure-ankle-baseline E:\AHFD_CONFIG\cam_01234567.yaml`. This writes
    one robust two-ankle scalar and resets the verification latch to false. Then
-   verify walking/bed association. A calibration or IMU-orientation warning
+   verify walking/bed association. A calibration or orientation warning
    blocks collection; it is not an informational banner to ignore.
 8. Run a ten-minute empty/staff dry run. Confirm no raw media or frame cache was
    created, all JSONL files grow, timestamps are monotonic, and the health state
@@ -200,6 +209,44 @@ For every physical mount:
 Do not use the existing development calibrations without repeating this
 preflight at the hospital. A note or filename is not evidence that a mount is
 still calibrated.
+
+### D435f setup (camera without an IMU)
+
+The D435f uses RGB pose and aligned depth with the same emitter/USB-3 checks.
+For a local setup view run `ahfd dashboard --config configs/dashboard_d435f.yaml`.
+This local setup config shows live RGB and aligned depth; detection stays disabled
+until a fresh mount calibration is supplied. Use it only for an approved live
+setup view. Neither feed is recorded. This setup view enables maximum projector
+power, a 10 m far cutoff and three spatial smoothing passes. The depth colour
+scale follows the capture range (0.3--10 m here), rather than clipping again at
+6 m. A 10 m cutoff is not a claim of validated accuracy at that distance;
+black means missing/out-of-range depth, not clear space. The depth preview uses
+non-hole-filled data, capped at 10 Hz, and turns off with RGB. The separate
+`onsite_collection.yaml` retains its derived-only, skeleton-only policy.
+The dashboard is not the research recorder.
+To use the completed mount calibration in this view, add
+`--calibration E:\AHFD_CONFIG\cam_<code>.yaml --detect` to that command.
+
+Create the external calibration using measured `--height`, `--pitch` and
+`--roll`, and add `--floor-roi "x0,y0,x1,y1"`. The rectangle's coordinates are
+fractions of the full colour image width/height, ordered left, top, right,
+bottom. Select actual floor that stays visible; never select a bed or wall.
+There is no assumed default angle or floor rectangle. Calibrate on the final
+mount, then draw both beds and run `measure-ankle-baseline` as above.
+
+The floor patch is sampled from non-hole-filled aligned depth. Collection
+requires at least ten matching samples spanning two seconds, with pitch/roll
+within 2 degrees and floor distance within 0.10 m of the measured mount. Loss of
+the patch or drift stops collection after startup; warmup is unavailable time.
+If the patch is covered, correct the view and restart with a new session.
+Floor checks cannot prove that beds have not moved; the physical inspection and
+bed-articulation stop rule still apply.
+
+D435f manifests identify `intel_realsense_d435f` and
+`orientation_method: depth_floor_roi`. Telemetry uses separate `floor_*` fields;
+the IMU fields remain missing. The dataset loader accepts this provenance while
+retaining existing D435i data compatibility. All external approval, target
+binding, derived-only storage and clean-code requirements apply to both models.
 
 ## Start-of-session checklist
 
@@ -275,7 +322,7 @@ ahfd collect `
   --approval E:\AHFD_CONFIG\cam_01234567.approval.json
 ```
 
-The command refuses a non-D435i/USB-3 or ambiguous device, every `--source`
+The command refuses an unsupported model, non-USB-3 or ambiguous device, every `--source`
 override, and any approved config URI without explicit `depth=1`, `emitter=1`
 and `max_laser=1`. It also refuses unverified/dirty calibration geometry,
 missing/stale external approval, an
@@ -284,7 +331,8 @@ dirty code revision, RGB-enabled config, unmanaged alert sinks, an armed raw
 capture switch, enabled early-warning paging, or a missing mount calibration.
 It also verifies emitter and maximum-laser readback before opening the session
 and records the numeric laser readback in provenance. It checks live intrinsics,
-IMU pitch/roll, standing ankle drift, depth coverage, disk space and frame age.
+IMU or selected-floor orientation, standing ankle drift, depth coverage, disk
+space and frame age.
 It shows a skeleton-only health banner.
 Observer keys are `1` reclined, `2` torso rising, `3` upright in bed, `4`
 shifting, `5` edge sitting, `6` attempting stand, `7` out of bed and `0`
@@ -302,7 +350,7 @@ operator requests a stop, consent is withdrawn, or a safety concern arises;
 that preserves the flushed prefix with status `aborted`, never `complete`.
 For a participant run, normal completion also requires at least one persisted
 `AVAILABLE` 10 Hz row after a non-`UNKNOWN` phase marker for that same track and
-association epoch, plus a valid IMU orientation preflight. Otherwise `q` or an
+association epoch, plus a valid IMU or selected-floor preflight. Otherwise `q` or an
 automatic session limit preserves the prefix as `PROTOCOL_INCOMPLETE` rather
 than claiming a usable training session. `Ctrl+C` is also an abort. Keep the private activity
 schedule beside the hospital study log, not in free-text software labels.

@@ -1,0 +1,39 @@
+# Live D435f setup view. Supply a freshly measured mount calibration to enable
+# detection; the historical D435i/D435f development files are not valid here.
+source: "rs://?depth=1&emitter=1&max_laser=1&max_range=10&spatial=3"
+calibration: null
+pose:
+  backend: rtmo
+  model_size: s
+  runtime: openvino
+  device: gpu
+  min_score: 0.5
+  min_keypoint_score: 0.45
+smoothing:
+  enabled: true
+detect:
+  enabled: false
+bed_activity:
+  enabled: true
+  emit_early_warning: false
+  emit_exit_event: true
+alert:
+  console: false
+  jsonl_path: null
+view:
+  mode: skeleton
+  show_ids: true
+  show_fps: true
+dashboard:
+  host: "127.0.0.1"
+  port: 8000
+  show_rgb: true
+  allow_rgb: false
+  allow_custom_source: false
+  sources:
+    - label: "RealSense D435f — aligned depth / 10 m / smooth 3"
+      uri: "rs://?depth=1&emitter=1&max_laser=1&max_range=10&spatial=3"
+      calibration: null
+  backends: [rtmo]
+privacy:
+  allow_raw_capture: false

@@ -47,6 +47,9 @@ class Calibration:
     # Median two-ankle sparse-depth height measured during the verified staff
     # preflight. Runtime drift is evaluated around this mount-specific value.
     ankle_height_baseline_m: float | None = None
+    # D435f has no IMU. A human-selected, permanently visible floor rectangle
+    # provides independent live mount verification. Normalised image xyxy.
+    floor_roi: tuple[float, float, float, float] | None = None
 
     @property
     def height_m(self) -> float:
@@ -158,6 +161,12 @@ def load_calibration(path: str | Path) -> Calibration:
             roll_deg=roll,
         )
 
+    floor_roi = data.get("floor_roi")
+    if floor_roi is not None:
+        from ahfd.geometry.orientation import validate_floor_roi
+
+        floor_roi = validate_floor_roi(floor_roi)
+
     return Calibration(
         camera_id=str(data.get("camera_id", path.stem)),
         ground=ground,
@@ -166,6 +175,7 @@ def load_calibration(path: str | Path) -> Calibration:
         verified_for_onsite=verified,
         device_serial_sha256=serial_hash,
         ankle_height_baseline_m=ankle_baseline,
+        floor_roi=floor_roi,
     )
 
 

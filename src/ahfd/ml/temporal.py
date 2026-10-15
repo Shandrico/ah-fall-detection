@@ -462,6 +462,7 @@ class SampleMetadata:
     session_id: str
     clip_id: str = ""
     t: float | None = None
+    block_id: str | None = None
 
     def __post_init__(self) -> None:
         if not self.subject_id.strip():
@@ -469,13 +470,17 @@ class SampleMetadata:
         if not self.session_id.strip():
             raise ValueError("session_id must be explicit and nonempty")
 
-    def group(self, by: Literal["subject", "session"]) -> str:
+    def group(self, by: Literal["subject", "session", "block"]) -> str:
         if by == "subject":
             return self.subject_id
         if by == "session":
             # Session names are often reused (e.g. "01") across subjects.
             return self.subject_id + "::" + self.session_id
-        raise ValueError("group_by must be 'subject' or 'session'")
+        if by == "block":
+            if not self.block_id:
+                raise ValueError("block grouping requires explicit frozen-plan block metadata")
+            return self.subject_id + "::" + self.block_id
+        raise ValueError("group_by must be 'subject', 'session' or 'block'")
 
 
 @dataclass(frozen=True)
@@ -722,14 +727,14 @@ def compare_grouped(
     labels: Sequence[str],
     metadata: Sequence[SampleMetadata],
     *,
-    group_by: Literal["subject", "session"] = "subject",
+    group_by: Literal["subject", "session", "block"] = "subject",
     model_kinds: Sequence[Literal["logistic", "tree"]] = ("logistic", "tree"),
     feature_names: Sequence[str] = MODEL_FEATURE_NAMES,
     seed: int = 0,
     max_depth: int = 4,
     min_samples_leaf: int = 2,
 ) -> ComparatorResult:
-    """Leave one explicit subject/session out and compare small models.
+    """Leave one explicit subject/session/block out and compare small models.
 
     Every fold creates a fresh preprocessing pipeline, so median imputation and
     scaling are fitted on training groups only.  A separate final model is fit
@@ -749,8 +754,8 @@ def compare_grouped(
 
     if not rows or len(rows) != len(labels) or len(rows) != len(metadata):
         raise ValueError("rows, labels, and metadata must be nonempty and equal-length")
-    if group_by not in ("subject", "session"):
-        raise ValueError("group_by must be 'subject' or 'session'")
+    if group_by not in ("subject", "session", "block"):
+        raise ValueError("group_by must be 'subject', 'session' or 'block'")
     kinds = tuple(model_kinds)
     if not kinds or any(kind not in ("logistic", "tree") for kind in kinds):
         raise ValueError("model_kinds must contain only 'logistic' and/or 'tree'")

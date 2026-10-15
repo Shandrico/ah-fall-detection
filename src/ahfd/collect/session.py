@@ -217,6 +217,11 @@ _ALLOWED_RECORD_KEYS = frozenset(
         "imu_orientation_check",
         "imu_pitch_delta_deg",
         "imu_roll_delta_deg",
+        "floor_orientation_check",
+        "floor_pitch_delta_deg",
+        "floor_roll_delta_deg",
+        "floor_height_delta_m",
+        "floor_inlier_fraction",
         "condition",
         "check",
         "frame_age_s",
@@ -477,6 +482,7 @@ class SessionRecorder:
         expected_calibration_sha256: str | None = None,
         temporal_schema_version: str | None = None,
         temporal_feature_names: Sequence[str] | None = None,
+        collection_protocol: Mapping[str, Any] | None = None,
         clock: Callable[[], float] = time.monotonic,
         utc_now: Callable[[], str] = _utc_now,
     ) -> None:
@@ -498,6 +504,14 @@ class SessionRecorder:
         temporal_schema = _temporal_schema_metadata(
             temporal_schema_version, temporal_feature_names
         )
+        protocol = None
+        if collection_protocol is not None:
+            from ahfd.collect.protocol import validate_assignment
+
+            protocol = validate_assignment(
+                dict(collection_protocol), site_id=self.site_id,
+                participant_id=self.participant_id,
+            )
 
         config_path = Path(config_path)
         calibration_path = Path(calibration_path)
@@ -593,6 +607,11 @@ class SessionRecorder:
         }
         if temporal_schema is not None:
             self._manifest["temporal_schema"] = temporal_schema
+        if protocol is not None:
+            self._manifest["collection_protocol"] = protocol
+            self._manifest["protocol_progress"] = {
+                "usable_s": 0.0, "target_bed_observed": False,
+            }
         self._write_manifest()
 
     @property
@@ -712,12 +731,34 @@ class SessionRecorder:
     ) -> None:
         self._write_record("labels", record, t_rel_s=t_rel_s)
 
+    def update_protocol_progress(self, progress: dict) -> None:
+        """Keep bounded progress for final complete/aborted provenance."""
+        from ahfd.collect.protocol import validate_progress
+
+        with self._lock:
+            if self._status != "incomplete" or "collection_protocol" not in self._manifest:
+                raise RuntimeError("progress requires an open planned session")
+            self._manifest["protocol_progress"] = validate_progress(
+                progress, self._manifest["collection_protocol"]["target_usable_s"],
+            )
+
     def _finish(self, status: str, *, abort_reason: str | None = None) -> Path:
         with self._lock:
             if self._status != "incomplete":
                 raise RuntimeError("session is already " + self._status)
             if status not in ("complete", "aborted"):
                 raise ValueError("final status must be complete or aborted")
+            duration = max(0.0, float(self._clock()) - self._started_tick)
+            if status == "complete" and "collection_protocol" in self._manifest:
+                from ahfd.collect.protocol import validate_progress
+
+                validate_progress(
+                    self._manifest["protocol_progress"],
+                    self._manifest["collection_protocol"]["target_usable_s"],
+                    complete=True,
+                )
+                if self._manifest["protocol_progress"]["usable_s"] > duration + 1e-6:
+                    raise ValueError("usable duration exceeds session duration")
             if status == "aborted":
                 if not abort_reason or not _ABORT_CODE.fullmatch(abort_reason):
                     raise ValueError(
@@ -729,7 +770,6 @@ class SessionRecorder:
                     os.fsync(handle.fileno())
                     handle.close()
 
-            duration = max(0.0, float(self._clock()) - self._started_tick)
             for stream, filename in _STREAM_FILES.items():
                 path = self.path / filename
                 self._manifest["streams"][stream].update(
