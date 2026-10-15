@@ -145,3 +145,145 @@ def record_bag(
         for _ in range(5):
             cv2.waitKey(1)
     return n_framesets
+
+
+def _cam_panes(cv2, np, frames, label):
+    """RGB + colourised-depth panes for one camera, captioned with its label."""
+    color = frames.get_color_frame()
+    depth = frames.get_depth_frame()
+    out = []
+    if color:
+        cimg = np.asanyarray(color.get_data())
+        out.append(_label(cv2, cv2.resize(cimg, (560, 315)), label + "  RGB"))
+    if depth:
+        dimg = np.asanyarray(depth.get_data())
+        norm = np.clip(dimg.astype(np.float32) / 6000.0, 0.0, 1.0)
+        dcol = cv2.applyColorMap((norm * 255).astype(np.uint8), cv2.COLORMAP_TURBO)
+        dcol[dimg == 0] = 0
+        out.append(_label(cv2, cv2.resize(dcol, (560, 315)), label + "  DEPTH"))
+    return np.hstack(out) if out else None
+
+
+def record_bag_dual(
+    cams,
+    *,
+    config_flag: bool = False,
+    cli_flag: bool = False,
+    seconds: float = 0.0,
+    color_size=(1920, 1080),
+    depth_size=(848, 480),
+    fps: int = 30,
+    preview: bool = True,
+    emitter_on: bool = True,
+) -> dict:
+    """Record TWO (or more) RealSense cameras at once, each to its own .db3.
+
+    ``cams`` is a list of ``(out_path, serial, label)``. Each camera runs on its
+    own pipeline, so the streams are *software*-synced only: both start as close
+    together as the opens allow and every frame carries its own timestamp, which
+    is enough to align the two recordings in post. It is NOT hardware frame-sync
+    (that needs the inter-camera sync cable).
+
+    Resilience is the point of recording them together here: each camera is
+    polled independently, so one dropping on a USB/bandwidth stall does not stop
+    the other -- its clip up to the drop is still saved. Returns {label: frames}.
+    """
+    require_raw_capture(config_flag=config_flag, cli_flag=cli_flag)
+
+    try:
+        import pyrealsense2 as rs
+    except ImportError as exc:  # pragma: no cover - optional dep
+        raise RuntimeError(
+            "pyrealsense2 is not installed. Install the realsense extra "
+            "(uv pip install -e '.[realsense]') to record."
+        ) from exc
+
+    import cv2
+    import numpy as np
+
+    from ahfd.capture.realsense import _device_has_imu
+
+    pipes = []
+    for out_path, serial, label in cams:
+        out_path = Path(out_path)
+        out_path.parent.mkdir(parents=True, exist_ok=True)
+        cfg = rs.config()
+        cfg.enable_device(serial)
+        cfg.enable_stream(rs.stream.color, color_size[0], color_size[1], rs.format.bgr8, fps)
+        cfg.enable_stream(rs.stream.depth, depth_size[0], depth_size[1], rs.format.z16, fps)
+        if _device_has_imu(rs, serial):
+            cfg.enable_stream(rs.stream.accel)
+            cfg.enable_stream(rs.stream.gyro)
+        cfg.enable_record_to_file(str(out_path))
+        pipe = rs.pipeline()
+        profile = pipe.start(cfg)
+        try:
+            sensor = profile.get_device().first_depth_sensor()
+            if emitter_on and sensor.supports(rs.option.emitter_enabled):
+                sensor.set_option(rs.option.emitter_enabled, 1.0)
+            if sensor.supports(rs.option.laser_power):
+                rng = sensor.get_option_range(rs.option.laser_power)
+                sensor.set_option(rs.option.laser_power, rng.max)
+        except Exception:  # pragma: no cover - best-effort hardware option
+            pass
+        pipes.append({"path": out_path, "serial": serial, "label": label,
+                      "pipe": pipe, "alive": True, "n": 0})
+        print("  recording %s (%s) -> %s" % (label, serial[-4:], out_path))
+
+    win = "ahfd RECORDING -- dual .db3  (q to stop)"
+    if preview:
+        cv2.namedWindow(win, cv2.WINDOW_NORMAL)
+    start = time.monotonic()
+    try:
+        while any(p["alive"] for p in pipes):
+            elapsed = time.monotonic() - start
+            rows = []
+            for p in pipes:
+                if not p["alive"]:
+                    continue
+                try:
+                    ok, frames = p["pipe"].try_wait_for_frames(200)
+                except RuntimeError as exc:  # USB drop -- keep the OTHER camera going
+                    print("\n%s (%s) disconnected after %d framesets: %s"
+                          % (p["label"], p["serial"][-4:], p["n"], exc))
+                    print("  that clip is saved; the other camera keeps recording.")
+                    try:
+                        p["pipe"].stop()
+                    except Exception:
+                        pass
+                    p["alive"] = False
+                    continue
+                if not ok:
+                    continue
+                p["n"] += 1
+                if preview:
+                    pane = _cam_panes(cv2, np, frames, p["label"])
+                    if pane is not None:
+                        rows.append(pane)
+            if preview:
+                if rows:
+                    w = max(r.shape[1] for r in rows)
+                    rows = [r if r.shape[1] == w else cv2.copyMakeBorder(
+                        r, 0, 0, 0, w - r.shape[1], cv2.BORDER_CONSTANT) for r in rows]
+                    disp = np.vstack(rows)
+                    cv2.rectangle(disp, (0, 0), (disp.shape[1], 30), (0, 0, 160), -1)
+                    cv2.putText(disp, "REC  %.0fs   %d cameras   (q to stop)"
+                                % (elapsed, sum(p["alive"] for p in pipes)),
+                                (12, 21), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2, cv2.LINE_AA)
+                    cv2.imshow(win, disp)
+                if (cv2.waitKey(1) & 0xFF) in (ord("q"), 27):
+                    break
+            if seconds and elapsed >= seconds:
+                break
+    finally:
+        for p in pipes:
+            try:
+                if p["alive"]:
+                    p["pipe"].stop()
+            except Exception:
+                pass
+        if preview:
+            cv2.destroyAllWindows()
+            for _ in range(5):
+                cv2.waitKey(1)
+    return {p["label"]: p["n"] for p in pipes}

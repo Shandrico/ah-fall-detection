@@ -727,6 +727,14 @@ class BagSource(_RealSenseBase):
         )
         self._path = path
         self._config.enable_device_from_file(path, repeat_playback=False)
+        # A recorded IMU (D435i) adds Gyro/Accel streams to the file. If playback
+        # delivers all of them, wait_for_frames waits for a coherent motion+video
+        # frameset -- which never forms, since the IMU runs at ~200 Hz -- and
+        # returns ZERO complete framesets. Restrict playback to the video streams
+        # we actually read so the syncer works on IMU-bearing bags too.
+        self._config.enable_stream(self._rs.stream.color)
+        if with_depth:
+            self._config.enable_stream(self._rs.stream.depth)
 
     @property
     def meta(self) -> SourceMeta:

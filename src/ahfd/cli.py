@@ -4138,6 +4138,80 @@ def record_depth(
 
 
 @app.command()
+def record_dual(
+    out_a: Path = typer.Argument(..., help="Output .db3 for camera A."),
+    out_b: Path = typer.Argument(..., help="Output .db3 for camera B."),
+    serial_a: str = typer.Option(None, help="Serial of camera A. Omit to auto-assign the two connected cameras."),
+    serial_b: str = typer.Option(None, help="Serial of camera B."),
+    config: Path = typer.Option(None, help="YAML whose privacy.allow_raw_capture is true."),
+    seconds: float = typer.Option(0.0, help="Auto-stop after N seconds. 0 = until you press q."),
+    rgb: str = typer.Option("1080", help="RGB resolution for BOTH cameras: 1080 or 720."),
+    fps: int = typer.Option(30, help="Frame rate for both; drop to 15 if 1080p+1080p stalls the USB."),
+    consent: bool = typer.Option(False, "--i-understand-raw-capture", help="Required. Confirms consented raw capture."),
+) -> None:
+    """Record TWO cameras at once, each to its own .db3 (software-synced).
+
+    Each camera runs on its own pipeline and is polled independently, so one
+    dropping on a USB stall does not stop the other -- its clip is still saved.
+    The streams are *software*-synced (near-simultaneous start + per-frame
+    timestamps, enough to align in post), NOT hardware frame-sync. Put the two
+    cameras on SEPARATE USB controllers (e.g. one USB-A, one USB-C/Thunderbolt),
+    or 1080p on both will overrun a shared bus.
+    """
+    from ahfd.debug.bag_writer import record_bag_dual
+    from ahfd.privacy import require_raw_capture
+
+    cfg = load_config(config)
+    require_raw_capture(config_flag=cfg.privacy.allow_raw_capture, cli_flag=consent)
+
+    for out in (out_a, out_b):
+        if out.suffix.lower() not in (".bag", ".db3"):
+            raise typer.BadParameter("outputs must be .bag or .db3; got " + repr(out.suffix or out.name))
+    color_size = {"720": (1280, 720), "1080": (1920, 1080)}.get(str(rgb))
+    if color_size is None:
+        raise typer.BadParameter("--rgb must be 720 or 1080; got " + repr(rgb))
+
+    try:
+        import pyrealsense2 as rs
+    except ImportError as exc:  # pragma: no cover - optional dep
+        raise typer.BadParameter("pyrealsense2 is not installed (realsense extra).") from exc
+    devices = [(d.get_info(rs.camera_info.serial_number),
+                d.get_info(rs.camera_info.name).replace("Intel RealSense ", ""))
+               for d in rs.context().query_devices()]
+    if len(devices) < 2:
+        raise typer.BadParameter(
+            "need two RealSense cameras connected; found %d: %s"
+            % (len(devices), ", ".join("%s %s" % (n, s[-4:]) for s, n in devices) or "none"))
+    by_serial = {s: n for s, n in devices}
+
+    def resolve(serial, idx):
+        if serial is None:
+            return devices[idx]
+        if serial not in by_serial:
+            raise typer.BadParameter(
+                "serial %s not connected; connected: %s"
+                % (serial, ", ".join(s for s, _ in devices)))
+        return (serial, by_serial[serial])
+
+    sa, na = resolve(serial_a, 0)
+    sb, nb = resolve(serial_b, 1)
+    if sa == sb:
+        raise typer.BadParameter("camera A and B resolved to the same device " + sa
+                                 + " -- pass --serial-a / --serial-b explicitly.")
+
+    typer.echo("connected: " + ", ".join("%s %s" % (n, s[-4:]) for s, n in devices))
+    typer.echo("RECORDING 2 cameras at %dx%d @ %d fps (q to stop):" % (color_size[0], color_size[1], fps))
+    counts = record_bag_dual(
+        [(out_a, sa, na + " " + sa[-4:]), (out_b, sb, nb + " " + sb[-4:])],
+        seconds=seconds, color_size=color_size, fps=fps,
+        config_flag=cfg.privacy.allow_raw_capture, cli_flag=consent,
+    )
+    for label, n in counts.items():
+        typer.echo("saved ~%d framesets: %s" % (n, label))
+    typer.echo("next: verify each with  ahfd depth-view --pose --source <clip>.db3")
+
+
+@app.command()
 def export_color(
     bag: Path = typer.Argument(..., help="Depth .bag/.db3 to pull the colour stream from."),
     out: Path = typer.Argument(..., help="Output .mp4 for the posture labeller."),
