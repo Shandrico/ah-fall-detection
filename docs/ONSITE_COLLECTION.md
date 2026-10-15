@@ -1,5 +1,13 @@
 # Onsite hospital collection SOP
 
+For the next 40/60-minute single-volunteer study, follow the additional
+[frozen A-E training scheme](TRAINING_SCHEME.md). `collection-plan` creates the
+external split plan; `collect --plan ... --block A --target-bed bed_a` embeds it
+in each session and requires the target bed plus 240/360 labelled available
+seconds before completion. Both beds of a block stay in the same development
+fold; E is excluded from comparator training. This does not relax any approval,
+privacy, calibration, or single-person scope checks below.
+
 ## Scope and non-negotiable boundary
 
 This procedure is for a **research, shadow-mode study** of early bed-exit

@@ -1095,6 +1095,42 @@ def _robust_ankle_baseline(values: list[float]) -> float:
     return median
 
 
+@app.command(name="collection-plan")
+def create_collection_plan(
+    out_root: Path = typer.Option(..., help="Existing approved external study root."),
+    site_id: str = typer.Option(..., help="Pseudonymous site code."),
+    participant_id: str = typer.Option(..., help="One consenting volunteer's pseudonymous code."),
+    bed_a: str = typer.Option(..., help="First calibrated bed code, not a room/bed number."),
+    bed_b: str = typer.Option(..., help="Second calibrated bed code."),
+    mode_a: str = typer.Option("medium", help="Simulated policy: low, medium or high."),
+    mode_b: str = typer.Option("medium", help="Simulated policy: low, medium or high."),
+    minutes: int = typer.Option(40, help="40 or 60 minutes of labelled available target time."),
+) -> None:
+    """Create a frozen A-D development / E validation plan; never open a camera."""
+    import json
+    from ahfd.collect.protocol import new_plan, plan_sha256
+
+    try:
+        if bed_a == bed_b:
+            raise ValueError("two distinct bed codes are required")
+        plan = new_plan(site_id, participant_id, {bed_a: mode_a, bed_b: mode_b}, minutes)
+    except (TypeError, ValueError) as exc:
+        raise typer.BadParameter(str(exc)) from exc
+    if _containing_git_worktree(out_root) is not None:
+        raise typer.BadParameter("collection plans must stay outside Git")
+    _validate_approved_output(out_root, site_id)
+    path = out_root / (plan["plan_id"] + ".json")
+    with path.open("x", encoding="utf-8", newline="\n") as handle:
+        handle.write(json.dumps(plan, indent=2, sort_keys=True) + "\n")
+    typer.echo("Plan: " + str(path))
+    typer.echo("SHA-256: " + plan_sha256(plan))
+    typer.echo(
+        "10 sessions: A-D development, E locked validation; "
+        + str(minutes * 60 // 10) + " labelled available seconds per bed/session."
+    )
+    typer.echo("Derived-only shadow collection; no RGB/dense-depth recording or clinical alarms.")
+
+
 @app.command(name="collect")
 def collect_onsite(
     out_root: Path = typer.Option(
@@ -1137,6 +1173,9 @@ def collect_onsite(
     view: bool = typer.Option(
         True, "--view/--headless", help="Show only the derived skeleton and enable marker keys."
     ),
+    plan: Path = typer.Option(None, help="External frozen collection-plan JSON; does not authorise capture."),
+    block: str = typer.Option(None, help="A/B/C/D development or E locked validation; requires --plan."),
+    target_bed: str = typer.Option(None, help="Calibrated bed code for this half-block; requires --plan."),
 ) -> None:
     """Collect derived RealSense signals and observer markers in research shadow mode.
 
@@ -1170,6 +1209,17 @@ def collect_onsite(
         TEMPORAL_SCHEMA_VERSION,
         CausalTemporalSummarizer,
     )
+    from ahfd.collect.protocol import (
+        EXTRA_CONTEXT_KEYS, ProtocolProgress, assignment, load_plan,
+        validate_assignment,
+    )
+
+    if any(item is not None for item in (plan, block, target_bed)) and not all(
+        item is not None for item in (plan, block, target_bed)
+    ):
+        raise typer.BadParameter("--plan, --block and --target-bed must be supplied together")
+    collection_protocol = None
+    protocol_progress = None
 
     # Hash around parsing so the runtime object and recorded provenance cannot
     # silently refer to different bytes if an operator/editor replaces a file
@@ -1266,6 +1316,22 @@ def collect_onsite(
             "Git worktree; selected path is inside " + str(output_worktree)
         )
     _validate_approved_output(out_root, site_id)
+    if plan is not None:
+        if _containing_git_worktree(plan) is not None:
+            raise typer.BadParameter("collection plan must stay outside Git")
+        try:
+            collection_protocol = validate_assignment(
+                assignment(load_plan(plan), block, target_bed),
+                site_id=site_id, participant_id=participant_id,
+            )
+        except (OSError, TypeError, ValueError) as exc:
+            raise typer.BadParameter("invalid collection plan: " + str(exc)) from exc
+        protocol_progress = ProtocolProgress(collection_protocol["target_usable_s"])
+        typer.echo(
+            "Block " + block + " / " + target_bed + " / " + collection_protocol["partition"]
+            + " / simulated mode " + collection_protocol["plan"]["beds"][target_bed]
+        )
+        typer.echo("Completion requires labelled available time, not wall-clock duration; q early aborts this planned take.")
     calibration_worktree = _containing_git_worktree(Path(calib_path))
     if calibration_worktree is not None:
         raise typer.BadParameter(
@@ -1384,6 +1450,7 @@ def collect_onsite(
         ord("a"): "BED_ARTICULATION",
         ord("t"): "TRACK_ERROR",
         ord("u"): "OBSERVER_UNSURE",
+        **EXTRA_CONTEXT_KEYS,
     }
 
     try:
@@ -1393,6 +1460,12 @@ def collect_onsite(
                 "onsite calibration changed while it was being loaded"
             )
         _validate_onsite_calibration(calib, device_serial_sha256, model=device_model)
+        if collection_protocol is not None:
+            actual_beds = {zone.name for zone in calib.zones.zones if zone.kind == "bed"}
+            if actual_beds != set(collection_protocol["plan"]["beds"]):
+                raise typer.BadParameter("calibrated bed codes must exactly match the two planned beds")
+            if assignment(load_plan(plan), block, target_bed) != collection_protocol:
+                raise typer.BadParameter("collection plan changed during preflight")
         from ahfd.geometry.orientation import FloorMonitor
 
         floor_monitor = FloorMonitor(calib) if device_model == "d435f" else None
@@ -1448,6 +1521,7 @@ def collect_onsite(
             expected_calibration_sha256=calibration_sha256,
             temporal_schema_version=TEMPORAL_SCHEMA_VERSION,
             temporal_feature_names=TEMPORAL_FEATURE_NAMES,
+            collection_protocol=collection_protocol,
         )
         # All JSONL records and the manifest must share the recorder's session
         # epoch.  Model/camera startup before this point is preflight, not
@@ -1509,6 +1583,10 @@ def collect_onsite(
             "context: x return  p pause  f fast  z slide  r rail  i assisted  "
             "c staff-occlusion  v blanket  a bed-articulation  t track-error  "
             "u unsure  q planned-complete  Esc requested/safety-stop"
+        )
+        typer.echo(
+            "event markers: e exit-completed  b aborted-exit  w warning-worthy-attempt  "
+            "j fall-onset  k floor-contact  l recovery  o intentional-floor-posture"
         )
 
         for frame in src:
@@ -1691,6 +1769,13 @@ def collect_onsite(
                 )
                 if not is_target:
                     continue
+                if protocol_progress is not None:
+                    support = features.supported_by_bed
+                    if support is not None and support != target_bed:
+                        abort_code = "TARGET_BED_MISMATCH"
+                        raise RuntimeError("selected target is supported by another bed; verify geometry/association before retrying")
+                    if support == target_bed and _bed_observation_valid(bed_snapshot):
+                        protocol_progress.target_bed_observed = True
                 # The training validity mask must use the same full gate as
                 # the bed activity machine.  In particular, an excluded-zone
                 # observation is unavailable even if its keypoints/geometry
@@ -1988,7 +2073,7 @@ def collect_onsite(
                         "events": list(pending_events),
                     },
                 )
-                if _is_labeled_available_target_row(
+                labelled_available = _is_labeled_available_target_row(
                     participant_id,
                     selected_track_id,
                     epochs.get(selected_track_id, 0)
@@ -1997,8 +2082,15 @@ def collect_onsite(
                     people_rows,
                     monitoring_snapshot,
                     current_phase_by_association,
-                ):
+                )
+                if labelled_available:
                     labeled_available_rows += 1
+                if protocol_progress is not None:
+                    protocol_progress.observe(
+                        t_rel, eligible=labelled_available,
+                        association=(selected_track_id, epochs.get(selected_track_id, 0)),
+                    )
+                    recorder.update_protocol_progress(protocol_progress.snapshot())
                 pending_events.clear()
                 while next_derived_write_t <= t_rel + 1e-9:
                     next_derived_write_t += 0.1
@@ -2059,6 +2151,14 @@ def collect_onsite(
                     2,
                     cv2.LINE_AA,
                 )
+                if protocol_progress is not None:
+                    mode = collection_protocol["plan"]["beds"][target_bed]
+                    cv2.putText(
+                        canvas,
+                        f"{block} {collection_protocol['partition']} | {target_bed} {mode} | usable {protocol_progress.usable_s:.0f}/{protocol_progress.target_s:.0f}s",
+                        (12, 48), cv2.FONT_HERSHEY_SIMPLEX, 0.48,
+                        (0, 255, 255), 1, cv2.LINE_AA,
+                    )
                 cv2.imshow(window, canvas)
                 key = cv2.waitKey(1) & 0xFF
                 if key in (ord("["), ord("]")):
@@ -2070,6 +2170,8 @@ def collect_onsite(
                         )
                         if target_changed:
                             selected_track_id = next_track_id
+                            if protocol_progress is not None:
+                                protocol_progress.reset_binding()
                             # Pre-binding observations must not seed CUSUM, dwell,
                             # velocity or smoothing state for the recorded target.
                             # Begin one clean causal association at the operator's
@@ -2127,6 +2229,14 @@ def collect_onsite(
                         typer.echo("marker ignored: select one visible target with [ / ]")
                     else:
                         _write_session(recorder.write_label, marker)
+                        if context_keys[key] in (
+                            "OBSERVER_UNSURE", "STAFF_OCCLUSION",
+                            "BLANKET_OCCLUSION", "TRACK_ERROR",
+                        ):
+                            association = marker["associations"][0]
+                            current_phase_by_association[
+                                (association["track_id"], association["association_epoch"])
+                            ] = "UNKNOWN"
                         if context_keys[key] == "BED_ARTICULATION":
                             abort_code = "BED_ARTICULATION_RECALIBRATE"
                             raise RuntimeError(
@@ -2145,6 +2255,9 @@ def collect_onsite(
 
             frames_seen += 1
             processing_frame = False
+            if protocol_progress is not None and protocol_progress.ready:
+                stop_reason = HealthReason.PROTOCOL_COMPLETE
+                break
             if max_frames and frames_seen >= max_frames:
                 stop_reason = HealthReason.SESSION_LIMIT
                 break
@@ -2172,6 +2285,8 @@ def collect_onsite(
                 floor_monitor.status == "OK" if floor_monitor is not None else None
             ),
         )
+        if protocol_progress is not None and not protocol_progress.ready:
+            completion_issues += ("PLANNED_USABLE_DURATION_OR_BED_NOT_READY",)
         if not requested_abort and completion_issues:
             completion_abort_reason = "PROTOCOL_INCOMPLETE"
             stop_reason = HealthReason.PROTOCOL_INCOMPLETE
@@ -2253,7 +2368,7 @@ def compare_bed_exit(
         ..., help="Two or more complete derived-only ses_* directories."
     ),
     group_by: str = typer.Option(
-        "subject", help="Cross-validation group: subject (preferred) or session (development only)."
+        "subject", help="Cross-validation group: subject, session, or block (required for planned A-D)."
     ),
     out_dir: Path = typer.Option(
         None,
@@ -2279,9 +2394,14 @@ def compare_bed_exit(
 
     from ahfd.ml.bed_dataset import HORIZONS_S, load_bed_sessions
     from ahfd.ml.temporal import compare_grouped
+    from ahfd.collect.protocol import guard_development_inputs
 
-    if group_by not in ("subject", "session"):
-        raise typer.BadParameter("--group-by must be subject or session")
+    if group_by not in ("subject", "session", "block"):
+        raise typer.BadParameter("--group-by must be subject, session or block")
+    try:
+        guard_development_inputs(sessions, group_by)
+    except (OSError, TypeError, ValueError) as exc:
+        raise typer.BadParameter(str(exc)) from exc
     dataset = load_bed_sessions(sessions)
     if group_by == "subject" and len(dataset.participant_ids) < 2:
         raise typer.BadParameter(
@@ -2291,6 +2411,11 @@ def compare_bed_exit(
         typer.echo(
             "WARNING: session-held-out scores are development-only; repeated people "
             "can still leak person-specific movement."
+        )
+    if group_by == "block":
+        typer.echo(
+            "WARNING: block-held-out development scores do not establish unseen-person "
+            "performance. Block E is excluded; both beds/repeats stay in one block."
         )
     if out_dir is not None:
         _validate_comparator_output(out_dir, sessions)

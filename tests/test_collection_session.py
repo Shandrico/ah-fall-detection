@@ -59,6 +59,41 @@ def load_manifest(recorder):
     return json.loads(recorder.manifest_path.read_text(encoding="utf-8"))
 
 
+def test_planned_session_cannot_complete_before_usable_duration(tmp_path, inputs):
+    from ahfd.collect.protocol import assignment, new_plan
+
+    plan = new_plan("site_0123abcd", "sub_0123456789abcdef",
+                    {"bed_a": "low", "bed_b": "high"}, 40)
+    clock = Clock()
+    recorder = make_recorder(tmp_path, inputs, clock, collection_protocol=assignment(plan, "A", "bed_a"))
+    with pytest.raises(ValueError, match="insufficient"):
+        recorder.complete()
+    assert recorder.status == "incomplete"
+    recorder.update_protocol_progress({"usable_s": 240, "target_bed_observed": True})
+    with pytest.raises(ValueError, match="exceeds session duration"):
+        recorder.complete()
+    clock.advance(250)
+    recorder.complete()
+    manifest = load_manifest(recorder)
+    assert manifest["collection_protocol"]["partition"] == "development"
+    assert manifest["protocol_progress"]["usable_s"] == 240
+    assert manifest["privacy"]["imagery_persisted"] is False
+
+
+def test_aborted_plan_preserves_partial_progress(tmp_path, inputs):
+    from ahfd.collect.protocol import assignment, new_plan
+
+    plan = new_plan("site_0123abcd", "sub_0123456789abcdef",
+                    {"bed_a": "low", "bed_b": "high"}, 60)
+    recorder = make_recorder(tmp_path, inputs, collection_protocol=assignment(plan, "E", "bed_b"))
+    recorder.update_protocol_progress({"usable_s": 10, "target_bed_observed": True})
+    recorder.abort()
+    manifest = load_manifest(recorder)
+    assert manifest["status"] == "aborted"
+    assert manifest["collection_protocol"]["partition"] == "validation"
+    assert manifest["protocol_progress"]["usable_s"] == 10
+
+
 def frame_record(frame_index=1, *, people=None, events=None):
     return {
         "kind": "frame_observation",

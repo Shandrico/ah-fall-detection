@@ -39,6 +39,8 @@ debug_captures/
 # if someone manually copies a session back into this repository.
 onsite_sessions/
 **/ses_*/
+# Frozen study plans contain participant/site pseudonyms and simulated modes.
+**/plan_*.json
 
 # Python
 __pycache__/

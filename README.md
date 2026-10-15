@@ -74,6 +74,13 @@ and depth-based calibration refinements.
 
 ## Recording and tuning against clips
 
+For the next nearest/middle-bed study, see the
+[40/60-minute training and collection scheme](docs/TRAINING_SCHEME.md).
+It defines frozen A-D development / E validation blocks, manual bed/risk
+metadata, fall/CUSUM experiments and the `collection-plan` / planned `collect`
+workflow. Collection remains derived-only and shadow-only; study data stays
+outside Git.
+
 The data-driven workflow — record, extract keypoints once, then tune and score
 on the fast keypoint replay — is in **[docs/CLIPS.md](docs/CLIPS.md)**:
 
