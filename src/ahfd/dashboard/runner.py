@@ -53,6 +53,9 @@ class PipelineRunner:
         self._thread: threading.Thread | None = None
         self._started = False
         self._jpeg_quality = cfg.dashboard.jpeg_quality
+        self._last_depth_preview = -math.inf
+        self._depth_max_m = 6.0
+        self._depth_spatial = 2
         self._sink = None
         self._track_bed_modes: dict[int, tuple[str, str, int]] = {}
         self._bed_incident_ids: dict[tuple[str, int], str] = {}
@@ -115,6 +118,7 @@ class PipelineRunner:
             src = open_source(
                 self.source_uri, width=cfg.capture.width, height=cfg.capture.height
             )
+            self._configure_depth_preview()
             state.publish_status(
                 gen,
                 "starting",
@@ -333,6 +337,44 @@ class PipelineRunner:
                 self.state.replay_control("pause")  # reached the end -> stop
             time.sleep(0.005)  # yield; the wall-clock target sets the real pace
         return frames_seen
+
+    def _configure_depth_preview(self) -> None:
+        """Use the same range/options as capture, not a second fixed 6 m cut."""
+        from ahfd.capture.factory import parse_realsense_uri
+
+        options = (
+            parse_realsense_uri(self.source_uri)
+            if self.source_uri.startswith("rs://") else {}
+        )
+        self._depth_max_m = float(options.get("max_range_m", 6.0))
+        self._depth_spatial = max(1, min(5, int(options.get("spatial_magnitude", 2))))
+        self.state.update_runtime(
+            self.gen, depth_min_m=0.3, depth_max_m=self._depth_max_m,
+            depth_spatial_passes=self._depth_spatial,
+            depth_preview_hole_filled=False,
+        )
+
+    def _publish_depth_preview(self, frame, rendered_rgb: bool) -> None:
+        """At most 10 Hz, one small encode for all viewers; no second camera."""
+        if not rendered_rgb:
+            return
+        now = time.monotonic()
+        if now - self._last_depth_preview < 0.1:
+            return
+        self._last_depth_preview = now
+        from ahfd.viz.depth_render import render_depth
+
+        canvas = render_depth(
+            frame.depth_raw, frame.depth_scale, max_depth_m=self._depth_max_m,
+        )
+        jpeg = None
+        if canvas is not None:
+            ok, buf = cv2.imencode(
+                ".jpg", canvas, [int(cv2.IMWRITE_JPEG_QUALITY), self._jpeg_quality]
+            )
+            if ok:
+                jpeg = buf.tobytes()
+        self.state.publish_depth_frame(jpeg, gen=self.gen)
 
     def _process_frame(
         self, frame, estimator, tracker, smoother, extractor, machine, fps_ema
@@ -564,6 +606,7 @@ class PipelineRunner:
             # request can arrive while rendering, and the store rejects that
             # in-flight RGB publication even if the runner flag has changed.
             rendered_rgb = self.show_rgb
+            self._publish_depth_preview(frame, rendered_rgb)
             if rendered_rgb:
                 canvas = render_overlay(
                     frame, pose,

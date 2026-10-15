@@ -542,9 +542,13 @@ def _validate_manifest(session_dir: Path) -> tuple[dict, str, str, float]:
     )
     if not isinstance(source, Mapping):
         raise ValueError("manifest source must be an object")
+    if source.get("kind") == "intel_realsense_d435f":
+        source_fields = source_fields | {"orientation_method"}
+        if source.get("orientation_method") != "depth_floor_roi":
+            raise ValueError("D435f manifest requires depth_floor_roi orientation provenance")
     _exact_fields(source, source_fields, "manifest source")
-    if source.get("kind") != "intel_realsense_d435i":
-        raise ValueError("manifest source kind must be intel_realsense_d435i")
+    if source.get("kind") not in {"intel_realsense_d435i", "intel_realsense_d435f"}:
+        raise ValueError("manifest source kind must be intel_realsense_d435i or intel_realsense_d435f")
     if source.get("depth_enabled") is not True:
         raise ValueError("manifest source must have depth_enabled true")
     if source.get("pose_backend") != "rtmo":

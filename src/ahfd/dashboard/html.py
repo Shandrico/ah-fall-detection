@@ -58,6 +58,15 @@ DASHBOARD_HTML = r"""<!doctype html>
   @media (max-width:1100px){ .wrap{ grid-template-columns:1fr; } }
   .feed { background:#000; border:1px solid var(--line); border-radius:12px; overflow:hidden; position:relative; }
   .feed img { width:100%; display:block; image-rendering:auto; }
+  .feeds { display:grid; gap:12px; align-items:start; }
+  .feeds.with-depth { grid-template-columns:1fr 1fr; }
+  .feed[hidden] { display:none; }
+  .feed:fullscreen { display:flex; flex-direction:column; justify-content:center; }
+  .feed:fullscreen img { max-height:90vh; object-fit:contain; }
+  .feed-title { padding:9px 12px; font-size:12px; background:var(--panel2); }
+  .depth-legend { padding:9px 12px; font-size:11px; color:var(--muted); background:var(--panel2); }
+  .depth-ramp { height:5px; margin-bottom:6px; background:linear-gradient(90deg,#30123b,#466be3,#28bceb,#a4fc3c,#f9ba38,#e5470b,#7a0403); }
+  @media (max-width:850px){ .feeds.with-depth { grid-template-columns:1fr; } }
   .player { display:flex; gap:8px; align-items:center; margin-top:8px; padding:8px 10px;
             background:var(--panel); border:1px solid var(--line); border-radius:10px; }
   .player[hidden] { display:none; }
@@ -134,6 +143,7 @@ DASHBOARD_HTML = r"""<!doctype html>
   <label for="bk">model</label>
   <select id="bk"></select>
   <button id="rgb">RGB: off</button>
+  <button id="depth-toggle" aria-pressed="true" disabled>Depth view: on</button>
   <span class="hint" id="rt-detail"></span>
 </div>
 
@@ -150,10 +160,23 @@ DASHBOARD_HTML = r"""<!doctype html>
 
 <div class="wrap">
   <div>
+    <div class="feeds" id="feeds">
     <div class="feed">
+      <div class="feed-title">Camera / pose</div>
       <img id="stream" src="/stream.mjpg" alt="live view"/>
       <div class="tag" id="feedtag">live</div>
       <button class="full" id="full">Fullscreen</button>
+    </div>
+    <div class="feed" id="depth-feed" hidden>
+      <div class="feed-title" id="depth-title">Aligned depth</div>
+      <img id="depth-stream" alt="Live depth: near blue, far red, missing black"/>
+      <button class="full" id="depth-full">Fullscreen</button>
+      <div class="depth-legend"><div class="depth-ramp"></div>
+        <span id="depth-range">Waiting for depth range</span> &middot; black = missing/out of range<br/>
+        <span id="depth-processing">Aligned to RGB; no hole filling</span><br/>
+        Camera-axis depth, not height above floor &middot; live only, not recorded
+      </div>
+    </div>
     </div>
     <!-- Video-player controls: shown only when replaying a recording (a
          seekable file), hidden for a live camera. -->
@@ -199,6 +222,33 @@ const RANK = {LOW:0, BED_EXIT:2, BED_EXIT_WARNING:3, NEAR_MISS:1, FALL_SUSPECTED
 let soundOn = false, lastAlertCount = 0;
 let opts = null, lastSwitchSeq = -1;
 let lastBedsSignature = '';
+let depthViewOn = true;
+
+function renderDepthView(rt){
+  document.getElementById('depth-range').textContent =
+    Number.isFinite(rt.depth_min_m) && Number.isFinite(rt.depth_max_m)
+      ? `Near ${rt.depth_min_m} m \u2192 Far ${rt.depth_max_m} m`
+      : 'Waiting for depth range';
+  document.getElementById('depth-processing').textContent =
+    'Aligned to RGB; no hole filling' + (Number.isFinite(rt.depth_spatial_passes)
+      ? `; smoothing ${rt.depth_spatial_passes}` : '');
+  const available = !!(rt.show_rgb && rt.depth_stream_enabled);
+  const button = document.getElementById('depth-toggle');
+  button.disabled = !available;
+  button.textContent = available ? 'Depth view: ' + (depthViewOn ? 'on' : 'off') : 'Depth view: unavailable';
+  button.title = 'Live depth preview follows RGB permission; RGB off hides both images.';
+  button.setAttribute('aria-pressed', String(available && depthViewOn));
+  const visible = available && depthViewOn;
+  document.getElementById('depth-feed').hidden = !visible;
+  document.getElementById('feeds').classList.toggle('with-depth', visible);
+  const img = document.getElementById('depth-stream');
+  if(visible && !img.getAttribute('src')) img.src = '/depth.mjpg';
+  if(!visible) img.removeAttribute('src');
+  document.getElementById('depth-title').textContent =
+    rt.monitoring !== 'AVAILABLE' ? 'Depth unavailable / waiting for frames'
+    : rt.depth_active ? 'Aligned depth \u00b7 ' + Math.round((rt.depth_valid_fraction||0)*100) + '% valid pixels'
+    : 'Depth unavailable \u2014 no usable signal';
+}
 
 function esc(s){ return String(s).replace(/[&<>]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;'}[c])); }
 function escAttr(s){ return String(s).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
@@ -337,6 +387,7 @@ async function refresh(){
     ? `active ${Math.round((rt.depth_valid_fraction||0)*100)}%`
     : rt.depth_stream_enabled ? 'no usable signal' : 'off';
   document.getElementById('m-depth').textContent = depthText;
+  renderDepthView(rt);
   renderPlayer(s.replay, rt.source_fps);
   const busy = rt.status === 'switching' || rt.status === 'starting';
   const pill = document.getElementById('rt-status');
@@ -455,6 +506,13 @@ document.getElementById('rgb').addEventListener('click', async function(){
   const r = await post('/api/switch', {show_rgb: this.textContent.endsWith('off')});
   if(r.ok) this.textContent = 'RGB: ' + (r.show_rgb ? 'on' : 'off');
   else hint(r.error || 'could not change the view');
+});
+document.getElementById('depth-toggle').addEventListener('click', ()=>{
+  depthViewOn = !depthViewOn;
+  refresh();
+});
+document.getElementById('depth-full').addEventListener('click', ()=>{
+  document.getElementById('depth-feed').requestFullscreen?.();
 });
 
 setupPlayer();

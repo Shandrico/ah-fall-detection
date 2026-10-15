@@ -60,6 +60,9 @@ class DashboardState:
         self._lock = threading.Lock()
         self._jpeg: bytes | None = None
         self._seq = 0
+        self._depth_jpeg: bytes | None = None
+        self._depth_seq = 0
+        self._depth_wall: float | None = None
         self._tracks: list[dict[str, Any]] = []
         self._people = 0
         self._events: deque[dict[str, Any]] = deque(maxlen=max_events)
@@ -120,6 +123,15 @@ class DashboardState:
             self._fps = fps
             self._last_frame_wall = time.time()
 
+    def publish_depth_frame(self, jpeg: bytes | None, gen: int = 0) -> None:
+        """Depth imagery follows the same opt-in live-imagery policy as RGB."""
+        with self._lock:
+            if gen != self._gen or self._rgb_enabled is not True:
+                return
+            self._depth_jpeg = jpeg
+            self._depth_seq += 1
+            self._depth_wall = time.time() if jpeg is not None else None
+
     def publish_event(self, event: dict[str, Any], gen: int = 0) -> None:
         with self._lock:
             if gen != self._gen:
@@ -149,6 +161,10 @@ class DashboardState:
         with self._lock:
             self._rgb_enabled = on
             self._runtime["show_rgb"] = on
+            if not on:
+                self._depth_jpeg = None
+                self._depth_wall = None
+                self._depth_seq += 1
             if not on and self._jpeg is not None:
                 self._jpeg = replacement
                 self._seq += 1
@@ -170,6 +186,9 @@ class DashboardState:
                 and bed_policy_scope == self._bed_policy_scope
             )
             self._gen += 1
+            self._depth_jpeg = None
+            self._depth_wall = None
+            self._depth_seq += 1
             self._switch_seq += 1
             self._fps = 0.0
             self._last_frame_wall = None
@@ -346,6 +365,21 @@ class DashboardState:
             if stale or self._status in ("error", "stopped"):
                 return _privacy_frame(), self._seq
             return self._jpeg, self._seq
+
+    def latest_depth_frame(self) -> tuple[bytes, int]:
+        with self._lock:
+            unavailable = (
+                self._rgb_enabled is not True
+                or self._depth_jpeg is None
+                or self._depth_wall is None
+                or time.time() - self._depth_wall > STALE_FRAME_S
+                or self._status != "running"
+            )
+            # Changing the token when stale/error forces existing MJPEG
+            # viewers to replace the last valid depth image too.
+            if unavailable:
+                return _privacy_frame(), self._depth_seq * 2 + 1
+            return self._depth_jpeg, self._depth_seq * 2
 
     def snapshot(self) -> dict[str, Any]:
         """A small JSON-ready view of current state."""

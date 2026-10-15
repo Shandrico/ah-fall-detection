@@ -122,7 +122,7 @@ def _apply_strict_depth_controls(rs, depth_sensor) -> dict[str, float | bool]:
         ) from None
     if not supported:
         raise RealSenseVerificationError(
-            "onsite D435i must expose emitter_enabled and laser_power controls"
+            "onsite RealSense must expose emitter_enabled and laser_power controls"
         )
     try:
         laser_range = depth_sensor.get_option_range(laser_option)

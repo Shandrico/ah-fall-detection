@@ -75,7 +75,7 @@ def _build_detection(
     return extractor, machine, MultiSink(*sinks), calib
 
 
-def _validate_onsite_calibration(calib, device_serial_sha256: str) -> None:
+def _validate_onsite_calibration(calib, device_serial_sha256: str, *, model: str = "d435i") -> None:
     """Refuse geometry that has not passed the physical onsite preflight.
 
     This is intentionally scoped to ``ahfd collect``.  Development playback
@@ -98,9 +98,11 @@ def _validate_onsite_calibration(calib, device_serial_sha256: str) -> None:
         )
     if calib.device_serial_sha256 != device_serial_sha256:
         raise typer.BadParameter(
-            "the connected D435i does not match this calibration's hashed device "
+            "the connected RealSense does not match this calibration's hashed device "
             "identity; recalibrate the exact camera or connect the correct unit"
         )
+    if model == "d435f" and getattr(calib, "floor_roi", None) is None:
+        raise typer.BadParameter("D435f onsite calibration requires a measured floor_roi")
     if calib.ankle_height_baseline_m is None:
         raise typer.BadParameter(
             "onsite calibration needs ankle_height_baseline_m from the approved "
@@ -311,6 +313,8 @@ def _canonical_onsite_source(
     cfg,
     approval_sha256: str,
     verified_depth_controls: dict[str, float | bool],
+    *,
+    model: str = "d435i",
 ) -> dict:
     """Return allowlisted provenance based on applied sensor readback."""
     import math
@@ -351,8 +355,11 @@ def _canonical_onsite_source(
             runtime_versions[package] = version(package)
         except PackageNotFoundError:
             continue
+    if model not in {"d435i", "d435f"}:
+        raise typer.BadParameter("unsupported onsite camera model")
     return {
-        "kind": "intel_realsense_d435i",
+        "kind": "intel_realsense_" + model,
+        **({"orientation_method": "depth_floor_roi"} if model == "d435f" else {}),
         "width": int(meta.width),
         "height": int(meta.height),
         "fps": float(meta.fps),
@@ -445,7 +452,7 @@ def _validate_comparator_output(out_dir: Path, sessions: list[Path]) -> None:
     _validate_approved_output(approved_root, next(iter(site_ids)))
 
 
-def _probe_onsite_d435i() -> tuple[str, str]:
+def _probe_onsite_realsense() -> tuple[str, str, str]:
     """Return the verified raw serial for binding plus its provenance digest."""
     import hashlib
 
@@ -453,29 +460,40 @@ def _probe_onsite_d435i() -> tuple[str, str]:
 
     probe = probe_realsense()
     if not probe.installed:
-        raise typer.BadParameter("pyrealsense2 is not installed for the onsite D435i")
+        raise typer.BadParameter("pyrealsense2 is not installed for the onsite RealSense")
     if probe.error:
-        raise typer.BadParameter("D435i enumeration failed: " + probe.error)
+        raise typer.BadParameter("RealSense enumeration failed: " + probe.error)
     if len(probe.devices) != 1:
         raise typer.BadParameter(
             "onsite collection requires exactly one connected RealSense; found "
             + str(len(probe.devices))
         )
     device = probe.devices[0]
-    if "D435I" not in device.name.upper():
+    import re
+
+    match = re.search(r"\b(D435I|D435F)\b", device.name.upper())
+    if match is None:
         raise typer.BadParameter(
-            "onsite collection requires the approved D435i; found " + device.name
+            "onsite collection requires a D435i or D435f; found " + device.name
         )
     usb_descriptor = str(device.usb or "").strip()
     if not usb_descriptor.startswith("3"):
         raise typer.BadParameter(
-            "D435i negotiated USB "
+            "RealSense negotiated USB "
             + (usb_descriptor or "unknown")
             + "; onsite collection requires a verified USB 3 link without a hub"
         )
     if not device.serial:
-        raise typer.BadParameter("D435i did not report a serial; device identity is unverifiable")
-    return device.serial, hashlib.sha256(device.serial.encode("utf-8")).hexdigest()
+        raise typer.BadParameter("RealSense did not report a serial; device identity is unverifiable")
+    return device.serial, hashlib.sha256(device.serial.encode("utf-8")).hexdigest(), match[1].lower()
+
+
+def _probe_onsite_d435i() -> tuple[str, str]:
+    """Compatibility wrapper for callers that explicitly require the IMU unit."""
+    serial, digest, model = _probe_onsite_realsense()
+    if model != "d435i":
+        raise typer.BadParameter("this operation requires the approved D435i")
+    return serial, digest
 
 
 @app.command()
@@ -912,14 +930,17 @@ def _collection_completion_issues(
     *,
     labeled_available_rows: int,
     imu_orientation_ready: bool,
+    floor_orientation_ready: bool | None = None,
 ) -> tuple[str, ...]:
     """List missing evidence that makes a participant run incomplete."""
+    if floor_orientation_ready is False:
+        return ("FLOOR_PREFLIGHT_NOT_READY",)
     if participant_id is None:
         return ()
     issues: list[str] = []
     if labeled_available_rows < 1:
         issues.append("NO_LABELED_AVAILABLE_TARGET_ROWS")
-    if not imu_orientation_ready:
+    if floor_orientation_ready is None and not imu_orientation_ready:
         issues.append("IMU_PREFLIGHT_NOT_READY")
     return tuple(issues)
 
@@ -1007,6 +1028,17 @@ def _imu_orientation_delta(calib, gravity) -> tuple[float, float] | None:
     )
     roll_delta = (live.roll_deg - calib.ground.roll_deg + 180.0) % 360.0 - 180.0
     return live.pitch_deg - calib.ground.pitch_deg, roll_delta
+
+
+def _floor_health_details(monitor) -> dict:
+    evidence = monitor.evidence
+    return {
+        "floor_orientation_check": monitor.status,
+        "floor_pitch_delta_deg": evidence.pitch_delta_deg if evidence else None,
+        "floor_roll_delta_deg": evidence.roll_delta_deg if evidence else None,
+        "floor_height_delta_m": evidence.height_delta_m if evidence else None,
+        "floor_inlier_fraction": evidence.inlier_fraction if evidence else None,
+    }
 
 
 def _depth_provenance(person, *, min_score: float) -> dict[str, float | None]:
@@ -1106,7 +1138,7 @@ def collect_onsite(
         True, "--view/--headless", help="Show only the derived skeleton and enable marker keys."
     ),
 ) -> None:
-    """Collect derived D435i signals and observer markers in research shadow mode.
+    """Collect derived RealSense signals and observer markers in research shadow mode.
 
     No RGB frame or dense depth map is written. Output contains keypoints,
     seventeen optional joint-height scalars, metric/temporal features, explicit
@@ -1289,7 +1321,7 @@ def collect_onsite(
     estimator = build_estimator(cfg.pose)
     if _pose_artifact_sha256(estimator) != pose_model_sha256:
         raise typer.BadParameter("runtime pose model does not match the approved artifact")
-    device_serial, device_serial_sha256 = _probe_onsite_d435i()
+    device_serial, device_serial_sha256, device_model = _probe_onsite_realsense()
     src = open_source(
         uri,
         width=cfg.capture.width,
@@ -1328,6 +1360,7 @@ def collect_onsite(
     current_phase_by_association: dict[tuple[int, int], str] = {}
     labeled_available_rows = 0
     imu_orientation_ready = False
+    floor_monitor = None
 
     phase_keys = {
         ord("1"): "RECLINED",
@@ -1359,7 +1392,10 @@ def collect_onsite(
             raise typer.BadParameter(
                 "onsite calibration changed while it was being loaded"
             )
-        _validate_onsite_calibration(calib, device_serial_sha256)
+        _validate_onsite_calibration(calib, device_serial_sha256, model=device_model)
+        from ahfd.geometry.orientation import FloorMonitor
+
+        floor_monitor = FloorMonitor(calib) if device_model == "d435f" else None
         verified_depth_controls = src.preflight()
         tracker = SimpleTracker(min_keypoint_score=cfg.pose.min_keypoint_score)
         temporal = CausalTemporalSummarizer(
@@ -1382,6 +1418,7 @@ def collect_onsite(
             cfg,
             approval_sha256,
             verified_depth_controls,
+            model=device_model,
         )
         source_provenance.update(
             {
@@ -1495,6 +1532,8 @@ def collect_onsite(
                     )
                 intrinsics_checked = True
             orientation_delta = _imu_orientation_delta(calib, frame.gravity)
+            if floor_monitor is not None:
+                floor_monitor.update(frame, t_rel)
             if orientation_delta is not None:
                 orientation_samples.append(
                     (t_rel, orientation_delta[0], orientation_delta[1])
@@ -1835,6 +1874,14 @@ def collect_onsite(
                     else ("OK" if orientation_valid else "DRIFT")
                 )
             )
+            if floor_monitor is not None:
+                # Floor evidence is never presented as IMU evidence. Warmup
+                # remains ineligible training time; missing/drifting floor
+                # aborts once startup has had two seconds to settle.
+                orientation_check = "NOT_PRESENT"
+                orientation_valid = (
+                    floor_monitor.status in {"OK", "WARMING"} or t_rel < 2.0
+                )
             calibration_valid = calibration_valid and orientation_valid
             complete_wall = time.monotonic()
             if last_complete_wall is not None and complete_wall > last_complete_wall:
@@ -1895,10 +1942,17 @@ def collect_onsite(
                     "imu_roll_delta_deg": (
                         round(roll_delta, 3) if roll_delta is not None else None
                     ),
+                    **(_floor_health_details(floor_monitor) if floor_monitor is not None else {}),
                     "effective_fps": round(fps_ema, 3) if fps_ema is not None else None,
                     "disk_free_bytes": int(disk_free_bytes),
                 }
-            if participant_id is not None and selected_track_id is None:
+            if floor_monitor is not None and floor_monitor.status != "OK" and calibration_valid:
+                _health_call(
+                    health.mark_unavailable,
+                    HealthReason.STARTING,
+                    details=health_details,
+                )
+            elif participant_id is not None and selected_track_id is None:
                 _health_call(
                     health.mark_unavailable,
                     HealthReason.TARGET_NOT_BOUND,
@@ -1951,7 +2005,7 @@ def collect_onsite(
             if not calibration_valid:
                 abort_code = "CALIBRATION_DRIFT"
                 raise RuntimeError(
-                    "calibration drift or missing IMU detected; "
+                    "calibration drift or missing orientation evidence detected; "
                     "session aborted -- secure the mount and recalibrate"
                 )
 
@@ -2105,7 +2159,7 @@ def collect_onsite(
             if watchdog_thread is not None:
                 watchdog_thread.join(timeout=2.0)
             _health_call(health.mark_unavailable, HealthReason.SOURCE_ENDED)
-            raise RuntimeError("live D435i source ended unexpectedly")
+            raise RuntimeError("live RealSense source ended unexpectedly")
         if watchdog_stop is not None:
             watchdog_stop.set()
         if watchdog_thread is not None:
@@ -2114,6 +2168,9 @@ def collect_onsite(
             participant_id,
             labeled_available_rows=labeled_available_rows,
             imu_orientation_ready=imu_orientation_ready,
+            floor_orientation_ready=(
+                floor_monitor.status == "OK" if floor_monitor is not None else None
+            ),
         )
         if not requested_abort and completion_issues:
             completion_abort_reason = "PROTOCOL_INCOMPLETE"
@@ -2433,6 +2490,13 @@ def extract(
         "RealSense depth source: bag://<clip>.bag or rs://.",
     ),
     height: float = typer.Option(2.5, help="Camera mount height above the floor (m), for --depth."),
+    max_range: float = typer.Option(
+        6.0, "--max-range", min=0.31, max=16.0,
+        help="Depth cutoff in metres for extraction; match the intended recording range.",
+    ),
+    smooth: int = typer.Option(
+        2, "--smooth", min=1, max=5, help="Depth spatial smoothing passes (1-5).",
+    ),
     pitch: float = typer.Option(
         MOUNT_PITCH_DEG,
         help="Mount downtilt in degrees, for --depth on a camera with no IMU (D435f). "
@@ -2457,6 +2521,9 @@ def extract(
     from ahfd.pose import KeypointSmoother, build_estimator
     from ahfd.track import SimpleTracker
 
+    import math
+    if not math.isfinite(max_range):
+        raise typer.BadParameter("--max-range must be finite")
     cfg = load_config(config)
 
     if depth:
@@ -2464,11 +2531,16 @@ def extract(
         if source.startswith("bag://"):
             from ahfd.capture.realsense import BagSource
 
-            src = BagSource(source[len("bag://") :], with_depth=True)
+            src = BagSource(
+                source[len("bag://") :], with_depth=True,
+                max_range_m=max_range, spatial_magnitude=smooth,
+            )
         elif source.startswith("rs://"):
             from ahfd.capture.realsense import RealSenseSource
 
-            src = RealSenseSource(with_depth=True)
+            src = RealSenseSource(
+                with_depth=True, max_range_m=max_range, spatial_magnitude=smooth,
+            )
         else:
             raise typer.BadParameter(
                 "--depth needs a RealSense source (bag://<clip>.bag or rs://); got " + source
@@ -4316,7 +4388,7 @@ def measure_ankle_baseline(
         Path("configs/onsite_collection.yaml"), help="Pose/depth preflight config."
     ),
     source: str = typer.Option(
-        None, help="Depth-enabled D435i URI; defaults to the config source."
+        None, help="Depth-enabled RealSense URI; defaults to the config source."
     ),
     seconds: float = typer.Option(
         6.0, help="Seconds of one consenting staff member standing still."
@@ -4365,12 +4437,17 @@ def measure_ankle_baseline(
         raise typer.BadParameter(
             "baseline measurement requires rs:// with depth=1, emitter=1 and max_laser=1"
         )
-    device_serial, device_hash = _probe_onsite_d435i()
+    device_serial, device_hash, device_model = _probe_onsite_realsense()
     calib = load_calibration(calibration)
     if not re.fullmatch(r"cam_[0-9a-f]{8}", calib.camera_id):
         raise typer.BadParameter("camera_id must be cam_ plus exactly 8 random hex characters")
     if calib.device_serial_sha256 != device_hash:
-        raise typer.BadParameter("connected D435i does not match this calibration")
+        raise typer.BadParameter("connected RealSense does not match this calibration")
+    from ahfd.geometry.orientation import FloorMonitor
+
+    if device_model == "d435f" and calib.floor_roi is None:
+        raise typer.BadParameter("D435f baseline measurement requires a measured floor_roi")
+    floor_monitor = FloorMonitor(calib) if device_model == "d435f" else None
 
     src = open_source(
         uri,
@@ -4406,7 +4483,13 @@ def measure_ankle_baseline(
                 started = time.monotonic()
             if not _intrinsics_match(calib.ground.intrinsics, frame.intrinsics):
                 raise typer.BadParameter("live intrinsics do not match this calibration")
-            delta = _imu_orientation_delta(calib, frame.gravity)
+            if floor_monitor is not None:
+                check = floor_monitor.update(frame, time.monotonic() - started)
+                if check == "DRIFT":
+                    raise typer.BadParameter("measured mount does not match the selected depth floor")
+                delta = None
+            else:
+                delta = _imu_orientation_delta(calib, frame.gravity)
             if delta is not None:
                 orientation.append(delta)
             pose = estimator.estimate(frame)
@@ -4431,7 +4514,7 @@ def measure_ankle_baseline(
                     min_score=cfg.pose.min_keypoint_score,
                     feature_valid=eligible,
                 )
-                if value is not None:
+                if value is not None and (floor_monitor is None or floor_monitor.status == "OK"):
                     values.append(value)
             if view:
                 canvas = render_skeleton(
@@ -4459,14 +4542,18 @@ def measure_ankle_baseline(
         if view:
             cv2.destroyAllWindows()
 
-    if not orientation:
-        raise typer.BadParameter("no D435i IMU orientation was observed")
-    pitch_delta = float(np.median([item[0] for item in orientation]))
-    roll_delta = float(np.median([item[1] for item in orientation]))
-    if abs(pitch_delta) > 2.0 or abs(roll_delta) > 2.0:
-        raise typer.BadParameter(
-            "mount orientation differs from calibration by more than 2 degrees"
-        )
+    if floor_monitor is not None:
+        if floor_monitor.status != "OK":
+            raise typer.BadParameter("no stable matching depth floor was observed")
+    else:
+        if not orientation:
+            raise typer.BadParameter("no D435i IMU orientation was observed")
+        pitch_delta = float(np.median([item[0] for item in orientation]))
+        roll_delta = float(np.median([item[1] for item in orientation]))
+        if abs(pitch_delta) > 2.0 or abs(roll_delta) > 2.0:
+            raise typer.BadParameter(
+                "mount orientation differs from calibration by more than 2 degrees"
+            )
     try:
         baseline = _robust_ankle_baseline(values)
     except ValueError as exc:
@@ -4580,6 +4667,7 @@ def _write_calibration_yaml(
     pitch_deg=None,
     roll_deg=0.0,
     device_serial_sha256=None,
+    floor_roi=None,
 ):
     """Write a calibration YAML that load_calibration reads back.
 
@@ -4613,6 +4701,10 @@ def _write_calibration_yaml(
     }
     if device_serial_sha256 is not None:
         doc["device_serial_sha256"] = device_serial_sha256
+    if floor_roi is not None:
+        from ahfd.geometry.orientation import validate_floor_roi
+
+        doc["floor_roi"] = list(validate_floor_roi(floor_roi))
     from pathlib import Path as _P
 
     _P(path).parent.mkdir(parents=True, exist_ok=True)
@@ -4627,9 +4719,12 @@ def calibrate(
     height: float = typer.Option(..., help="Lens height above the floor, in metres (measure it)."),
     camera_id: str = typer.Option(None, help="Name for this camera position."),
     pitch: float = typer.Option(None, help="Downtilt in degrees, if the source has no IMU."),
-    roll: float = typer.Option(0.0, help="Roll in degrees (webcam only)."),
+    roll: float = typer.Option(0.0, help="Measured roll in degrees when using --pitch."),
     hfov: float = typer.Option(69.4, help="Horizontal FOV, if the source has no intrinsics."),
     vfov: float = typer.Option(42.5, help="Vertical FOV, if the source has no intrinsics."),
+    floor_roi: str = typer.Option(
+        None, help="D435f: permanently visible floor rectangle as normalised x0,y0,x1,y1."
+    ),
 ) -> None:
     """Capture a camera's intrinsics + tilt + height into a calibration file.
 
@@ -4646,9 +4741,23 @@ def calibrate(
     from ahfd.capture import open_source
     from ahfd.types import Intrinsics
 
-    device_identity = _probe_onsite_d435i() if source.startswith("rs://") else None
+    device_identity = _probe_onsite_realsense() if source.startswith("rs://") else None
     device_serial = device_identity[0] if device_identity is not None else None
     device_serial_sha256 = device_identity[1] if device_identity is not None else None
+    roi = None
+    if floor_roi is not None:
+        from ahfd.geometry.orientation import validate_floor_roi
+
+        try:
+            roi = validate_floor_roi(floor_roi.split(","))
+        except ValueError as exc:
+            raise typer.BadParameter(str(exc)) from exc
+    if device_identity is not None and device_identity[2] == "d435f":
+        if pitch is None or roi is None:
+            raise typer.BadParameter(
+                "D435f has no IMU: supply measured --pitch, --roll and --height, "
+                "plus --floor-roi x0,y0,x1,y1 for live mount verification"
+            )
     src = open_source(source, device_serial=device_serial)
     cam_id = camera_id or Path(out).stem
 
@@ -4689,6 +4798,7 @@ def calibrate(
             pitch_deg=pitch,
             roll_deg=roll,
             device_serial_sha256=device_serial_sha256,
+            floor_roi=roi,
         )
         typer.echo("using your --pitch " + format(pitch, ".1f") + " deg (measurement overrides IMU)")
     elif frame.gravity is not None:

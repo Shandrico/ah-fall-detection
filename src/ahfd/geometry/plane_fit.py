@@ -66,7 +66,7 @@ def fit_plane_ransac(points: np.ndarray, *, iters: int = 300, thresh: float = 0.
     if best_inliers is not None and int(best_inliers.sum()) >= 3:  # refine on inliers
         pts = points[best_inliers]
         centre = pts.mean(0)
-        _, _, vt = np.linalg.svd(pts - centre)
+        _, _, vt = np.linalg.svd(pts - centre, full_matrices=False)
         nrm = vt[2] / np.linalg.norm(vt[2])
         d = -float(nrm @ centre)
         best_inliers = np.abs(points @ nrm + d) < thresh
