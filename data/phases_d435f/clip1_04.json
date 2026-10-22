@@ -1,0 +1,13 @@
+{
+  "clip_id": "clip1_04",
+  "duration_s": 61.2,
+  "segments": [
+    { "start_s": 0, "end_s": 25, "phase": "RECLINED" },
+    { "start_s": 25, "end_s": 27, "phase": "TORSO_RISING" },
+    { "start_s": 27, "end_s": 42, "phase": "UPRIGHT_IN_BED" },
+    { "start_s": 42, "end_s": 44, "phase": "SHIFTING_TO_EDGE" },
+    { "start_s": 44, "end_s": 51, "phase": "SHIFTING_TO_EDGE" },
+    { "start_s": 51, "end_s": 53, "phase": "ATTEMPTING_STAND" },
+    { "start_s": 53, "end_s": 57, "phase": "OUT_OF_BED" }
+  ]
+}

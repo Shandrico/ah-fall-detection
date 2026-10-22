@@ -1,0 +1,13 @@
+{
+  "clip_id": "clip1_07",
+  "duration_s": 61.13,
+  "segments": [
+    { "start_s": 0, "end_s": 10, "phase": "RECLINED" },
+    { "start_s": 10, "end_s": 11, "phase": "RECLINED" },
+    { "start_s": 11, "end_s": 15, "phase": "SHIFTING_TO_EDGE" },
+    { "start_s": 15, "end_s": 19, "phase": "EDGE_SITTING" },
+    { "start_s": 19, "end_s": 21, "phase": "ATTEMPTING_STAND" },
+    { "start_s": 21, "end_s": 24, "phase": "OUT_OF_BED" },
+    { "start_s": 24.1, "end_s": 40.1, "phase": "OUT_OF_BED" }
+  ]
+}

@@ -1,0 +1,10 @@
+{
+  "clip_id": "clip1_10",
+  "duration_s": 61.47,
+  "segments": [
+    { "start_s": 0, "end_s": 12, "phase": "RECLINED" },
+    { "start_s": 12, "end_s": 16, "phase": "TORSO_RISING" },
+    { "start_s": 16, "end_s": 33, "phase": "UPRIGHT_IN_BED" },
+    { "start_s": 35, "end_s": 61, "phase": "RECLINED" }
+  ]
+}
