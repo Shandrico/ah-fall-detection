@@ -241,6 +241,9 @@ system Python + `venv --system-site-packages`. Same tooling both ends.
 
 ## Hardware
 
+Moving to the Jetson? See the [transfer quick start](docs/JETSON_HANDOFF.md)
+for the SSD checker, offline code restore, runtime requirements and training gates.
+
 Intel **RealSense D435i** + NVIDIA **Jetson Orin NX 16 GB**.
 
 Notes that cost time if missed:

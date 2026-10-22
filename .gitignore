@@ -41,6 +41,9 @@ onsite_sessions/
 **/ses_*/
 # Frozen study plans contain participant/site pseudonyms and simulated modes.
 **/plan_*.json
+# External device handoffs may contain sensitive study metadata and model files.
+**/AHFD_JETSON_HANDOFF_*/
+**/transfer_manifest.json
 
 # Python
 __pycache__/

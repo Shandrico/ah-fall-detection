@@ -1,0 +1,29 @@
+# Replay-only smoke profile. Replace this placeholder with the Linux SSD mount.
+# Not an approved collect config; no care policy or detector is enabled.
+source: "bag://REPLACE_WITH_SSD_MOUNT/ah_bags_d435f/clip1_03.db3"
+calibration: null
+pose:
+  backend: rtmo
+  model_size: s
+  runtime: onnxruntime
+  device: cuda
+smoothing:
+  enabled: true
+detect:
+  enabled: false
+bed_activity:
+  enabled: false
+  emit_early_warning: false
+  emit_exit_event: false
+alert:
+  console: false
+  jsonl_path: null
+view:
+  mode: skeleton
+privacy:
+  allow_raw_capture: false
+dashboard:
+  host: "127.0.0.1"
+  show_rgb: false
+  allow_rgb: false
+  allow_custom_source: false
