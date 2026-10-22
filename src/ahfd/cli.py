@@ -3205,13 +3205,65 @@ def train_posture(
     random frames from the same recording. Without an honest group hold-out,
     only training accuracy is reported, not a generalisation score.
     """
+    _train_segment_classifier(
+        calibration, labels, tracks, out, max_depth,
+        label_key="posture", unit="posture",
+    )
+
+
+@app.command(name="train-phases")
+def train_phases(
+    calibration: Path = typer.Option(..., help="Calibration YAML (for the metric features)."),
+    labels: Path = typer.Option(Path("data/phases"), help="Dir of bed-exit phase-label JSONs."),
+    tracks: Path = typer.Option(Path("data/tracks"), help="Dir of extracted <clip>.jsonl."),
+    out: Path = typer.Option(None, help="Save the trained model here (.joblib), optional."),
+    max_depth: int = typer.Option(6, help="Tree depth (small = interpretable)."),
+) -> None:
+    """Train a bed-exit activity-phase classifier from labelled clips.
+
+    The phase twin of ``train-posture``: it reads ``phase`` label files (the
+    RECLINED / UPRIGHT_IN_BED / EDGE_SITTING / OUT_OF_BED ... activity phases
+    marked with ``label-phases``) + the same extracted tracks + calibration,
+    and fits the same small, honest group-held-out tree -- only the classes
+    differ. Run it per camera (its own ``--labels`` dir and ``--calibration``)
+    to compare mounts: the TEST macro-F1 in the report is the comparison.
+
+    The ten A-E takes are multi-occupant (bystanders on the other bed / walking
+    past), so each take's rows are taken from the person on *its* scripted bed
+    (nearest/middle, from the collection script), followed by track id once
+    identified. That needs the bed zones calibrated (`ahfd calibrate-zones`).
+    """
+    from ahfd.annotate import PILOT_PHASE_SCRIPT
+
+    target_beds = {
+        "clip1_%02d" % i: PILOT_PHASE_SCRIPT[i]["bed"] for i in PILOT_PHASE_SCRIPT
+    }
+    _train_segment_classifier(
+        calibration, labels, tracks, out, max_depth,
+        label_key="phase", unit="phase", target_beds=target_beds,
+    )
+
+
+def _train_segment_classifier(
+    calibration: Path, labels: Path, tracks: Path, out, max_depth: int,
+    *, label_key: str, unit: str, target_beds: dict | None = None,
+) -> None:
+    """Shared body of ``train-posture`` / ``train-phases`` (classes-agnostic).
+
+    ``label_key`` is the segment field read as the class (``posture``/``phase``)
+    and ``unit`` is the word used in the printed report. ``target_beds`` maps a
+    clip stem to its target bed, so multi-occupant clips train on the right
+    person (see ``build_dataset``).
+    """
     from collections import Counter
 
     from ahfd.geometry.calibration import load_calibration
     from ahfd.ml.posture import build_dataset, train
 
     calib = load_calibration(calibration)
-    rows, labels_list, groups, used, skipped = build_dataset(labels, tracks, calib)
+    rows, labels_list, groups, used, skipped = build_dataset(
+        labels, tracks, calib, label_key=label_key, target_beds=target_beds
+    )
 
     if skipped:
         typer.echo("WARNING: skipped label files that failed to parse (fix the JSON):")
@@ -3224,7 +3276,7 @@ def train_posture(
         typer.echo("  " + clip.ljust(24) + str(n) + " labelled frames")
     if not rows:
         raise typer.BadParameter(
-            "no labelled frames found. Need posture files in "
+            "no labelled frames found. Need " + unit + " files in "
             + str(labels)
             + " with real segments AND matching tracks in "
             + str(tracks)
@@ -3234,12 +3286,13 @@ def train_posture(
     dist = Counter(labels_list)
     typer.echo("")
     typer.echo(
-        "samples per posture: "
+        "samples per " + unit + ": "
         + ", ".join(k + "=" + str(v) for k, v in sorted(dist.items()))
     )
     typer.echo("total samples: " + str(len(rows)))
 
     result = train(rows, labels_list, groups=groups, max_depth=max_depth)
+    width = max(12, max((len(c) for c in result.classes), default=12) + 1)
 
     typer.echo("")
     if result.split_done:
@@ -3261,7 +3314,7 @@ def train_posture(
     typer.echo("")
     typer.echo("confusion (rows=true, cols=pred): " + "  ".join(result.classes))
     for cls, row in zip(result.classes, result.confusion):
-        typer.echo("  " + cls.ljust(12) + " ".join(str(x).rjust(4) for x in row))
+        typer.echo("  " + cls.ljust(width) + " ".join(str(x).rjust(4) for x in row))
 
     typer.echo("")
     typer.echo("tree feature importances (what THIS tree split on -- noisy on small data):")
@@ -3275,7 +3328,7 @@ def train_posture(
     # importances are not. Show the top handful with their per-class means so
     # the separation is legible, not just a score.
     typer.echo("")
-    typer.echo("most discriminative features (ANOVA F-score, higher = separates postures better):")
+    typer.echo("most discriminative features (ANOVA F-score, higher = separates " + unit + "s better):")
     header = "  " + "feature".ljust(18) + "F".rjust(8) + "  MI".ljust(8)
     header += "".join(c[:8].rjust(10) for c in result.classes)
     typer.echo(header)
@@ -3285,7 +3338,7 @@ def train_posture(
             m = result.class_means[c].get(feat, float("nan"))
             line += (format(m, ".2f") if m == m else "  --").rjust(10)
         typer.echo(line)
-    typer.echo("  (last columns = mean value of that feature per posture -- read across to see the gap)")
+    typer.echo("  (last columns = mean value of that feature per " + unit + " -- read across to see the gap)")
 
     typer.echo("")
     typer.echo(result.report)
@@ -3700,6 +3753,149 @@ def label_postures(
             tmp_mp4.unlink()
             typer.echo("removed temp colour mp4")
     typer.echo("saved " + str(n) + " segment(s) to " + str(out_path))
+
+
+def _clip_index(stem: str) -> int | None:
+    """The take number from a clip stem like ``clip1_03`` -> 3, else None."""
+    _head, sep, tail = stem.rpartition("_")
+    return int(tail) if sep and tail.isdigit() else None
+
+
+@app.command(name="label-phases")
+def label_phases(
+    clip: Path = typer.Argument(..., help="Clip to label: an .mp4, or a depth .db3/.bag (auto colour-exported)."),
+    out: Path = typer.Option(
+        None, help="Phase JSON to write. Default: data/phases/<clip>.json."
+    ),
+    seed: bool = typer.Option(
+        True,
+        "--seed/--no-seed",
+        help="Pre-fill from the A-E collection script (by clip number) when no label file exists yet.",
+    ),
+    config: Path = typer.Option(
+        None,
+        help="For .bag/.db3 only: YAML whose privacy.allow_raw_capture is true.",
+    ),
+    consent: bool = typer.Option(
+        False,
+        "--i-understand-raw-capture",
+        help="Required to label a .db3/.bag directly (it writes a temp colour mp4).",
+    ),
+) -> None:
+    """Scrub a clip and mark the 7 bed-exit activity phases -- offline.
+
+    The phase twin of ``label-postures``: same scrubber, but the number keys are
+    1 RECLINED, 2 TORSO_RISING, 3 UPRIGHT_IN_BED, 4 SHIFTING_TO_EDGE,
+    5 EDGE_SITTING, 6 ATTEMPTING_STAND, 7 OUT_OF_BED (gaps = UNKNOWN, excluded
+    from training). s/SPACE=start, f=end then 1-7, u=undo, w=save, q=save+quit.
+
+    By default, if the clip is one of the ten A-E takes (``clip1_NN``) and no
+    label file exists yet, the script's phase timeline is pre-loaded as a draft
+    so you only nudge boundaries for the real recording delay instead of marking
+    from scratch. Pass ``--no-seed`` to start blank. A depth .db3/.bag is colour
+    -exported to a temp .mp4 for scrubbing (then deleted), exactly as
+    ``label-postures`` does; only the label JSON is kept.
+    """
+    from ahfd.annotate import (
+        PHASE_SCHEME,
+        PILOT_PHASE_SCRIPT,
+        dump_posture_json,
+        run_labeler,
+        seed_segments,
+    )
+
+    if not clip.exists():
+        raise typer.BadParameter("clip not found: " + str(clip))
+    out_path = out or (Path("data/phases") / (clip.stem + ".json"))
+
+    # Seed from the collection script so a take opens pre-filled. Only when the
+    # label file does not exist yet, so a re-open never clobbers corrections.
+    if seed and not out_path.exists():
+        idx = _clip_index(clip.stem)
+        if idx in PILOT_PHASE_SCRIPT:
+            segs = seed_segments(idx)
+            duration = max((s["end_s"] for s in segs), default=0.0)
+            out_path.parent.mkdir(parents=True, exist_ok=True)
+            out_path.write_text(
+                dump_posture_json(clip.stem, duration, segs, label_key="phase"),
+                encoding="utf-8",
+            )
+            typer.echo(
+                "seeded %d draft phase segment(s) from script block %s (take %d) -- correct the delay in the labeller"
+                % (len(segs), PILOT_PHASE_SCRIPT[idx]["block"], idx)
+            )
+
+    # A depth recording is not a video the labeller can open, so colour-export
+    # it to a temp .mp4 first (transparently) and remove it afterwards.
+    tmp_mp4 = None
+    label_src = clip
+    if clip.suffix.lower() in (".db3", ".bag"):
+        if not consent:
+            raise typer.BadParameter(
+                "labelling a .db3/.bag writes a temporary colour mp4; pass "
+                "--i-understand-raw-capture (consented staged data only)."
+            )
+        import tempfile
+
+        from ahfd.debug.color_export import export_color
+
+        cfg = load_config(config)
+        tmp_mp4 = Path(tempfile.gettempdir()) / (clip.stem + "_phaselabel.mp4")
+        typer.echo("colour-exporting " + clip.name + " -> temp mp4 for labelling ...")
+        frames = export_color(
+            clip,
+            tmp_mp4,
+            config_flag=cfg.privacy.allow_raw_capture,
+            cli_flag=consent,
+        )
+        typer.echo("exported " + str(frames) + " frames; opening labeller ...")
+        label_src = tmp_mp4
+
+    typer.echo("labelling phases " + clip.stem + "  ->  " + str(out_path))
+    typer.echo("  s/SPACE=start  f=end  1-7=phase  u=undo  w=save  q=save+quit")
+    typer.echo("  1 RECLINED  2 TORSO_RISING  3 UPRIGHT_IN_BED  4 SHIFTING_TO_EDGE  5 EDGE_SITTING  6 ATTEMPTING_STAND  7 OUT_OF_BED")
+    try:
+        n = run_labeler(label_src, out_path, scheme=PHASE_SCHEME)
+    finally:
+        if tmp_mp4 is not None and tmp_mp4.exists():
+            tmp_mp4.unlink()
+            typer.echo("removed temp colour mp4")
+    typer.echo("saved " + str(n) + " phase segment(s) to " + str(out_path))
+
+
+@app.command(name="seed-phases")
+def seed_phases(
+    out_dir: Path = typer.Argument(
+        ..., help="Directory to write seed <prefix><NN>.json phase drafts into, e.g. data/phases_d435i."
+    ),
+    prefix: str = typer.Option("clip1_", help="Clip filename prefix (stem before the take number)."),
+    overwrite: bool = typer.Option(
+        False, help="Overwrite existing drafts. DANGER: clobbers any corrections already made."
+    ),
+) -> None:
+    """Write first-draft phase labels for the ten A-E takes into a directory.
+
+    Turns the frozen collection script into seed ``phase`` files, one per take,
+    which ``label-phases`` then opens for correction. Existing files are kept
+    (never clobbered) unless ``--overwrite`` is given, so re-running is safe.
+    The seed is deliberately approximate: it covers the primary phases and the
+    real takes drift by a few seconds, which is what you fix in the labeller.
+    """
+    from ahfd.annotate import seed_phase_drafts
+
+    written = seed_phase_drafts(out_dir, prefix=prefix, overwrite=overwrite)
+    if not written:
+        typer.echo(
+            "nothing written -- the drafts already exist in " + str(out_dir)
+            + " (pass --overwrite to replace them, losing corrections)."
+        )
+        return
+    typer.echo("wrote %d seed phase draft(s) to %s:" % (len(written), out_dir))
+    for p in written:
+        typer.echo("  " + p.name)
+    typer.echo(
+        "now open each with `ahfd label-phases` to correct the boundaries for the real recording delay."
+    )
 
 
 @app.command()

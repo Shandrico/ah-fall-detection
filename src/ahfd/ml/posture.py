@@ -132,15 +132,18 @@ def features_row(feats, person, ground, min_keypoint_score: float = 0.3) -> dict
     return {k: _finite_or_none(v) for k, v in row.items()}
 
 
-def _posture_at(segments: list[dict], t: float) -> str | None:
-    """The labelled posture at time ``t``, or None if ``t`` is in a gap.
+def _posture_at(segments: list[dict], t: float, label_key: str = "posture") -> str | None:
+    """The labelled class at time ``t``, or None if ``t`` is in a gap.
 
     Gaps between segments are transitions -- deliberately unlabelled, so they
-    are excluded from training rather than forced into a class.
+    are excluded from training rather than forced into a class. ``label_key`` is
+    the per-segment field: ``posture`` for the 4-class scheme, ``phase`` for the
+    bed-exit activity phases.
     """
     for seg in segments:
-        if seg["start_s"] <= t <= seg["end_s"]:
-            return str(seg["posture"])
+        val = seg.get(label_key)
+        if val is not None and seg["start_s"] <= t <= seg["end_s"]:
+            return str(val)
     return None
 
 
@@ -157,13 +160,94 @@ def _labelled_segments(path: Path) -> list[dict]:
 def _main_person(pose):
     """The person to score in a frame: the highest-confidence tracked one.
 
-    The clips are single-subject, so this is just "the person in view"; taking
-    the most confident track guards against a spurious second detection.
+    For a single-subject clip this is just "the person in view"; taking the most
+    confident track guards against a spurious second detection. When a clip has
+    bystanders (other beds, staff walking past), this is WRONG -- it can pick a
+    passer-by and flip between people frame to frame. Use ``_select_target_person``
+    with the clip's target bed in that case.
     """
     people = [p for p in pose.people if p.track_id is not None]
     if not people:
         return None
     return max(people, key=lambda p: p.score)
+
+
+# COCO-17 lower-body joints used to associate a person with a bed: the contact-
+# ish joints (ankles, then hips) back-projected to a bed's surface height.
+_ANKLES = (15, 16)
+_HIPS = (11, 12)
+
+
+def _person_bed_zone(person, ground, zones, min_score):
+    """The bed/chair zone this person's lower body projects into, or None.
+
+    Mirrors ``FeatureExtractor``'s association: each ankle/hip pixel is
+    back-projected to a candidate bed's *surface* height and tested against that
+    bed's polygon (a floor projection would miss someone lying ~0.5 m up). A
+    bystander standing clear of the beds projects into none of them.
+    """
+    kps, sc = person.keypoints, person.scores
+    for z in zones:
+        if z.kind not in ("bed", "chair") or z.top_m is None:
+            continue
+        for i in _ANKLES + _HIPS:
+            if sc[i] < min_score:
+                continue
+            xy = ground.pixel_to_plane(float(kps[i, 0]), float(kps[i, 1]), z.top_m)
+            if xy is not None and z.contains(xy):
+                return z
+    return None
+
+
+def _resolve_bed_zone(calib, bed_word):
+    """The single bed zone whose name contains ``bed_word`` (e.g. 'middle'), else None.
+
+    None when nothing matches, or when the word is ambiguous across several bed
+    zones -- the caller then warns and falls back rather than guessing a bed.
+    """
+    word = bed_word.strip().lower()
+    hits = [z for z in calib.zones.zones if z.kind == "bed" and word in z.name.strip().lower()]
+    return hits[0] if len(hits) == 1 else None
+
+
+def _dominant_bed_track(track_path, ground, target_zone, min_score):
+    """The track_id that occupies ``target_zone`` in the most frames, or None.
+
+    One pass over the clip. This is the clip's target-bed occupant -- the patient
+    -- identified by where they lie/sit, so we can then follow that track id even
+    after they leave the bed (when bed association no longer applies).
+    """
+    from collections import Counter
+
+    from ahfd.io import read_tracks
+
+    counts: "Counter" = Counter()
+    for pose in read_tracks(track_path):
+        for p in pose.people:
+            if p.track_id is None:
+                continue
+            if _person_bed_zone(p, ground, (target_zone,), min_score) is not None:
+                counts[p.track_id] += 1
+    return counts.most_common(1)[0][0] if counts else None
+
+
+def _select_target_person(pose, target_track, target_zone, ground, min_score):
+    """The person to score in a multi-occupant frame: the target-bed patient.
+
+    Prefer the locked ``target_track`` (so they are still chosen after they stand
+    and walk off the bed), else the sole person currently in the target bed, else
+    None -- a frame we cannot confidently attribute is dropped, never guessed, so
+    a bystander's pose never enters the training rows.
+    """
+    people = [p for p in pose.people if p.track_id is not None]
+    if not people:
+        return None
+    if target_track is not None:
+        for p in people:
+            if p.track_id == target_track:
+                return p
+    in_zone = [p for p in people if _person_bed_zone(p, ground, (target_zone,), min_score) is not None]
+    return in_zone[0] if len(in_zone) == 1 else None
 
 
 @dataclass
@@ -192,16 +276,30 @@ class TrainResult:
     model: object = field(default=None, repr=False)
 
 
-def build_dataset(labels_dir, tracks_dir, calib, min_keypoint_score: float = 0.3):
+def build_dataset(
+    labels_dir, tracks_dir, calib, min_keypoint_score: float = 0.3,
+    label_key: str = "posture", target_beds: dict | None = None,
+):
     """Build (rows, labels, groups, used, skipped) from labels + extracted tracks.
 
     ``rows`` is a list of {feature: value} dicts, ``labels`` the matching
-    postures, and ``groups`` the clip each row came from -- so an evaluator can
+    classes, and ``groups`` the clip each row came from -- so an evaluator can
     hold out a whole clip (frames within one recording are near-duplicates, and
     splitting them across train/test leaks). ``used`` is a list of
     (clip_id, n_frames) for coverage, ``skipped`` the label files that failed to
     parse. A clip contributes only if it has real segments *and* a matching
     ``<clip>.jsonl`` in ``tracks_dir``.
+
+    ``label_key`` is the per-segment field read as the class: ``posture`` (the
+    default, 4-class) or ``phase`` (the bed-exit activity phases). The same
+    metric features and clean-transition handling apply to both.
+
+    ``target_beds`` maps a clip stem to its target bed name (e.g.
+    ``{"clip1_04": "middle"}``). For a clip in the map, the row for each frame is
+    taken from the person on that bed (followed by track id once identified), so
+    bystanders on other beds or walking past never enter the data. Clips absent
+    from the map, or when the map is None, fall back to the highest-confidence
+    person -- correct only when the clip is single-subject.
     """
     from ahfd.features import FeatureExtractor
     from ahfd.io import read_tracks
@@ -227,6 +325,26 @@ def build_dataset(labels_dir, tracks_dir, calib, min_keypoint_score: float = 0.3
         if not track_path.exists():
             continue
 
+        # Multi-occupant clips: pick the person on this clip's target bed and
+        # follow their track, instead of the highest-confidence person (which
+        # would mix in bystanders). Identify the target track once, up front.
+        target_zone = None
+        target_track = None
+        if target_beds:
+            bed_word = target_beds.get(label_file.stem)
+            if bed_word:
+                target_zone = _resolve_bed_zone(calib, bed_word)
+                if target_zone is None:
+                    skipped.append((
+                        label_file.name,
+                        "no single bed zone matching %r in the calibration -- "
+                        "fell back to the highest-confidence person" % bed_word,
+                    ))
+                else:
+                    target_track = _dominant_bed_track(
+                        track_path, calib.ground, target_zone, min_keypoint_score
+                    )
+
         extractor = FeatureExtractor(
             calib.ground, zones=calib.zones, min_keypoint_score=min_keypoint_score
         )
@@ -240,10 +358,15 @@ def build_dataset(labels_dir, tracks_dir, calib, min_keypoint_score: float = 0.3
             if t0 is None:
                 t0 = pose.t
             t = pose.t - t0
-            posture = _posture_at(segments, t)
+            posture = _posture_at(segments, t, label_key)
             if posture is None:  # a transition/gap -- excluded
                 continue
-            person = _main_person(pose)
+            if target_zone is not None:
+                person = _select_target_person(
+                    pose, target_track, target_zone, calib.ground, min_keypoint_score
+                )
+            else:
+                person = _main_person(pose)
             if person is None:
                 continue
             feats = extractor.extract(person, t)

@@ -1,15 +1,22 @@
-"""Scrub-and-mark posture labeller.
+"""Scrub-and-mark segment labeller (postures, or bed-exit phases).
 
-A small video viewer (OpenCV window) for turning a staged clip into the posture
-segments the classifier trains on. You scrub the clip, mark a START, scrub to
-the END, and pick the posture -- one segment written per hold. Transitions are
-simply the gaps you leave between segments, which is what keeps the labels
-clean (see ``ahfd.ml.posture``).
+A small video viewer (OpenCV window) for turning a staged clip into the time
+segments a classifier trains on. You scrub the clip, mark a START, scrub to the
+END, and pick a class -- one segment written per hold. Transitions are simply
+the gaps you leave between segments, which is what keeps the labels clean (see
+``ahfd.ml.posture``).
 
-It is the posture twin of ``ahfd calibrate-zones``: read a frame, let a human
-point at what matters, write coordinates -- here time-codes, there floor
-metres. Like that tool it **never saves imagery**; only the label JSON is
-written, so the privacy guarantee holds (tests/test_privacy.py).
+It is the twin of ``ahfd calibrate-zones``: read a frame, let a human point at
+what matters, write coordinates -- here time-codes, there floor metres. Like
+that tool it **never saves imagery**; only the label JSON is written, so the
+privacy guarantee holds (tests/test_privacy.py).
+
+The labeller is parameterised by a :class:`LabelScheme` -- the set of classes,
+the JSON field they are written under, and their timeline colours. Two schemes
+ship: the 4-class :data:`POSTURE_SCHEME` (upright/sitting/in_bed/on_ground,
+field ``posture``) and the 7-phase :data:`PHASE_SCHEME` (the bed-exit activity
+phases, field ``phase``). ``run_labeler`` defaults to the posture scheme so
+every existing caller is unchanged.
 
 The heavy interactive loop is ``run_labeler``; the pure pieces it relies on
 (reading any existing labels, formatting the output) are split out so they can
@@ -19,6 +26,7 @@ be unit-tested without a display.
 from __future__ import annotations
 
 import json
+from dataclasses import dataclass
 from pathlib import Path
 
 # Posture classes, in the order their number keys are shown (1..4). These match
@@ -33,13 +41,62 @@ _POSTURE_BGR: dict[str, tuple[int, int, int]] = {
     "on_ground": (40, 40, 220),  # red
 }
 
+# Bed-exit activity phases, keys 1..7 -- the same names and order the live
+# `collect` observer uses (cli.py) and the bed-exit state machine emits
+# (ahfd.detect.bed_exit.BedActivityPhase). Marked OFFLINE here against a
+# recorded clip; UNKNOWN is simply a gap left unlabelled, as with postures.
+PHASE_CLASSES: tuple[str, ...] = (
+    "RECLINED",
+    "TORSO_RISING",
+    "UPRIGHT_IN_BED",
+    "SHIFTING_TO_EDGE",
+    "EDGE_SITTING",
+    "ATTEMPTING_STAND",
+    "OUT_OF_BED",
+)
 
-def load_existing_segments(path: Path) -> tuple[str | None, list[dict]]:
-    """Return (clip_id, real_segments) from an existing posture file, if any.
+# Ribbon colours, reclined (blue) -> out of bed (red), so the timeline reads as
+# a left-to-right progression out of the bed.
+_PHASE_BGR: dict[str, tuple[int, int, int]] = {
+    "RECLINED": (220, 140, 40),  # blue
+    "TORSO_RISING": (210, 180, 60),  # teal
+    "UPRIGHT_IN_BED": (120, 200, 60),  # green
+    "SHIFTING_TO_EDGE": (40, 210, 200),  # yellow
+    "EDGE_SITTING": (40, 170, 230),  # orange
+    "ATTEMPTING_STAND": (40, 110, 240),  # deep orange
+    "OUT_OF_BED": (40, 40, 220),  # red
+}
+
+
+@dataclass(frozen=True)
+class LabelScheme:
+    """What the labeller marks: the classes, their JSON field, their colours.
+
+    ``name`` captions the window; ``classes`` are shown on number keys 1..N;
+    ``key`` is the per-segment JSON field (``posture`` or ``phase``); ``colours``
+    maps each class to a BGR timeline colour.
+    """
+
+    name: str
+    classes: tuple[str, ...]
+    key: str
+    colours: dict[str, tuple[int, int, int]]
+
+
+POSTURE_SCHEME = LabelScheme("postures", POSTURE_CLASSES, "posture", _POSTURE_BGR)
+PHASE_SCHEME = LabelScheme("phases", PHASE_CLASSES, "phase", _PHASE_BGR)
+
+
+def load_existing_segments(
+    path: Path, *, scheme: LabelScheme = POSTURE_SCHEME
+) -> tuple[str | None, list[dict]]:
+    """Return (clip_id, real_segments) from an existing label file, if any.
 
     Placeholder rows (``end_s <= start_s``) are dropped, so re-opening a file
     that still holds the generated template starts you from a clean slate but
-    keeps any real segments you had already marked.
+    keeps any real segments you had already marked. Segments whose class is not
+    in ``scheme.classes`` are dropped too (a stale/foreign label). The segments
+    are returned under ``scheme.key`` -- the same field the labeller writes.
     """
     if not path.exists():
         return None, []
@@ -47,29 +104,34 @@ def load_existing_segments(path: Path) -> tuple[str | None, list[dict]]:
         data = json.loads(path.read_text(encoding="utf-8"))
     except (json.JSONDecodeError, OSError):
         return None, []
+    key = scheme.key
     segs = [
         {
             "start_s": round(float(s["start_s"]), 2),
             "end_s": round(float(s["end_s"]), 2),
-            "posture": str(s["posture"]),
+            key: str(s[key]),
         }
         for s in data.get("segments", [])
-        if float(s.get("end_s", 0)) > float(s.get("start_s", 0))
-        and s.get("posture") in POSTURE_CLASSES
+        if key in s
+        and float(s.get("end_s", 0)) > float(s.get("start_s", 0))
+        and s.get(key) in scheme.classes
     ]
     return data.get("clip_id"), segs
 
 
-def dump_posture_json(clip_id: str, duration_s: float, segments: list[dict]) -> str:
+def dump_posture_json(
+    clip_id: str, duration_s: float, segments: list[dict], *, label_key: str = "posture"
+) -> str:
     """Format labels as the project's compact one-segment-per-line JSON.
 
     Segments are sorted by start time so the file reads in clip order regardless
-    of the sequence they were marked in.
+    of the sequence they were marked in. ``label_key`` is the per-segment field
+    (``posture`` by default, ``phase`` for the bed-exit phase scheme).
     """
     ordered = sorted(segments, key=lambda s: s["start_s"])
     lines = [
-        '    { "start_s": %s, "end_s": %s, "posture": "%s" }'
-        % (_num(s["start_s"]), _num(s["end_s"]), s["posture"])
+        '    { "start_s": %s, "end_s": %s, "%s": "%s" }'
+        % (_num(s["start_s"]), _num(s["end_s"]), label_key, s[label_key])
         for s in ordered
     ]
     body = ",\n".join(lines)
@@ -97,12 +159,6 @@ def _num(x: float) -> str:
 # Windows waitKeyEx codes for the arrow keys, so they can drive scrubbing too.
 _ARROWS = {2424832: "left", 2555904: "right", 2490368: "up", 2621440: "down"}
 
-_HELP_LINES = (
-    "click / drag the bar below to seek     a <- -1s   d -> +1s   , . 1frame   [ ] 5s",
-    "s / SPACE mark START     f mark END (then 1-4)     c cancel mark     r remove seg here",
-    "0 start   g end     u undo last     w save     q save+quit",
-)
-
 # Timeline ribbon geometry, shared by the drawer and the click-to-seek handler
 # so a click lands on exactly the bar that is drawn.
 _BAR_MARGIN = 12
@@ -110,13 +166,32 @@ _BAR_H = 14
 _BAR_BOTTOM = 28  # ribbon top sits at (display height - _BAR_BOTTOM)
 
 
-def run_labeler(clip_path: Path, out_path: Path, *, max_display_width: int = 1280) -> int:
-    """Open ``clip_path`` in a scrubber and write posture segments to ``out_path``.
+def _help_lines(scheme: LabelScheme) -> tuple[str, ...]:
+    return (
+        "click / drag the bar below to seek     a <- -1s   d -> +1s   , . 1frame   [ ] 5s",
+        "s / SPACE mark START     f mark END (then 1-%d)     c cancel mark     r remove seg here"
+        % len(scheme.classes),
+        "0 start   g end     u undo last     w save     q save+quit",
+    )
+
+
+def run_labeler(
+    clip_path: Path,
+    out_path: Path,
+    *,
+    scheme: LabelScheme = POSTURE_SCHEME,
+    max_display_width: int = 1280,
+) -> int:
+    """Open ``clip_path`` in a scrubber and write ``scheme`` segments to ``out_path``.
 
     Returns the number of segments saved. Requires a display (run it on the
-    laptop, not the headless Jetson).
+    laptop, not the headless Jetson). Any segments already in ``out_path`` (for
+    this scheme) are loaded for editing -- which is how a script-seeded draft is
+    corrected rather than marked from scratch.
     """
     import cv2
+
+    key_field = scheme.key
 
     cap = cv2.VideoCapture(str(clip_path))
     if not cap.isOpened():
@@ -131,7 +206,7 @@ def run_labeler(clip_path: Path, out_path: Path, *, max_display_width: int = 128
         raise RuntimeError("video reports no frames: " + str(clip_path))
     duration_s = n_frames / fps
 
-    clip_id, segments = load_existing_segments(out_path)
+    clip_id, segments = load_existing_segments(out_path, scheme=scheme)
     clip_id = clip_id or clip_path.stem
 
     step = max(1, int(round(fps)))  # frames in one second
@@ -144,7 +219,7 @@ def run_labeler(clip_path: Path, out_path: Path, *, max_display_width: int = 128
     pending: tuple[float, float] | None = None  # (start, end) awaiting a class
     status = "loaded " + str(len(segments)) + " existing segment(s)"
 
-    win = "ahfd label-postures  [" + clip_id + "]"
+    win = "ahfd label-" + scheme.name + "  [" + clip_id + "]"
     cv2.namedWindow(win, cv2.WINDOW_AUTOSIZE)
 
     # Click or drag on the timeline ribbon to seek there, like a normal video
@@ -173,6 +248,8 @@ def run_labeler(clip_path: Path, out_path: Path, *, max_display_width: int = 128
         cur = min(max(0, cur + delta_frames), n_frames - 1)
         need_read = True
 
+    help_lines = _help_lines(scheme)
+
     while True:
         if need_read:
             cap.set(cv2.CAP_PROP_POS_FRAMES, cur)
@@ -190,7 +267,7 @@ def run_labeler(clip_path: Path, out_path: Path, *, max_display_width: int = 128
         ui["geom"] = (dh - _BAR_BOTTOM, dh - _BAR_BOTTOM + _BAR_H, _BAR_MARGIN, dw - _BAR_MARGIN)
         _draw_overlay(
             cv2, disp, t_now(), duration_s, cur, n_frames, start_mark,
-            pending, segments, status,
+            pending, segments, status, scheme, help_lines,
         )
         cv2.imshow(win, disp)
 
@@ -204,14 +281,14 @@ def run_labeler(clip_path: Path, out_path: Path, *, max_display_width: int = 128
         arrow = _ARROWS.get(code)
         key = code & 0xFF
 
-        # --- pick a posture while an end is pending -------------------------
+        # --- pick a class while an end is pending ---------------------------
         if pending is not None:
-            if ord("1") <= key <= ord("0") + len(POSTURE_CLASSES):
-                posture = POSTURE_CLASSES[key - ord("1")]
+            if ord("1") <= key <= ord("0") + len(scheme.classes):
+                cls = scheme.classes[key - ord("1")]
                 segments.append(
-                    {"start_s": pending[0], "end_s": pending[1], "posture": posture}
+                    {"start_s": pending[0], "end_s": pending[1], key_field: cls}
                 )
-                status = "added %s  %.2f-%.2fs" % (posture, pending[0], pending[1])
+                status = "added %s  %.2f-%.2fs" % (cls, pending[0], pending[1])
                 pending = None
                 start_mark = None
             elif key in (ord("c"), 27):  # cancel the pending end
@@ -247,12 +324,12 @@ def run_labeler(clip_path: Path, out_path: Path, *, max_display_width: int = 128
                 status = "END must be after START (%.2fs)" % start_mark
             else:
                 pending = (start_mark, t_now())
-                status = "pick posture: " + _class_menu()
+                status = "pick: " + _class_menu(scheme)
         elif key == ord("u"):
             if segments:
                 gone = segments.pop()
                 status = "undo %s %.2f-%.2fs" % (
-                    gone["posture"], gone["start_s"], gone["end_s"]
+                    gone[key_field], gone["start_s"], gone["end_s"]
                 )
             else:
                 status = "nothing to undo"
@@ -271,54 +348,62 @@ def run_labeler(clip_path: Path, out_path: Path, *, max_display_width: int = 128
             if hit is not None:
                 gone = segments.pop(hit)
                 status = "removed %s %.2f-%.2fs" % (
-                    gone["posture"], gone["start_s"], gone["end_s"]
+                    gone[key_field], gone["start_s"], gone["end_s"]
                 )
             else:
                 status = "no segment at %.2fs (scrub onto one to remove it)" % t
         elif key == ord("w"):
-            _write(out_path, clip_id, duration_s, segments)
+            _write(out_path, clip_id, duration_s, segments, scheme)
             status = "saved %d segment(s) -> %s" % (len(segments), out_path.name)
         elif key in (ord("q"), 27):
             break
 
     cap.release()
     cv2.destroyAllWindows()
-    _write(out_path, clip_id, duration_s, segments)
+    _write(out_path, clip_id, duration_s, segments, scheme)
     return len(segments)
 
 
-def _class_menu() -> str:
+def _class_menu(scheme: LabelScheme) -> str:
     return "   ".join(
-        str(i + 1) + "=" + name for i, name in enumerate(POSTURE_CLASSES)
+        str(i + 1) + "=" + name for i, name in enumerate(scheme.classes)
     ) + "   c=cancel"
 
 
-def _write(out_path: Path, clip_id: str, duration_s: float, segments: list[dict]) -> None:
+def _write(
+    out_path: Path, clip_id: str, duration_s: float, segments: list[dict],
+    scheme: LabelScheme = POSTURE_SCHEME,
+) -> None:
     out_path.parent.mkdir(parents=True, exist_ok=True)
     out_path.write_text(
-        dump_posture_json(clip_id, duration_s, segments), encoding="utf-8"
+        dump_posture_json(clip_id, duration_s, segments, label_key=scheme.key),
+        encoding="utf-8",
     )
 
 
 def _draw_overlay(
-    cv2, disp, t, duration, cur, n_frames, start_mark, pending, segments, status
+    cv2, disp, t, duration, cur, n_frames, start_mark, pending, segments, status,
+    scheme: LabelScheme = POSTURE_SCHEME, help_lines: tuple[str, ...] | None = None,
 ) -> None:
     """Draw the HUD and the timeline ribbon onto the display frame (in memory)."""
     h, w = disp.shape[:2]
     yellow, white, green = (0, 255, 255), (255, 255, 255), (80, 255, 80)
+    key_field = scheme.key
+    if help_lines is None:
+        help_lines = _help_lines(scheme)
 
     def text(s, x, y, color=white, scale=0.6, thick=2):
         cv2.putText(disp, s, (x, y), cv2.FONT_HERSHEY_SIMPLEX, scale, (0, 0, 0), thick + 2, cv2.LINE_AA)
         cv2.putText(disp, s, (x, y), cv2.FONT_HERSHEY_SIMPLEX, scale, color, thick, cv2.LINE_AA)
 
     text("t=%6.2fs / %.1fs   frame %d/%d   segs:%d" % (t, duration, cur, n_frames - 1, len(segments)), 12, 28, yellow, 0.7)
-    for i, line in enumerate(_HELP_LINES):
+    for i, line in enumerate(help_lines):
         text(line, 12, 54 + i * 22, white, 0.5, 1)
 
     if start_mark is not None:
         text("START @ %.2fs" % start_mark, 12, 130, green, 0.65)
     if pending is not None:
-        text("PICK POSTURE  %.2f-%.2fs :  %s" % (pending[0], pending[1], _class_menu()), 12, 158, yellow, 0.6)
+        text("PICK  %.2f-%.2fs :  %s" % (pending[0], pending[1], _class_menu(scheme)), 12, 158, yellow, 0.55)
     if status:
         text(status, 12, h - 46, (180, 220, 255), 0.55, 1)
 
@@ -332,7 +417,7 @@ def _draw_overlay(
     for s in segments:
         cv2.rectangle(
             disp, (x_of(s["start_s"]), bar_y), (x_of(s["end_s"]), bar_y + bar_h),
-            _POSTURE_BGR.get(s["posture"], (200, 200, 200)), -1,
+            scheme.colours.get(s[key_field], (200, 200, 200)), -1,
         )
     if start_mark is not None:
         cv2.line(disp, (x_of(start_mark), bar_y - 4), (x_of(start_mark), bar_y + bar_h + 4), green, 2)

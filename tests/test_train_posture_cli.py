@@ -19,7 +19,7 @@ def test_cli_passes_groups_and_reports_split_kind(monkeypatch, held_out):
     monkeypatch.setattr(
         posture,
         "build_dataset",
-        lambda *args: (rows, labels, groups, [("fall_standing_03", 2)], []),
+        lambda *args, **kwargs: (rows, labels, groups, [("fall_standing_03", 2)], []),
     )
     calls = []
 
