@@ -2,31 +2,48 @@ camera_id: d435f
 camera:
   width: 1920
   height: 1080
-  fx: 1360.0
-  fy: 1358.0
-  cx: 980.0
-  cy: 572.0
-  height_m: 2.5
+  fx: 1360.15625
+  fy: 1358.337158
+  cx: 980.76001
+  cy: 572.590088
+  height_m: 2.6
   gravity:
   - 0.0
-  - -9.4661
-  - -2.5364
+  - -8.487
+  - -4.9
 zones:
-- name: 24/09/2026
+- name: nearest (15/10/2026)
   kind: bed
-  top_m: 0.4
-  risk_level: low
+  top_m: 0.53
+  risk_level: medium
   polygon:
-  - - -1.044
-    - 9.301
-  - - 0.084
-    - 10.129
-  - - 0.879
-    - 6.805
-  - - -0.123
-    - 6.386
-notes: 'D435f multi-bed mount, ~15 deg downtilt. Zones NOT yet calibrated for this
-  mount -- run `ahfd calibrate-zones` on a D435f clip before using bed-exit detection.
-  Gravity is synthesised (no IMU); re-derive if the mount angle changes.
+  - - -1.382
+    - 4.403
+  - - -1.725
+    - 3.291
+  - - -0.096
+    - 2.106
+  - - 0.335
+    - 3.151
+- name: middle
+  kind: bed
+  top_m: 0.51
+  risk_level: medium
+  polygon:
+  - - -0.351
+    - 4.558
+  - - 0.209
+    - 5.886
+  - - 1.656
+    - 4.674
+  - - 1.137
+    - 3.44
+notes: 'D435f two-bed mount, 2.6 m lens, 30 deg downtilt, roll 0. Intrinsics from
+  the D435f factory RGB profile (pending_two_bed_setup). Gravity is SYNTHESISED (D435f
+  has no IMU) from the operator-measured 30 deg tilt -- re-derive if the mount angle
+  changes. Zones cleared 2026-10-16 (camera moved; old 15 deg zone stale). Redraw
+  on a frozen frame from the RECORDED clip, not the live view:
+
+  ahfd calibrate-zones calib/d435f.yaml --source bag://data/ah_bags_d435f/clip1_01.db3
 
   '
