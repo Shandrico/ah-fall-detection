@@ -71,7 +71,7 @@ DASHBOARD_HTML = r"""<!doctype html>
             background:var(--panel); border:1px solid var(--line); border-radius:10px; }
   .player[hidden] { display:none; }
   .player input[type=range] { flex:1; cursor:pointer; padding:0; accent-color:var(--accent); }
-  .player .pos { color:var(--muted); font-size:12px; min-width:96px; text-align:right;
+  .player .pos { color:var(--muted); font-size:12px; min-width:190px; text-align:right;
                  font-variant-numeric:tabular-nums; }
   .player button { min-width:34px; }
   .player button.play { min-width:64px; }
@@ -187,7 +187,7 @@ DASHBOARD_HTML = r"""<!doctype html>
       <button id="pl-fwd" title="forward 1 frame">&rsaquo;</button>
       <button id="pl-fwd5" title="forward 1 second">&raquo;</button>
       <input type="range" id="pl-seek" min="0" max="0" value="0" step="1"/>
-      <span class="pos" id="pl-pos">0 / 0</span>
+      <span class="pos" id="pl-pos">0:00.0 / 0:00.0</span>
       <select id="pl-speed" title="playback speed">
         <option value="0.25">0.25&times;</option>
         <option value="0.5">0.5&times;</option>
@@ -294,11 +294,19 @@ async function switchTo(patch){
 // --- Video player (recording replay only) ---------------------------------
 let plDragging = false;              // don't fight the user while they scrub
 let plPaused = false, plFps = 30;
+// Position as recording time (m:ss.s), with the frame number for precise notes.
+function plClock(frame){
+  const s = frame / (plFps || 30), m = Math.floor(s / 60);
+  return m + ':' + (s - 60 * m).toFixed(1).padStart(4, '0');
+}
+function plLabel(cur, last){
+  return plClock(cur) + ' / ' + plClock(last) + '  (frame ' + cur + ')';
+}
 async function replay(action, value){ await post('/api/replay', {action, value}); }
 function setupPlayer(){
   const seek = document.getElementById('pl-seek');
   seek.addEventListener('input', ()=>{ plDragging = true;
-    document.getElementById('pl-pos').textContent = seek.value + ' / ' + seek.max; });
+    document.getElementById('pl-pos').textContent = plLabel(+seek.value, +seek.max); });
   seek.addEventListener('change', ()=>{ replay('seek', parseInt(seek.value,10)); plDragging = false; });
   document.getElementById('pl-play').onclick  = ()=> replay(plPaused ? 'play' : 'pause');
   document.getElementById('pl-back').onclick  = ()=> replay('step', -1);
@@ -318,7 +326,7 @@ function renderPlayer(rp, srcFps){
   seek.max = last;
   if(!plDragging){
     seek.value = rp.cur;
-    document.getElementById('pl-pos').textContent = rp.cur + ' / ' + last;
+    document.getElementById('pl-pos').textContent = plLabel(rp.cur, last);
   }
   document.getElementById('pl-play').textContent = rp.paused ? 'Play' : 'Pause';
   const sp = document.getElementById('pl-speed');

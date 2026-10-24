@@ -67,13 +67,15 @@ def run_depth_viewer(
     smooth: int = 2,
     pose: bool = False,
     backend: str = "rtmo",
-    runtime: str = "openvino",
+    runtime: str = "auto",
     device: str = "gpu",
     max_width: int = 1280,
     pitch: float | None = None,
 ) -> None:
     """Open the live depth viewer. See the module docstring for the keys."""
     import cv2
+
+    from ahfd.viz.depth_render import draw_depth_legend, shade_depth
 
     cmaps = _colormaps(cv2)
     ci = next((i for i, (n, _) in enumerate(cmaps) if n == colormap), 0)
@@ -105,6 +107,8 @@ def run_depth_viewer(
         "equalize": False,        # histogram-equalise the ramp (more contrast where the pixels are)
         "gauge": False,           # centre-ROI quality readout (fill %, mean, noise)
         "gauge_txt": None,
+        "shade": True,            # relief lighting from the depth surface normals
+        "legend": True,           # colour bar with metre ticks on the right
     }
 
     win = "ahfd depth viewer"
@@ -127,10 +131,11 @@ def run_depth_viewer(
             keypoint_heights_from_depth,
             region_height,
         )
-        from ahfd.pose import build_estimator
+        from ahfd.pose import build_estimator, resolve_runtime
         from ahfd.pose.skeleton import ANKLES, EDGES, HEAD, HIPS, KNEES, SHOULDERS
 
-        print("loading pose model (" + backend + " / " + runtime + ") ...")
+        runtime, device = resolve_runtime(runtime, device)
+        print("loading pose model (" + backend + " / " + runtime + " / " + device + ") ...")
         estimator = build_estimator(
             PoseConfig(backend=backend, runtime=runtime, device=device)
         )
@@ -333,6 +338,8 @@ def run_depth_viewer(
             lines.append("MODE height-above-floor  range %.2f-%.2f m  mount %.2f m" % (st["hmin"], st["hmax"], ground["h"]))
         else:
             lines.append("MODE depth  range %.2f-%.2f m%s" % (st["dmin"], st["dmax"], "  (AUTO)" if st["auto"] else ""))
+        if st["shade"]:
+            lines[-1] += "  |  shaded"
         lines.append("colormap %s%s%s  |  %s  |  %.0f fps" % (
             cmaps[ci][0], " (inv)" if st["invert"] else "",
             " (EQ)" if st["equalize"] else "",
@@ -358,7 +365,7 @@ def run_depth_viewer(
             cv2.putText(img, ln, (14, y), cv2.FONT_HERSHEY_SIMPLEX, 0.62, (0, 0, 0), 4, cv2.LINE_AA)
             cv2.putText(img, ln, (14, y), cv2.FONT_HERSHEY_SIMPLEX, 0.62, (255, 255, 255), 1, cv2.LINE_AA)
             y += 30
-        help_ln = "f mode  n numbers  e equalize  g gauge  c colormap  i invert  a auto  [ ] max  , . min  h holes  v color  space pause  q quit"
+        help_ln = "f mode  s shade  l legend  n numbers  e equalize  g gauge  c colormap  i invert  a auto  [ ] max  , . min  h holes  v color  space pause  q quit"
         cv2.putText(img, help_ln, (14, img.shape[0] - 16), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 0), 4, cv2.LINE_AA)
         cv2.putText(img, help_ln, (14, img.shape[0] - 16), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 0), 1, cv2.LINE_AA)
 
@@ -411,6 +418,9 @@ def run_depth_viewer(
                 field, lo, hi = depth_m, st["dmin"], st["dmax"]
 
             vis = _colorize(field, lo, hi, valid)
+            if st["shade"]:
+                vis = shade_depth(vis, depth_m, valid)
+                vis[~valid] = (0, 0, 0)
 
             if estimator is not None and frame.bgr is not None:
                 _pose_overlay(vis, depth_m, frame)
@@ -433,6 +443,13 @@ def run_depth_viewer(
                 vis = cv2.resize(vis, (max_width, int(vis.shape[0] * st["scale"])))
             else:
                 st["scale"] = 1.0
+
+            if st["legend"] and not st["equalize"]:
+                # An equalised ramp is non-linear, so a linear scale would mislead.
+                draw_depth_legend(
+                    vis, lo, hi, colormap=cmaps[ci][1], invert=st["invert"],
+                    unit="m" if st["mode"] == "depth" else "m up",
+                )
 
             _hud(vis, frame, depth_m)
             if st["numbers"]:
@@ -458,6 +475,10 @@ def run_depth_viewer(
                 st["auto"] = not st["auto"]
             elif k == ord("h"):
                 st["hole"] = not st["hole"]
+            elif k == ord("s"):
+                st["shade"] = not st["shade"]
+            elif k == ord("l"):
+                st["legend"] = not st["legend"]
             elif k == ord("v"):
                 st["color"] = not st["color"]
             elif k == ord(" "):

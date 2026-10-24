@@ -47,6 +47,7 @@ from ahfd.geometry.zones import (
     point_in_polygon,
     signed_distance_to_polygon,
 )
+from ahfd.ml.pose_features import _KNEE_CHAINS, _paired_angle
 from ahfd.pose.skeleton import ANKLES, HEAD, HIPS, SHOULDERS
 from ahfd.types import PersonPose
 
@@ -122,6 +123,10 @@ class Features:
     # -- which is why it can tell close-range sitting from lying even when the
     # metric heights are ambiguous.
     torso_tilt: float | None = None
+    # Hip->knee->ankle angle in the image, degrees (left/right averaged): ~180
+    # straight legs, ~90 seated. Scale-free like torso_tilt, so it tells a
+    # standing person from a seated one even when the metric heights under-read.
+    knee_angle: float | None = None
     # Shoulder elevation is the preferred rise signal.  When depth joint
     # heights are attached it is measured directly; otherwise it falls back to
     # the calibrated monocular estimate.
@@ -551,6 +556,7 @@ class FeatureExtractor:
             in_excluded_zone=self.zones.is_excluded(contact),
             bed_overlap=self._bed_overlap(person, valid),
             torso_tilt=self._torso_tilt(person, valid),
+            knee_angle=_paired_angle(person, valid, _KNEE_CHAINS),
             h_shoulder=shoulder,
             h_shoulder_source=shoulder_source,
             h_torso_source=torso_source,

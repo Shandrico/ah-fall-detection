@@ -46,3 +46,11 @@ notes: 'D435i two-bed mount, 2.6 m lens, ~30 deg downtilt (gravity from the reco
   ahfd calibrate-zones calib/d435i.yaml --source bag://data/ah_bags_d435i/clip1_01.db3
 
   '
+# This mount looks along the beds, so a lying torso reads ~34 deg of image tilt
+# (p10-p90 18-45) instead of ~73 side-on; sitting up reads ~15 (4-22). Tuned on
+# pilot dev takes 01-08 only; the defaults (58/48/38/48) suit the D435f view.
+bed_tilt_deg:
+  reclined_enter: 26
+  reclined_exit: 22
+  upright_enter: 18
+  upright_exit: 22

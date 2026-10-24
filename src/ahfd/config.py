@@ -75,6 +75,12 @@ class DetectConfig(BaseModel):
     # no longer swallowed as ON_GROUND, and the fall thresholds are untouched.
     seated_tilt_max: float = 35.0
     seated_h: tuple[float, float] = (0.70, 1.00)
+    # ...but not with visibly straight legs. Monocular torso height under-reads
+    # with range, so a person standing a few metres off can land in seated_h;
+    # a knee angle above this (image degrees, 180 = straight) vetoes SITTING.
+    # On the bed-exit pilot, standing read 156-178 deg (p10-p90) and seated
+    # 41-149 deg, so 155 keeps seated frames while catching most standing ones.
+    seated_knee_max: float = 155.0
 
     vz_trigger: float = -0.90
     vz_frames: int = 3
@@ -209,6 +215,11 @@ class DashboardConfig(BaseModel):
     # Turning RGB *off* from the page never needs authorising.
     allow_rgb: bool = False
     jpeg_quality: int = 90  # 0-100; higher is sharper and larger per frame
+    # Downscale the live view sent to the browser to at most this width (px);
+    # 0 sends it at capture size. Display only -- detection always runs on the
+    # full frame. A 1080p frame at quality 90 is ~250 KB, ~20 Mbit/s at 10 fps,
+    # more than a remote viewer over SSH/VPN usually gets; 960 px is ~1/5 of it.
+    stream_max_width: int = Field(default=0, ge=0)
 
     # Cameras offered in the page's picker. A connected RealSense is appended
     # automatically; nothing else is probed, because scanning webcam indices is

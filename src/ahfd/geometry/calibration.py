@@ -50,6 +50,12 @@ class Calibration:
     # D435f has no IMU. A human-selected, permanently visible floor rectangle
     # provides independent live mount verification. Normalised image xyxy.
     floor_roi: tuple[float, float, float, float] | None = None
+    # Torso image-tilt thresholds for the bed-activity phases, when this camera's
+    # viewpoint differs from the defaults (side-on to the beds). A camera looking
+    # along a bed sees a lying torso foreshortened -- ~34 deg instead of ~73 --
+    # so RECLINED never triggers at the default 58. Keys: reclined_enter,
+    # reclined_exit, upright_enter, upright_exit (degrees). None = defaults.
+    bed_tilt_deg: dict[str, float] | None = None
 
     @property
     def height_m(self) -> float:
@@ -161,6 +167,10 @@ def load_calibration(path: str | Path) -> Calibration:
             roll_deg=roll,
         )
 
+    bed_tilt = data.get("bed_tilt_deg")
+    if bed_tilt is not None:
+        bed_tilt = _validate_bed_tilt(bed_tilt)
+
     floor_roi = data.get("floor_roi")
     if floor_roi is not None:
         from ahfd.geometry.orientation import validate_floor_roi
@@ -176,7 +186,25 @@ def load_calibration(path: str | Path) -> Calibration:
         device_serial_sha256=serial_hash,
         ankle_height_baseline_m=ankle_baseline,
         floor_roi=floor_roi,
+        bed_tilt_deg=bed_tilt,
     )
+
+
+_BED_TILT_KEYS = ("reclined_enter", "reclined_exit", "upright_enter", "upright_exit")
+
+
+def _validate_bed_tilt(raw) -> dict[str, float]:
+    """All four keys, finite degrees in [0, 90], ordered so the bands cannot cross."""
+    if not isinstance(raw, dict) or set(raw) != set(_BED_TILT_KEYS):
+        raise ValueError("bed_tilt_deg needs exactly: " + ", ".join(_BED_TILT_KEYS))
+    tilt = {k: float(raw[k]) for k in _BED_TILT_KEYS}
+    if not all(np.isfinite(v) and 0.0 <= v <= 90.0 for v in tilt.values()):
+        raise ValueError("bed_tilt_deg values must be finite degrees in [0, 90]")
+    if not (tilt["upright_enter"] < tilt["upright_exit"] <= tilt["reclined_exit"] < tilt["reclined_enter"]):
+        raise ValueError(
+            "bed_tilt_deg must satisfy upright_enter < upright_exit <= reclined_exit < reclined_enter"
+        )
+    return tilt
 
 
 def drift_check(

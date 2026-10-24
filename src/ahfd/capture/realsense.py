@@ -604,6 +604,7 @@ class _RealSenseBase:
             pass
         self._started = False
         self._verified_depth_controls = None
+        self._player = None  # BagSource seek state; playback must reopen
 
 
 class RealSenseSource(_RealSenseBase):
@@ -744,7 +745,113 @@ class BagSource(_RealSenseBase):
             height=self._color_size[1],
             fps=float(self._fps),
             has_depth=self._with_depth,
+            frame_count=self._color_frame_count(),
         )
+
+    def _color_frame_count(self) -> int | None:
+        """Colour frames in a .db3 recording, counted from its index; else None.
+
+        A .db3 is a SQLite file, so the count is one read-only query and never
+        starts playback (``extract`` reads ``meta`` before iterating). ROS1
+        .bag files are not indexed this way and stay non-seekable.
+        """
+        if hasattr(self, "_frame_count"):
+            return self._frame_count
+        self._frame_count = None
+        if str(self._path).lower().endswith(".db3"):
+            import sqlite3
+            from pathlib import Path
+
+            try:
+                uri = Path(self._path).resolve().as_uri() + "?mode=ro"
+                con = sqlite3.connect(uri, uri=True, timeout=5)
+                try:
+                    row = con.execute(
+                        "SELECT COUNT(*) FROM messages m JOIN topics t ON m.topic_id = t.id"
+                        " WHERE t.name LIKE '%/Color_0/image/data'"
+                    ).fetchone()
+                finally:
+                    con.close()
+                self._frame_count = int(row[0]) or None
+            except sqlite3.Error:
+                pass
+        return self._frame_count
+
+    @property
+    def seekable(self) -> bool:
+        """A .db3 recording supports the dashboard player (scrub / step / play)."""
+        return self._color_frame_count() is not None
+
+    def read_at(self, index: int) -> Frame | None:
+        """The frame at ``index`` (0-based), for the dashboard player.
+
+        Opens playback on first use. Moving forward a little reads straight on;
+        anything else seeks. librealsense still hands out one already-queued
+        frame after a seek, and the file clock starts slightly before the first
+        frame, so frames are read forward until the requested time and stale
+        ones (later than it) are skipped. Past the end, the last frame repeats.
+        """
+        import datetime
+
+        total = self._color_frame_count()
+        if total is None:
+            return None
+        index = max(0, min(int(index), total - 1))
+        fps = float(self._fps) or 30.0
+        half = 0.5 / fps
+        player = self._open_player()
+        target = player["t_first"] + index / fps
+        last_t = player["last_t"]
+        seeked = last_t is None or not (last_t < target <= last_t + 2.0)
+        if seeked:
+            # Non-real-time playback blocks its reader on a full frame queue,
+            # and seek() then waits for it (~10 s mid-file). Taking a few queued
+            # frames first unblocks it; pausing around the seek does not.
+            for _ in range(8):
+                ok, _frames = self._pipeline.try_wait_for_frames(1)
+                if not ok:
+                    break
+            player["playback"].seek(datetime.timedelta(seconds=index / fps))
+        frame = None
+        for _ in range(int(3 * fps) + 8):
+            ok, frames = self._pipeline.try_wait_for_frames(500)
+            if not ok:
+                break
+            t = frames.get_timestamp() / 1000.0
+            if seeked and t > target + half and not player["fresh"]:
+                continue  # the stale pre-seek frame
+            player["fresh"] = True
+            player["last_t"] = t
+            if t < target - half:
+                continue
+            frame = self._assemble(frames, index, t)
+            break
+        player["fresh"] = False
+        if frame is not None:
+            player["last"] = frame
+        return frame if frame is not None else player["last"]
+
+    def _open_player(self) -> dict:
+        """Start non-real-time playback once and note the first frame's time."""
+        if getattr(self, "_player", None) is not None:
+            return self._player
+        rs = self._rs
+        profile = self._pipeline.start(self._config)
+        self._started = True
+        self._align = rs.align(rs.stream.color)
+        self._depth_scale = float(profile.get_device().first_depth_sensor().get_depth_scale())
+        playback = profile.get_device().as_playback()
+        playback.set_real_time(False)
+        ok, frames = self._pipeline.try_wait_for_frames(5000)
+        first = self._assemble(frames, 0, frames.get_timestamp() / 1000.0) if ok else None
+        self._player = {
+            "playback": playback,
+            "t_first": frames.get_timestamp() / 1000.0 if ok else 0.0,
+            "last_t": frames.get_timestamp() / 1000.0 if ok else None,
+            "fresh": False,
+            "last": first,
+        }
+        return self._player
 
     def __iter__(self) -> Iterator[Frame]:
         rs = self._rs

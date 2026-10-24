@@ -32,6 +32,29 @@ class PoseEstimator(Protocol):
     def estimate(self, frame: Frame) -> PoseFrame: ...
 
 
+def resolve_runtime(runtime: str, device: str) -> tuple[str, str]:
+    """Turn ``runtime="auto"`` into a concrete (runtime, device) for this machine.
+
+    OpenVINO (Intel iGPU) when it is installed, else onnxruntime on CUDA when the
+    CUDA provider is present (Jetson / NVIDIA), else onnxruntime on the CPU. Any
+    other runtime is returned unchanged, so explicit choices always win.
+    """
+    if runtime != "auto":
+        return runtime, device
+    import importlib.util
+
+    if importlib.util.find_spec("openvino") is not None:
+        return "openvino", "gpu"
+    try:
+        import onnxruntime as ort
+
+        if "CUDAExecutionProvider" in ort.get_available_providers():
+            return "onnxruntime", "cuda"
+    except ImportError:
+        pass
+    return "onnxruntime", "cpu"
+
+
 def build_estimator(cfg) -> PoseEstimator:
     """Construct the estimator named by `cfg.backend`.
 

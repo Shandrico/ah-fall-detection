@@ -136,6 +136,8 @@ class FallThresholds:
     # being swallowed as ON_GROUND without loosening the fall thresholds.
     seated_tilt_max: float = 35.0
     seated_h: tuple[float, float] = (0.70, 1.00)
+    # ...unless the legs are visibly straight (see DetectConfig.seated_knee_max).
+    seated_knee_max: float = 155.0
 
     # --- trigger -------------------------------------------------------
     vz_trigger: float = -0.90  # m/s sustained
@@ -233,6 +235,24 @@ class FallStateMachine:
         if ts.state != state:
             ts.state = state
             ts.state_since = now
+
+    def _legs_straight(self, f: Features) -> bool:
+        """Visibly straight legs: a standing body, whatever its torso height reads."""
+        return f.knee_angle is not None and f.knee_angle > self.th.seated_knee_max
+
+    def _standing_shape(self, f: Features) -> bool:
+        """Straight legs under an upright torso: standing, even when the
+        monocular torso height under-reads (range, a wrong mount height).
+
+        Only ever used to tell UPRIGHT from SITTING, never in the down test: a
+        body that fell along the camera's line of sight can also look upright
+        and straight-legged in the image.
+        """
+        return (
+            self._legs_straight(f)
+            and f.torso_tilt is not None
+            and f.torso_tilt <= self.th.seated_tilt_max
+        )
 
     def _clearly_seated(self, f: Features) -> bool:
         """The same seated exclusion must apply before and after a trigger."""
@@ -526,7 +546,9 @@ class FallStateMachine:
         # sitting never showed). torso_tilt is an image angle, calibration-free,
         # so this holds even when the metric heights are off. The fall
         # thresholds are untouched.
-        if self._clearly_seated(f):
+        # Straight legs veto the seated reading (a standing person whose torso
+        # height under-reads); such a frame continues to the UPRIGHT test below.
+        if self._clearly_seated(f) and not self._legs_straight(f):
             ts.down_since = None
             return self._enter_sitting(ts, f, now, zone)
 
@@ -562,13 +584,13 @@ class FallStateMachine:
         # Sitting fallback: the height band alone, for frames where torso_tilt
         # is unavailable (e.g. shoulders or hips not confident).
         lo, hi = th.sitting_h
-        if lo <= f.h_torso <= hi:
+        if lo <= f.h_torso <= hi and not self._legs_straight(f):
             return self._enter_sitting(ts, f, now, zone)
 
         ts.sitting_since = None
         ts.bed_exit_emitted = False
 
-        if f.h_torso >= th.upright_h:
+        if f.h_torso >= th.upright_h or self._standing_shape(f):
             self._set_state(ts, "UPRIGHT", now)
             # Standing up after being on/at a bed IS the exit. Catch it here when
             # the sit-up precursor never fired -- a fast riser, or an exit-seeking

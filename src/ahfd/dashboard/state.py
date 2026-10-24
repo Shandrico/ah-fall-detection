@@ -294,6 +294,10 @@ class DashboardState:
             self._status = status
             self._status_since = time.time()
             self._error = error
+            if status == "running" and "warning" not in info:
+                # A switch warning ("previous camera has not released") is
+                # moot once the new source runs; None values below cannot clear it.
+                self._runtime.pop("warning", None)
             self._runtime.update({k: v for k, v in info.items() if v is not None})
 
     def update_runtime(self, gen: int, **info: Any) -> None:

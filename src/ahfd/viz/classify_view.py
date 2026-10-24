@@ -28,6 +28,32 @@ def _person_of(stem: str) -> str:
     return "person_" + tail if tail.isdigit() else "person_?"
 
 
+def _pilot_take(stem: str | None) -> int | None:
+    """Pilot take number of a ``clip1_NN`` stem, else None."""
+    if stem and stem.startswith("clip1_") and stem[len("clip1_"):].isdigit():
+        return int(stem[len("clip1_"):])
+    return None
+
+
+def _pilot_truth_segments(stem: str, data_dir: Path = Path("data")) -> list[dict]:
+    """Posture ground truth for a pilot take, from its phase labels.
+
+    Phases are mapped with ``PHASE_TO_POSTURE``; transition phases have no
+    posture and become gaps. Labels were marked on the D435i clock.
+    """
+    from ahfd.ml.posture import PHASE_TO_POSTURE, PILOT_CAMERAS, _labelled_segments
+
+    for cam in PILOT_CAMERAS:
+        path = data_dir / ("phases_" + cam) / (stem + ".json")
+        if path.exists():
+            return [
+                {"start_s": float(s["start_s"]), "end_s": float(s["end_s"]),
+                 "posture": PHASE_TO_POSTURE[s["phase"]]}
+                for s in _labelled_segments(path) if s.get("phase") in PHASE_TO_POSTURE
+            ]
+    return []
+
+
 def _train_two_models(labels_dir, tracks_dir, calib, exclude_person, exclude_stem=None):
     """Fit (rgb_only, rgb_depth) models, holding the viewed clip out of training.
 
@@ -44,7 +70,28 @@ def _train_two_models(labels_dir, tracks_dir, calib, exclude_person, exclude_ste
     from ahfd.ml.posture import DEPTH_FEATURES, build_dataset
 
     rows, labels, groups, used, _ = build_dataset(labels_dir, tracks_dir, calib)
-    keep = [i for i, g in enumerate(groups) if _person_of(g) != exclude_person]
+    if not rows:
+        # No posture labels/tracks there (e.g. the D435i/D435f bed-exit pilot):
+        # train on the pilot's phase labels instead, holding out the viewed
+        # take's block. Locked takes (block E) are never read by that loader.
+        from ahfd.annotate import PILOT_PHASE_SCRIPT
+        from ahfd.ml.posture import build_pilot_posture_dataset
+
+        print("no training data in " + str(labels_dir) + " + " + str(tracks_dir)
+              + " -- falling back to the bed-exit pilot phase labels (data/phases_*).")
+        rows, labels, groups, used, _ = build_pilot_posture_dataset()
+        take = PILOT_PHASE_SCRIPT.get(_pilot_take(exclude_stem)) if exclude_stem else None
+        exclude_person = "block_" + take["block"] if take else exclude_person
+        exclude_stem = None
+        keep = [i for i, g in enumerate(groups) if g != exclude_person]
+    else:
+        keep = [i for i, g in enumerate(groups) if _person_of(g) != exclude_person]
+    if not rows:
+        raise SystemExit(
+            "no training data: no labelled clip in " + str(labels_dir)
+            + " has a matching track in " + str(tracks_dir)
+            + ". Pass --labels / --tracks pointing at existing dirs."
+        )
     if not keep and exclude_stem is not None:  # single subject: hold out the clip
         keep = [i for i, g in enumerate(groups) if g != exclude_stem]
     if not keep:  # last resort -> all clips (optimistic)
@@ -233,7 +280,7 @@ def run_classify_viewer(
     labels_dir: str = "data/postures_depth",
     tracks_dir: str = "data/tracks_depth",
     backend: str = "rtmo",
-    runtime: str = "openvino",
+    runtime: str = "auto",
     device: str = "gpu",
     dmin: float = 2.5,
     dmax: float = 5.5,
@@ -252,7 +299,7 @@ def run_classify_viewer(
     from ahfd.geometry.depth_height import keypoint_heights_from_depth
     from ahfd.geometry.ground import GroundPlane
     from ahfd.ml.posture import FEATURES, _labelled_segments, _posture_at, features_row
-    from ahfd.pose import build_estimator
+    from ahfd.pose import build_estimator, resolve_runtime
 
     src_path = source[len("bag://"):] if source.startswith("bag://") else source
     stem = Path(src_path).stem
@@ -279,9 +326,10 @@ def run_classify_viewer(
 
     # Ground truth for this clip, if it was labelled (times are 0-based seconds).
     seg_path = Path(labels_dir) / (stem + ".json")
-    segments = _labelled_segments(seg_path) if seg_path.exists() else []
+    segments = _labelled_segments(seg_path) if seg_path.exists() else _pilot_truth_segments(stem)
 
-    print("loading pose model (" + backend + " / " + runtime + ") ...")
+    runtime, device = resolve_runtime(runtime, device)
+    print("loading pose model (" + backend + " / " + runtime + " / " + device + ") ...")
     estimator = build_estimator(PoseConfig(backend=backend, runtime=runtime, device=device))
     extractor = FeatureExtractor(calib.ground, zones=calib.zones, min_keypoint_score=0.3)
 

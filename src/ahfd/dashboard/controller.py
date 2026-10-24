@@ -24,6 +24,7 @@ the new one produces its first.
 from __future__ import annotations
 
 import threading
+from pathlib import Path
 
 from ahfd.capture import SOURCE_SCHEMES, probe_realsense
 from ahfd.dashboard.runner import PipelineRunner
@@ -331,9 +332,16 @@ class DashboardController:
         # live camera (webcam:// / rs://) without a listed calibration stays
         # pose-only on purpose.
         is_live = uri.startswith(("webcam://", "rs://"))
-        if not is_live and self._default_calib:
-            return self._default_calib
-        return None
+        if is_live:
+            return None
+        # A recording whose path names a camera (".../ah_bags_d435f/clip.db3")
+        # gets that camera's calibration from the listed ones, so a D435f clip
+        # typed in the box is not measured with the D435i's geometry.
+        lowered = uri.lower()
+        for calib in dict.fromkeys(self._calib_by_uri.values()):
+            if calib and Path(calib).stem.lower() in lowered:
+                return calib
+        return self._default_calib or None
 
     def _validate(self, source, backend) -> str | None:
         if backend is not None and backend not in self._backends:

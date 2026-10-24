@@ -53,6 +53,7 @@ class PipelineRunner:
         self._thread: threading.Thread | None = None
         self._started = False
         self._jpeg_quality = cfg.dashboard.jpeg_quality
+        self._stream_max_width = cfg.dashboard.stream_max_width
         self._last_depth_preview = -math.inf
         self._depth_max_m = 6.0
         self._depth_spatial = 2
@@ -348,6 +349,9 @@ class PipelineRunner:
         )
         self._depth_max_m = float(options.get("max_range_m", 6.0))
         self._depth_spatial = max(1, min(5, int(options.get("spatial_magnitude", 2))))
+        # Colour range fitted to this camera's scene on the first good frame,
+        # then held fixed so colours stay stable when someone walks in.
+        self._depth_range = None
         self.state.update_runtime(
             self.gen, depth_min_m=0.3, depth_max_m=self._depth_max_m,
             depth_spatial_passes=self._depth_spatial,
@@ -362,10 +366,21 @@ class PipelineRunner:
         if now - self._last_depth_preview < 0.1:
             return
         self._last_depth_preview = now
-        from ahfd.viz.depth_render import render_depth
+        from ahfd.viz.depth_render import render_depth, scene_depth_range
 
+        if getattr(self, "_depth_range", None) is None:
+            self._depth_range = scene_depth_range(
+                frame.depth_raw, frame.depth_scale, ceiling_m=self._depth_max_m,
+            )
+            if self._depth_range is not None:
+                self.state.update_runtime(
+                    self.gen, depth_min_m=self._depth_range[0],
+                    depth_max_m=self._depth_range[1],
+                )
+        lo, hi = self._depth_range or (0.3, self._depth_max_m)
         canvas = render_depth(
-            frame.depth_raw, frame.depth_scale, max_depth_m=self._depth_max_m,
+            frame.depth_raw, frame.depth_scale, min_depth_m=lo, max_depth_m=hi,
+            shade=True, legend=True, clamp=self._depth_range is not None,
         )
         jpeg = None
         if canvas is not None:
@@ -619,6 +634,12 @@ class PipelineRunner:
                     states=states, fps=fps_ema,
                 )
 
+            limit = self._stream_max_width
+            if limit and canvas.shape[1] > limit:
+                canvas = cv2.resize(
+                    canvas, (limit, round(canvas.shape[0] * limit / canvas.shape[1])),
+                    interpolation=cv2.INTER_AREA,
+                )
             ok, buf = cv2.imencode(
                 ".jpg", canvas, [int(cv2.IMWRITE_JPEG_QUALITY), self._jpeg_quality]
             )

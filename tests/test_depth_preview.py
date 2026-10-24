@@ -170,3 +170,53 @@ def test_depth_http_stream_and_immediate_privacy_replacement():
     finally:
         server.shutdown()
         server.server_close()
+
+
+def test_clamp_paints_out_of_range_depth_in_end_colours():
+    depth = np.array([[0, 500, 2000, 9000]], np.uint16)
+    plain = render_depth(depth, 0.001, min_depth_m=1.0, max_depth_m=3.0)
+    clamped = render_depth(depth, 0.001, min_depth_m=1.0, max_depth_m=3.0, clamp=True)
+    assert not plain[0, 1].any() and not plain[0, 3].any()
+    assert not clamped[0, 0].any()  # a hole is still black
+    assert clamped[0, 1].any() and clamped[0, 3].any()
+
+
+def test_shading_darkens_slopes_but_keeps_holes_black():
+    yy, xx = np.mgrid[0:120, 0:160]
+    flat = np.full((120, 160), 2000, np.uint16)
+    ramp = (2000 + xx * 10).astype(np.uint16)
+    ramp[:10, :10] = 0
+    plain = render_depth(flat, 0.001, max_width=160)
+    shaded_flat = render_depth(flat, 0.001, max_width=160, shade=True)
+    shaded_ramp = render_depth(ramp, 0.001, max_width=160, shade=True)
+    assert shaded_flat.shape == plain.shape
+    assert not shaded_ramp[:10, :10].any()
+    # A surface tilted away from the light is drawn darker than a flat one.
+    assert shaded_ramp[60:, 40:].mean() < render_depth(ramp, 0.001, max_width=160)[60:, 40:].mean()
+
+
+def test_legend_draws_a_bar_on_the_right():
+    depth = np.full((360, 640), 3000, np.uint16)
+    without = render_depth(depth, 0.001)
+    with_legend = render_depth(depth, 0.001, legend=True)
+    assert not np.array_equal(without[:, -60:], with_legend[:, -60:])
+    assert np.array_equal(without[:, :400], with_legend[:, :400])
+
+
+def test_scene_range_fits_the_occupied_band():
+    from ahfd.viz.depth_render import scene_depth_range
+
+    rng = np.random.default_rng(0)
+    depth = rng.uniform(2200, 4800, size=(480, 640)).astype(np.uint16)
+    lo, hi = scene_depth_range(depth, 0.001)
+    assert 2.0 <= lo <= 2.25 and 4.75 <= hi <= 5.0
+    assert scene_depth_range(np.zeros((480, 640), np.uint16), 0.001) is None
+
+
+def test_switch_warning_clears_once_the_new_source_runs():
+    state = DashboardState()
+    gen = state.generation
+    state.publish_status(gen, "switching", warning="the previous camera has not released yet")
+    assert state.snapshot()["runtime"].get("warning")
+    state.publish_status(gen, "running")
+    assert "warning" not in state.snapshot()["runtime"]

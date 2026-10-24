@@ -27,6 +27,43 @@ def test_bag_meta_reports_whether_depth_was_enabled_without_opening_hardware():
     assert bag.meta.has_depth is True
 
 
+def _bag(path):
+    bag = object.__new__(BagSource)
+    bag._path = str(path)
+    bag._color_size = (1920, 1080)
+    bag._fps = 30
+    bag._with_depth = False
+    return bag
+
+
+def test_db3_recording_counts_colour_frames_and_is_seekable(tmp_path):
+    import sqlite3
+
+    db = tmp_path / "clip1_03.db3"
+    con = sqlite3.connect(db)
+    con.execute("CREATE TABLE topics (id INTEGER, name TEXT)")
+    con.execute("CREATE TABLE messages (id INTEGER, topic_id INTEGER, timestamp INTEGER)")
+    con.executemany("INSERT INTO topics VALUES (?, ?)", [
+        (1, "/device_0/sensor_1/Color_0/image/data"),
+        (2, "/device_0/sensor_0/Depth_0/image/data"),
+    ])
+    con.executemany("INSERT INTO messages VALUES (?, ?, ?)",
+                    [(i, 1 + i % 2, i) for i in range(10)])
+    con.commit()
+    con.close()
+    bag = _bag(db)
+    assert bag.meta.frame_count == 5
+    assert bag.seekable is True
+
+
+def test_ros1_bag_and_unreadable_db3_are_not_seekable(tmp_path):
+    assert _bag("clip.bag").meta.frame_count is None
+    assert _bag("clip.bag").seekable is False
+    broken = tmp_path / "broken.db3"
+    broken.write_bytes(b"not sqlite")
+    assert _bag(broken).seekable is False
+
+
 class TestParseRealsenseUri:
     def test_plain_is_colour(self):
         kw = parse_realsense_uri("rs://")

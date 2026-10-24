@@ -55,6 +55,19 @@ def _build_detection(
         calib.ground, zones=calib.zones, min_keypoint_score=cfg.pose.min_keypoint_score
     )
     bed_thresholds = cfg.bed_activity.to_thresholds()
+    if calib.bed_tilt_deg is not None:
+        # The tilt bands depend on where the camera looks from, so a
+        # calibration may override them (see Calibration.bed_tilt_deg).
+        from dataclasses import replace
+
+        t = calib.bed_tilt_deg
+        bed_thresholds = replace(
+            bed_thresholds,
+            reclined_tilt_enter_deg=t["reclined_enter"],
+            reclined_tilt_exit_deg=t["reclined_exit"],
+            upright_tilt_enter_deg=t["upright_enter"],
+            upright_tilt_exit_deg=t["upright_exit"],
+        )
     if emit_bed_early_warning is not None:
         from dataclasses import replace
 
@@ -3188,11 +3201,20 @@ def copy_zones(
 
 @app.command()
 def train_posture(
-    calibration: Path = typer.Option(..., help="Calibration YAML (for the metric features)."),
+    calibration: Path = typer.Option(None, help="Calibration YAML (for the metric features). Not needed with --pilot-only."),
     labels: Path = typer.Option(Path("data/postures"), help="Dir of posture-label JSONs."),
     tracks: Path = typer.Option(Path("data/tracks"), help="Dir of extracted <clip>.jsonl."),
     out: Path = typer.Option(None, help="Save the trained model here (.joblib), optional."),
     max_depth: int = typer.Option(5, help="Tree depth (small = interpretable)."),
+    pilot: bool = typer.Option(
+        False, "--pilot",
+        help="Also train on the bed-exit pilot's phase labels (both cameras, takes 01-08), "
+        "mapped to postures: RECLINED->in_bed, UPRIGHT_IN_BED/EDGE_SITTING->sitting, "
+        "OUT_OF_BED->upright. Takes 09-10 are never read.",
+    ),
+    pilot_only: bool = typer.Option(
+        False, "--pilot-only", help="Train on the pilot's phase labels alone (implies --pilot).",
+    ),
 ) -> None:
     """Train an interpretable posture classifier from labelled clips.
 
@@ -3204,10 +3226,17 @@ def train_posture(
     scores hold out whole people (numeric clip suffixes) or recordings, never
     random frames from the same recording. Without an honest group hold-out,
     only training accuracy is reported, not a generalisation score.
+
+    With --pilot, the ten-take bed-exit recordings add posture rows from their
+    phase labels; both camera views and both takes of a block form one
+    held-out group (block_A..block_D). Block E (takes 09/10) stays locked.
     """
+    if calibration is None and not pilot_only:
+        raise typer.BadParameter("--calibration is required unless --pilot-only is given.")
     _train_segment_classifier(
         calibration, labels, tracks, out, max_depth,
         label_key="posture", unit="posture",
+        pilot="only" if pilot_only else ("add" if pilot else None),
     )
 
 
@@ -3234,6 +3263,7 @@ def train_phases(
     identified. That needs the bed zones calibrated (`ahfd calibrate-zones`).
     """
     from ahfd.annotate import PILOT_PHASE_SCRIPT
+    from ahfd.ml.posture import pilot_locked_clips
 
     target_beds = {
         "clip1_%02d" % i: PILOT_PHASE_SCRIPT[i]["bed"] for i in PILOT_PHASE_SCRIPT
@@ -3241,29 +3271,43 @@ def train_phases(
     _train_segment_classifier(
         calibration, labels, tracks, out, max_depth,
         label_key="phase", unit="phase", target_beds=target_beds,
+        exclude=pilot_locked_clips(),
     )
 
 
 def _train_segment_classifier(
     calibration: Path, labels: Path, tracks: Path, out, max_depth: int,
     *, label_key: str, unit: str, target_beds: dict | None = None,
+    exclude=(), pilot: str | None = None,
 ) -> None:
     """Shared body of ``train-posture`` / ``train-phases`` (classes-agnostic).
 
     ``label_key`` is the segment field read as the class (``posture``/``phase``)
     and ``unit`` is the word used in the printed report. ``target_beds`` maps a
     clip stem to its target bed, so multi-occupant clips train on the right
-    person (see ``build_dataset``).
+    person (see ``build_dataset``). Clips in ``exclude`` are never read.
+    ``pilot`` is None, "add" or "only": whether the bed-exit pilot's posture
+    rows (see ``build_pilot_posture_dataset``) join or replace the labels dir.
     """
     from collections import Counter
 
     from ahfd.geometry.calibration import load_calibration
-    from ahfd.ml.posture import build_dataset, train
+    from ahfd.ml.posture import build_dataset, build_pilot_posture_dataset, train
 
-    calib = load_calibration(calibration)
-    rows, labels_list, groups, used, skipped = build_dataset(
-        labels, tracks, calib, label_key=label_key, target_beds=target_beds
-    )
+    rows, labels_list, groups, used, skipped = [], [], [], [], []
+    if pilot != "only":
+        calib = load_calibration(calibration)
+        rows, labels_list, groups, used, skipped = build_dataset(
+            labels, tracks, calib, label_key=label_key, target_beds=target_beds,
+            exclude=exclude,
+        )
+    if pilot:
+        p_rows, p_labels, p_groups, p_used, p_skipped = build_pilot_posture_dataset()
+        rows += p_rows
+        labels_list += p_labels
+        groups += p_groups
+        used += p_used
+        skipped += p_skipped
 
     if skipped:
         typer.echo("WARNING: skipped label files that failed to parse (fix the JSON):")
@@ -4100,8 +4144,8 @@ def classify_view(
     labels: Path = typer.Option(Path("data/postures_depth"), help="Dir of posture-label JSONs (for ground truth + training)."),
     tracks: Path = typer.Option(Path("data/tracks_depth"), help="Dir of extracted depth tracks (for training)."),
     backend: str = typer.Option("rtmo", help="Pose backend: rtmo | rtmpose | yolo."),
-    runtime: str = typer.Option("openvino", help="Pose runtime: openvino (iGPU) | onnxruntime."),
-    device: str = typer.Option("gpu", help="Pose device: gpu (iGPU) | cpu | cuda."),
+    runtime: str = typer.Option("auto", help="Pose runtime: auto (openvino if installed, else CUDA, else CPU) | openvino | onnxruntime."),
+    device: str = typer.Option("gpu", help="Pose device: gpu (iGPU) | cpu | cuda. Ignored with --runtime auto."),
     dmin: float = typer.Option(2.5, help="Near clip for the depth colour ramp (m)."),
     dmax: float = typer.Option(5.5, help="Far clip for the depth colour ramp (m)."),
     rebuild: bool = typer.Option(
@@ -4172,8 +4216,8 @@ def depth_view(
     smooth: int = typer.Option(2, help="Spatial-filter strength 1-5 (smoothing passes). Higher = less noise but rounder edges. Live camera only."),
     pose: bool = typer.Option(False, "--pose", help="Overlay the skeleton + each joint's depth-measured height above the floor, and a coarse posture guess. Validates depth for posture before wiring it into detection."),
     backend: str = typer.Option("rtmo", help="Pose backend for --pose: rtmo | rtmpose | yolo."),
-    runtime: str = typer.Option("openvino", help="Pose runtime for --pose: openvino (iGPU) | onnxruntime."),
-    device: str = typer.Option("gpu", help="Pose device for --pose: gpu (iGPU) | cpu | cuda."),
+    runtime: str = typer.Option("auto", help="Pose runtime for --pose: auto (openvino if installed, else CUDA, else CPU) | openvino | onnxruntime."),
+    device: str = typer.Option("gpu", help="Pose device for --pose: gpu (iGPU) | cpu | cuda. Ignored with --runtime auto."),
     pitch: float = typer.Option(
         MOUNT_PITCH_DEG,
         help="Mount downtilt in degrees for the D435f (no IMU): supplies the tilt for "
@@ -4191,8 +4235,9 @@ def depth_view(
     Press 'f' in the window to switch to a height-above-floor colouring, built
     live from the IMU gravity vector and --height: it separates standing from
     on-ground even directly beneath the camera, where the image-only geometry
-    breaks down. Keys: f mode, c colormap, i invert, a auto-range, [ ] far,
-    , . near, h holes, v RGB, space pause, q quit.
+    breaks down. Keys: f mode, s relief shading, l metre legend, c colormap,
+    i invert, a auto-range, [ ] far, , . near, h holes, v RGB, space pause,
+    q quit.
     """
     from ahfd.viz.depth_view import run_depth_viewer
 
@@ -4643,6 +4688,64 @@ def export_color(
     )
     typer.echo("wrote " + str(n) + " frames to " + str(out))
     typer.echo("next: ahfd label-postures " + str(out) + "   then DELETE the .mp4")
+
+
+@app.command(name="export-review")
+def export_review(
+    recording: Path = typer.Argument(..., help="Recorded .db3/.bag to replay."),
+    out: Path = typer.Argument(..., help="Output .mp4 (keep it on the recordings' approved storage)."),
+    calibration: Path = typer.Option(..., help="That camera's calibration YAML."),
+    config: Path = typer.Option(None, help="YAML whose privacy.allow_raw_capture is true (pose/detect settings too)."),
+    crf: int = typer.Option(23, min=15, max=35, help="H.264 quality: lower = sharper and larger."),
+    consent: bool = typer.Option(
+        False,
+        "--i-understand-raw-capture",
+        help="Required. Confirms this is consented staged data.",
+    ),
+) -> None:
+    """Render a recording with the dashboard overlay into a smooth 1080p review video.
+
+    Every frame runs through the same pose -> tracking -> detection path as the
+    dashboard; the skeleton, track id, posture state, bed phase and recording
+    time are drawn on the RGB frame and encoded as browser-playable H.264. Use
+    it to review a clip smoothly (no live pose cost, no stutter on a remote
+    link). Raw imagery: staged, consented volunteers only; all three privacy
+    switches are required.
+    """
+    from ahfd.debug.annotated_review import export_review as _export
+    from ahfd.privacy import require_raw_capture
+
+    cfg = load_config(config)
+    require_raw_capture(config_flag=cfg.privacy.allow_raw_capture, cli_flag=consent)
+    if out.suffix.lower() != ".mp4":
+        raise typer.BadParameter("output must be an .mp4")
+    typer.echo("rendering  " + str(recording) + "  ->  " + str(out))
+    n = _export(
+        recording, out, cfg=cfg, calibration=calibration, crf=crf,
+        config_flag=cfg.privacy.allow_raw_capture, cli_flag=consent,
+        progress=typer.echo,
+    )
+    typer.echo("wrote " + str(n) + " frames to " + str(out))
+
+
+@app.command(name="serve-review")
+def serve_review(
+    directory: Path = typer.Argument(..., help="Folder holding the review .mp4 files."),
+    port: int = typer.Option(8001, help="Port. Reach it from a laptop through an SSH tunnel."),
+    host: str = typer.Option("127.0.0.1", help="Bind address. Keep localhost unless approved."),
+) -> None:
+    """Play rendered review videos (from `ahfd export-review`) in a browser.
+
+    Lists the .mp4 files in DIRECTORY with seeking, speed and frame-step keys.
+    Binds to localhost: from a laptop, tunnel it like the dashboard, e.g.
+    ssh -N -L 9001:127.0.0.1:8001 user@jetson  then open http://localhost:9001
+    """
+    from ahfd.debug.review_server import serve
+
+    if not directory.is_dir():
+        raise typer.BadParameter("not a directory: " + str(directory))
+    typer.echo("serving review videos in " + str(directory) + " at http://" + host + ":" + str(port))
+    serve(directory, host=host, port=port)
 
 
 @app.command(name="eval")

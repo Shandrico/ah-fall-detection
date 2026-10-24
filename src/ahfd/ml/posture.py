@@ -82,6 +82,22 @@ COLLAPSE_SCHEMES = {
 }
 
 
+# Bed-exit activity phases -> the 4-class posture they unambiguously show, so
+# the pilot's phase labels also train the posture model. The short transition
+# phases (TORSO_RISING, SHIFTING_TO_EDGE, ATTEMPTING_STAND) are mid-movement,
+# not a held posture, and are left out exactly like gaps between segments.
+PHASE_TO_POSTURE = {
+    "RECLINED": "in_bed",
+    "UPRIGHT_IN_BED": "sitting",
+    "EDGE_SITTING": "sitting",
+    "OUT_OF_BED": "upright",
+}
+
+# Pilot cameras, in time-reference order: the phase labels were marked on the
+# D435i recordings, so each take's D435i first frame is t=0 for both cameras.
+PILOT_CAMERAS = ("d435i", "d435f")
+
+
 def collapse_labels(labels, scheme: str):
     """Map fine posture labels to a coarser scheme (e.g. 'bed-state').
 
@@ -279,6 +295,8 @@ class TrainResult:
 def build_dataset(
     labels_dir, tracks_dir, calib, min_keypoint_score: float = 0.3,
     label_key: str = "posture", target_beds: dict | None = None,
+    *, label_map: dict | None = None, clip_t0: dict | None = None,
+    group_map: dict | None = None, exclude=(),
 ):
     """Build (rows, labels, groups, used, skipped) from labels + extracted tracks.
 
@@ -300,6 +318,12 @@ def build_dataset(
     bystanders on other beds or walking past never enter the data. Clips absent
     from the map, or when the map is None, fall back to the highest-confidence
     person -- correct only when the clip is single-subject.
+
+    ``label_map`` translates each label (e.g. a phase to a posture); labels not
+    in the map are excluded like a gap. ``clip_t0`` gives a clip's time zero
+    (wall-clock) when its labels were marked on another recording of the same
+    take -- otherwise its own first frame is t=0. ``group_map`` overrides a
+    clip's evaluation group, and clips named in ``exclude`` are never read.
     """
     from ahfd.features import FeatureExtractor
     from ahfd.io import read_tracks
@@ -312,6 +336,8 @@ def build_dataset(
     skipped: list[tuple[str, str]] = []  # (filename, why) -- e.g. a JSON typo
 
     for label_file in sorted(labels_dir.glob("*.json")):
+        if label_file.stem in exclude:
+            continue
         # A hand-edited label file with a JSON typo should not crash the whole
         # run -- skip it and report which one, so the rest still trains.
         try:
@@ -356,9 +382,11 @@ def build_dataset(
             # t=0 -- but .bag/.db3 tracks carry wall-clock timestamps, so
             # offset by the first frame's time to make them line up.
             if t0 is None:
-                t0 = pose.t
+                t0 = (clip_t0 or {}).get(label_file.stem, pose.t)
             t = pose.t - t0
             posture = _posture_at(segments, t, label_key)
+            if posture is not None and label_map is not None:
+                posture = label_map.get(posture)
             if posture is None:  # a transition/gap -- excluded
                 continue
             if target_zone is not None:
@@ -380,10 +408,81 @@ def build_dataset(
                 continue
             rows.append(row)
             labels.append(posture)
-            groups.append(label_file.stem)
+            groups.append((group_map or {}).get(label_file.stem, label_file.stem))
             n_clip += 1
         used.append((label_file.stem, n_clip))
 
+    return rows, labels, groups, used, skipped
+
+
+def pilot_locked_clips(prefix: str = "clip1_") -> set[str]:
+    """Clip stems of the pilot's locked validation takes (block E: 09 and 10).
+
+    These must never be read for training or model selection; they are opened
+    once, after everything is frozen.
+    """
+    from ahfd.annotate import PILOT_PHASE_SCRIPT
+
+    return {
+        "%s%02d" % (prefix, i)
+        for i, entry in PILOT_PHASE_SCRIPT.items() if entry["block"] == "E"
+    }
+
+
+def _first_track_time(track_path: Path):
+    from ahfd.io import read_tracks
+
+    for pose in read_tracks(track_path):
+        return pose.t
+    return None
+
+
+def build_pilot_posture_dataset(
+    data_dir=Path("data"), calib_dir=Path("calib"), cameras=PILOT_CAMERAS,
+    min_keypoint_score: float = 0.3,
+):
+    """Posture rows from the ten-take bed-exit pilot's phase labels, dev takes only.
+
+    For each camera, reads ``data/phases_<cam>`` + ``data/tracks_<cam>`` with
+    ``calib/<cam>.yaml``, maps phases to postures (``PHASE_TO_POSTURE``) and
+    takes each frame from the person on the take's scripted bed. Both cameras
+    of a take, and both takes of a block, share one evaluation group
+    (``block_A`` .. ``block_D``) so neither view of a take can sit on the other
+    side of a train/test split. Block E (takes 09/10) is never read.
+
+    The labels were marked on the D435i recordings; the D435f started ~1 s
+    later, so every camera is put on the D435i's clock for that take.
+    """
+    from ahfd.annotate import PILOT_PHASE_SCRIPT
+    from ahfd.geometry.calibration import load_calibration
+
+    data_dir, calib_dir = Path(data_dir), Path(calib_dir)
+    locked = pilot_locked_clips()
+    stems = {"clip1_%02d" % i: entry for i, entry in PILOT_PHASE_SCRIPT.items()}
+    target_beds = {stem: entry["bed"] for stem, entry in stems.items()}
+    group_map = {stem: "block_" + entry["block"] for stem, entry in stems.items()}
+
+    reference = data_dir / ("tracks_" + cameras[0])
+    clip_t0 = {}
+    for stem in stems:
+        path = reference / (stem + ".jsonl")
+        if stem not in locked and path.exists():
+            clip_t0[stem] = _first_track_time(path)
+
+    rows, labels, groups, used, skipped = [], [], [], [], []
+    for cam in cameras:
+        calib = load_calibration(calib_dir / (cam + ".yaml"))
+        r, lab, grp, u, sk = build_dataset(
+            data_dir / ("phases_" + cam), data_dir / ("tracks_" + cam), calib,
+            min_keypoint_score=min_keypoint_score, label_key="phase",
+            target_beds=target_beds, label_map=PHASE_TO_POSTURE,
+            clip_t0=clip_t0, group_map=group_map, exclude=locked,
+        )
+        rows += r
+        labels += lab
+        groups += grp
+        used += [(cam + "/" + clip, n) for clip, n in u]
+        skipped += [(cam + "/" + name, why) for name, why in sk]
     return rows, labels, groups, used, skipped
 
 

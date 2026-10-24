@@ -50,6 +50,7 @@ def feats(
     contact: tuple[float, float] | None = (0.0, 5.0),
     excluded: bool = False,
     torso_tilt: float | None = None,
+    knee_angle: float | None = None,
 ) -> Features:
     return Features(
         track_id=track_id,
@@ -72,6 +73,7 @@ def feats(
         bed_risk=bed_risk,
         in_excluded_zone=excluded,
         torso_tilt=torso_tilt,
+        knee_angle=knee_angle,
     )
 
 
@@ -118,6 +120,39 @@ class TestSeatedPosture:
         # torso_tilt unavailable (None) -> old behaviour, decided on height.
         m = FallStateMachine()
         run(m, hold(0.0, 2.0, h_torso=0.60, floor_spread=SPREAD_DOWN, torso_tilt=None))
+        assert m.state_of(1) == "ON_GROUND"
+
+    def test_straight_legs_under_upright_torso_is_standing(self):
+        # Standing a few metres off, the monocular torso height under-reads into
+        # the seated band. Straight legs say standing, not sitting.
+        m = FallStateMachine()
+        run(m, hold(0.0, 2.0, h_torso=0.80, torso_tilt=8.0, knee_angle=172.0))
+        assert m.state_of(1) == "UPRIGHT"
+
+    def test_straight_legs_below_upright_h_is_standing(self):
+        m = FallStateMachine()
+        run(m, hold(0.0, 2.0, h_torso=0.60, torso_tilt=8.0, knee_angle=172.0))
+        assert m.state_of(1) == "UPRIGHT"
+
+    def test_straight_legs_never_change_the_down_test(self):
+        # A fall along the line of sight can look upright and straight-legged
+        # in the image; the down test must be exactly as without knee data.
+        for knee in (None, 175.0):
+            m = FallStateMachine()
+            run(m, hold(0.0, 2.0, h_torso=0.60, floor_spread=SPREAD_DOWN,
+                        torso_tilt=8.0, knee_angle=knee))
+            assert m.state_of(1) == "ON_GROUND"
+
+    def test_bent_knees_stay_sitting(self):
+        m = FallStateMachine()
+        run(m, hold(0.0, 2.0, h_torso=0.80, torso_tilt=8.0, knee_angle=95.0))
+        assert m.state_of(1) == "SITTING"
+
+    def test_straight_legs_do_not_hide_a_flat_body(self):
+        # Lying on the floor the legs are straight too; a flat torso is still down.
+        m = FallStateMachine()
+        run(m, hold(0.0, 2.0, h_torso=0.30, floor_spread=SPREAD_DOWN,
+                    torso_tilt=80.0, knee_angle=175.0))
         assert m.state_of(1) == "ON_GROUND"
 
     def test_seated_does_not_fire_a_fall(self):

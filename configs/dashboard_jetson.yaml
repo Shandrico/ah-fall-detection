@@ -1,0 +1,124 @@
+# Jetson dashboard: the default dashboard with the pose model on CUDA.
+#
+#   ahfd dashboard --config configs/dashboard_jetson.yaml   # then open http://127.0.0.1:8000
+#
+# The default dashboard.yaml asks for OpenVINO (Intel iGPU), which does not
+# exist on a Jetson. This copy uses the onnxruntime-gpu CUDA provider instead.
+#
+# One dashboard, a camera picker for all your cameras, and fall detection ON.
+# Each camera in the picker carries its OWN calibration, so switching between
+# the webcam and the RealSense in the dropdown switches the calibration with it
+# -- and posture labels (UPRIGHT / SITTING / IN_BED / ON_GROUND / FALLING) work
+# on whichever camera is selected. A camera with no calibration listed runs
+# pose-only (its chips read TRACKED) instead of erroring.
+#
+# Resolution note: `capture` below is 640x480, which the WEBCAM honours (so it
+# matches calib/laptop_webcam.yaml). The RealSense ignores requested sizes and
+# always streams 1920x1080, which matches calib/d435i.yaml -- so one capture
+# block serves both cameras. The initial source below opens the depth-enabled
+# D435i; the webcam remains available from the picker.
+
+source: "rs://?depth=1&emitter=1&max_laser=1&max_range=6"
+
+# Fallback calibration for a clip path typed into the source box (reviewing a
+# recording): those aren't listed cameras, so without this they'd run pose-only.
+# Clips are recorded on the RealSense at 1920x1080, matching calib/d435i.yaml.
+# (Listed cameras below keep their own calibration; this only fills the gap.)
+# NOTE: the current development d435i file contains overlapping draft zones.
+# Fall detection still runs, but bed-mode controls intentionally stay disabled
+# until it is replaced with exactly two measured zones: bed_a and bed_b.
+calibration: "calib/d435i.yaml"
+
+capture:
+  width: 640                # webcam only; the RealSense streams its native 1920x1080
+  height: 480
+
+pose:
+  backend: "rtmo"           # deployment pick: Apache-2.0, best sitting in the bake-off,
+                            # and what the posture model was trained on (persons 01-03)
+  model_size: "s"           # rtmo model size
+  mode: "performance"       # rtmpose-only knob; rtmo ignores it (kept if you switch back)
+  runtime: "onnxruntime"    # Jetson: onnxruntime-gpu with the CUDA provider
+  device: "cuda"
+  min_score: 0.5            # raised from 0.30 to cut flicker / objects-as-people
+  min_keypoint_score: 0.45
+
+smoothing:
+  enabled: true
+
+detect:
+  enabled: true
+  # Thresholds omitted -> DetectConfig defaults (the ward-geometry starting
+  # point: camera ~2.6 m, ~20 deg downtilt). Tune later with `ahfd sweep`.
+
+bed_activity:
+  enabled: true
+  # Plain run/replay stays shadow-only. The dashboard generates candidates and
+  # admits them only for a bed explicitly set to High mode.
+  emit_early_warning: false
+  emit_exit_event: true
+
+alert:
+  console: true
+  jsonl_path: "data/events/dashboard.jsonl"
+  min_severity: 0
+
+view:
+  mode: "overlay"
+  show_ids: true
+  show_fps: true
+  show_metrics: true
+
+dashboard:
+  host: "127.0.0.1"
+  port: 8000
+  show_rgb: true            # dev/testing: see the person. A ward sets this false.
+  # Viewed remotely over the SSH tunnel (~4-7 Mbit/s): send a 960 px view at
+  # quality 75 (~50 KB/frame) instead of full 1080p at 92 (~250 KB/frame).
+  jpeg_quality: 75
+  stream_max_width: 960
+  # The camera picker. Each entry carries its own calibration, so switching
+  # cameras switches calibration too. A connected RealSense is also auto-added,
+  # but list it here explicitly so it gets calib/d435i.yaml (the auto entry has
+  # no calibration and would run pose-only).
+  sources:
+    - label: "RealSense D435i (RGB + depth features)"
+      uri: "rs://?depth=1&emitter=1&max_laser=1&max_range=6"
+      calibration: "calib/d435i.yaml"
+    # Bed-exit pilot test takes (block E, on the T9). Each carries its own
+    # camera's calibration -- a path typed into the source box would get the
+    # D435i file above, which is wrong for the D435f. Review these only after
+    # the posture rules are frozen; anything tuned after watching them makes
+    # them no longer a test.
+    - label: "TEST clip1_09 D435i (nearest bed)"
+      uri: "bag:///media/anormalm/T9/ah_bags_d435i/clip1_09.db3"
+      calibration: "calib/d435i.yaml"
+    - label: "TEST clip1_09 D435f (nearest bed)"
+      uri: "bag:///media/anormalm/T9/ah_bags_d435f/clip1_09.db3"
+      calibration: "calib/d435f.yaml"
+    - label: "TEST clip1_10 D435i (middle bed)"
+      uri: "bag:///media/anormalm/T9/ah_bags_d435i/clip1_10.db3"
+      calibration: "calib/d435i.yaml"
+    - label: "TEST clip1_10 D435f (middle bed)"
+      uri: "bag:///media/anormalm/T9/ah_bags_d435f/clip1_10.db3"
+      calibration: "calib/d435f.yaml"
+    # Unlabelled test recordings from the same Oct 15 session (~3-5 min each).
+    - label: "UNLABELLED clip2_test D435i"
+      uri: "bag:///media/anormalm/T9/ah_bags_d435i/clip2_test.db3"
+      calibration: "calib/d435i.yaml"
+    - label: "UNLABELLED clip2_test D435f"
+      uri: "bag:///media/anormalm/T9/ah_bags_d435f/clip2_test.db3"
+      calibration: "calib/d435f.yaml"
+    - label: "UNLABELLED clipsensor_test D435i"
+      uri: "bag:///media/anormalm/T9/ah_bags_d435i/clipsensor_test.db3"
+      calibration: "calib/d435i.yaml"
+    - label: "UNLABELLED clipsensor_test D435f"
+      uri: "bag:///media/anormalm/T9/ah_bags_d435f/clipsensor_test.db3"
+      calibration: "calib/d435f.yaml"
+  # yolo is AGPL and benchmark-only -- fine for local testing, not for a ward
+  # deployment. Included here because this is the dev dashboard.
+  backends: ["rtmpose", "rtmo", "yolo"]
+  allow_custom_source: true
+
+privacy:
+  allow_raw_capture: false
