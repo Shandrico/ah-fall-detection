@@ -315,3 +315,61 @@ def test_strict_verification_failure_is_not_retried_or_hardware_reset():
     with pytest.raises(RealSenseVerificationError, match="strict controls unsupported"):
         source._start_with_retry()
     assert calls == {"start": 1, "stop": 1, "reset": 0}
+
+
+class TestCameraSelection:
+    def test_serial_and_model_are_parsed(self):
+        assert parse_realsense_uri("rs://?serial=346122072607")["device_serial"] == "346122072607"
+        assert parse_realsense_uri("rs://?depth=1&model=d435f")["device_model"] == "D435F"
+        assert "device_serial" not in parse_realsense_uri("rs://")
+
+    @pytest.mark.parametrize("uri", ["rs://?serial=1&model=d435f", "rs://?serial=12;rm", "rs://?model=d435 f"])
+    def test_bad_selection_is_rejected(self, uri):
+        with pytest.raises(ValueError):
+            parse_realsense_uri(uri)
+
+    def _probe(self, monkeypatch, names):
+        from ahfd.capture import devices, factory
+
+        fake = devices.RealSenseProbe(
+            installed=True, version="test",
+            devices=tuple(devices.RealSenseDevice(name=n, serial=s, usb="3.2") for n, s in names),
+        )
+        monkeypatch.setattr(devices, "probe_realsense", lambda: fake)
+        return factory
+
+    def test_model_resolves_to_that_cameras_serial(self, monkeypatch):
+        factory = self._probe(monkeypatch, [("Intel RealSense D435I", "111"), ("Intel RealSense D435F", "222")])
+        assert factory.resolve_realsense_model("D435F") == "222"
+        assert factory.resolve_realsense_model("D435I") == "111"
+
+    def test_model_missing_or_ambiguous_fails_loudly(self, monkeypatch):
+        factory = self._probe(monkeypatch, [("Intel RealSense D435I", "111")])
+        with pytest.raises(ValueError, match="found 0"):
+            factory.resolve_realsense_model("D435F")
+        factory = self._probe(monkeypatch, [("Intel RealSense D435I", "1"), ("Intel RealSense D435I", "2")])
+        with pytest.raises(ValueError, match="found 2"):
+            factory.resolve_realsense_model("D435I")
+
+
+class TestOpenRealsense:
+    def _fake(self, monkeypatch, names):
+        from ahfd.capture import devices, factory, realsense
+
+        fake = devices.RealSenseProbe(installed=True, version="t",
+                                      devices=tuple(devices.RealSenseDevice(name=n, serial=s, usb="3.2") for n, s in names))
+        monkeypatch.setattr(devices, "probe_realsense", lambda: fake)
+        opened = {}
+        monkeypatch.setattr(realsense, "RealSenseSource", lambda **kw: opened.update(kw) or kw)
+        return factory, opened
+
+    def test_model_and_overrides_reach_the_source(self, monkeypatch):
+        factory, opened = self._fake(monkeypatch, [("Intel RealSense D435I", "111"), ("Intel RealSense D435F", "222")])
+        factory.open_realsense("rs://?model=d435f&max_range=10", with_depth=True)
+        assert opened["device_serial"] == "222" and opened["with_depth"] is True and opened["max_range_m"] == 10.0
+
+    def test_explicit_serial_must_match_the_model(self, monkeypatch):
+        """Regression (code review): model= is no longer ignored when a serial is passed."""
+        factory, _ = self._fake(monkeypatch, [("Intel RealSense D435I", "111"), ("Intel RealSense D435F", "222")])
+        with pytest.raises(ValueError, match="different camera"):
+            factory.open_realsense("rs://?model=d435f", device_serial="111")

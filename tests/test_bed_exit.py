@@ -37,6 +37,8 @@ class Sample:
     bed_edge_distance_m: float | None = 0.70
     torso_tilt: float | None = 70.0
     motion: float = 0.01
+    knee_angle: float | None = None
+    leg_tilt: float | None = None
 
     def has_geometry(self):
         return self.contact_xy is not None and self.h_torso is not None
@@ -56,7 +58,9 @@ def feed(machine, start, seconds, *, track_id=1, values=None, **changes):
 
 
 def establish_recline(machine, start=0.0, *, track_id=1):
-    t, events = feed(machine, start, 2.0, track_id=track_id)
+    # Longer than BedExitThresholds.support_arm_s, so the track counts as having
+    # been in the bed before any exit test.
+    t, events = feed(machine, start, 2.5, track_id=track_id)
     assert events == []
     assert machine.phase_of(track_id) == "RECLINED"
     assert machine.snapshot_of(track_id).cusum_armed
@@ -559,3 +563,75 @@ def test_short_cooldown_config_is_respected():
     mon = BedExitMonitor(BedExitConfig(cooldown_s=0.1))
     first = _reclined_then_sit_up(mon, risk="high")
     assert len(first) == 1
+
+
+# --- standing is required for a completed exit (Lifan Oct 13 regressions) ----
+
+STANDING = dict(torso_tilt=8.0, knee_angle=172.0, leg_tilt=4.0)
+
+
+def test_passer_by_standing_over_the_bed_outline_never_exits():
+    """A visitor standing in front of the bed overlaps its outline in the image."""
+    machine = BedExitStateMachine()
+    t, events = feed(machine, 0.0, 5.0, h_shoulder=1.4, bed_support_fraction=0.6, bed_overlap=0.6,
+                     bed_edge_distance_m=0.3, **STANDING)
+    _t, more = feed(machine, t, 2.0, h_shoulder=1.4, supported_by_bed=None, bed_support_fraction=0.0,
+                    bed_overlap=0.0, bed_edge_distance_m=-0.5, motion=0.4, **STANDING)
+    assert [e.type for e in events + more] == []
+
+
+def test_sitting_on_the_edge_with_legs_off_the_mattress_is_not_an_exit():
+    machine = BedExitStateMachine()
+    t = establish_recline(machine)
+    _t, events = feed(machine, t, 3.0, h_shoulder=0.95, torso_tilt=12.0, knee_angle=100.0, leg_tilt=20.0,
+                      supported_by_bed=None, bed_support_fraction=0.1, bed_overlap=0.1, bed_edge_distance_m=-0.12,
+                      motion=0.2)
+    assert [e.type for e in events] == []
+    assert machine.phase_of(1) != "OUT_OF_BED"
+
+
+def test_long_sitting_with_straight_legs_along_the_bed_is_not_an_exit():
+    machine = BedExitStateMachine()
+    t = establish_recline(machine)
+    _t, events = feed(machine, t, 3.0, h_shoulder=0.95, torso_tilt=10.0, knee_angle=175.0, leg_tilt=40.0,
+                      supported_by_bed=None, bed_support_fraction=0.1, bed_overlap=0.1, bed_edge_distance_m=-0.12,
+                      motion=0.2)
+    assert [e.type for e in events] == []
+
+
+def test_standing_up_and_leaving_after_lying_is_an_exit():
+    machine = BedExitStateMachine()
+    t = establish_recline(machine)
+    _t, events = feed(machine, t, 1.0, h_shoulder=1.4, supported_by_bed=None, bed_support_fraction=0.0,
+                      bed_overlap=0.0, bed_edge_distance_m=-0.15, motion=0.4, **STANDING)
+    assert [e.evidence["trigger"] for e in events] == ["out_of_bed"]
+
+
+def test_brief_overlap_does_not_arm_the_exit_logic():
+    """Support must last support_arm_s while not standing before an exit can count."""
+    machine = BedExitStateMachine()
+    t, _ = feed(machine, 0.0, 1.0, knee_angle=100.0, leg_tilt=30.0)  # 1 s "in bed": too short
+    _t, events = feed(machine, t, 1.0, h_shoulder=1.4, supported_by_bed=None, bed_support_fraction=0.0,
+                      bed_overlap=0.0, bed_edge_distance_m=-0.15, motion=0.4, **STANDING)
+    assert events == []
+
+
+def test_unobserved_time_does_not_count_towards_arming():
+    """Regression (code review): a low-confidence gap must restart the support_arm_s clock."""
+    machine = BedExitStateMachine()
+    t, _ = feed(machine, 0.0, 0.2, knee_angle=100.0, leg_tilt=30.0)            # brief overlap
+    t, _ = feed(machine, t, 3.0, mean_conf=0.1, knee_angle=100.0, leg_tilt=30.0)  # unobserved
+    t, _ = feed(machine, t, 0.2, knee_angle=100.0, leg_tilt=30.0)            # one more brief overlap
+    _t, events = feed(machine, t, 1.0, h_shoulder=1.4, supported_by_bed=None, bed_support_fraction=0.0,
+                      bed_overlap=0.0, bed_edge_distance_m=-0.15, motion=0.4, **STANDING)
+    assert events == []
+
+
+def test_exit_into_a_bedside_chair_without_standing_still_counts():
+    """Regression (code review): a seated transfer well clear of the bed is an exit."""
+    machine = BedExitStateMachine()
+    t = establish_recline(machine)
+    _t, events = feed(machine, t, 1.5, h_shoulder=1.0, torso_tilt=12.0, knee_angle=95.0, leg_tilt=30.0,
+                      supported_by_bed=None, bed_support_fraction=0.0, bed_overlap=0.0, bed_edge_distance_m=-0.5,
+                      motion=0.3)
+    assert [e.evidence["trigger"] for e in events] == ["out_of_bed"]

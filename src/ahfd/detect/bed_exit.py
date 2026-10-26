@@ -73,6 +73,25 @@ class BedExitThresholds:
     edge_velocity_enter_mps: float = -0.05
     edge_velocity_exit_mps: float = -0.015
 
+    # Standing = upright torso over near-vertical legs (hip->ankle image angle,
+    # Features.leg_tilt) whose knees are not clearly bent. A standing body is
+    # not bed-supported even when it overlaps the bed outline in the image (a
+    # passer-by in front of the bed), and a completed exit needs it: sitting on
+    # the edge, or with straight legs along the mattress, lowers bed overlap
+    # but is not an exit. Legs not visible (no hip+ankle) -> the exit rule
+    # falls back to bed support alone, so a hidden-leg exit is not missed.
+    # Tuned on the Oct 15 pilot + Lifan's Oct 13 clips (standing leg angle
+    # p90 13 deg; edge sitting 17-42; straight legs on the mattress >= 28).
+    stand_knee_min_deg: float = 140.0
+    stand_leg_tilt_max_deg: float = 15.0
+    # Continuous bed support (while not standing) needed before a track counts
+    # as having been in the bed. A passer-by overlaps the outline briefly; a
+    # patient lies or sits for far longer.
+    support_arm_s: float = 2.0
+    # ...but an exit that does not end standing (into a bedside chair, or a
+    # slide to the floor) still counts once the body is clearly beyond the bed
+    # edge -- unlike sitting on the edge, where the hips stay at the edge.
+    exit_far_outside_m: float = 0.30
     rise_delta_m: float = 0.12
     phase_dwell_s: float = 0.30
     fast_transition_dwell_s: float = 0.10
@@ -168,6 +187,7 @@ class _BedTrack:
     warning_emitted: bool = False
     exit_emitted: bool = False
     support_seen: bool = False
+    in_bed_since: float | None = None  # continuous supported-and-not-standing start
     support_lost_since: float | None = None
     reasons: tuple[str, ...] = ()
     last_signal: float | None = None
@@ -400,6 +420,8 @@ class BedExitStateMachine:
         ts.support_velocity = None
         ts.last_edge_t = None
         ts.last_support_t = None
+        # Bed-support arming needs *continuous observed* support; a gap restarts it.
+        ts.in_bed_since = None
 
     def _evidence(self, ts: _BedTrack, now: float, trigger: str) -> dict:
         snap = self.snapshot_of(ts.track_id, now)
@@ -497,10 +519,23 @@ class BedExitStateMachine:
         tilt = _finite(getattr(f, "torso_tilt", None))
         motion = _finite(getattr(f, "motion", None)) or 0.0
 
+        knee = _finite(getattr(f, "knee_angle", None))
+        leg_tilt = _finite(getattr(f, "leg_tilt", None))
+        legs_known = leg_tilt is not None
+        standing = bool(
+            legs_known and leg_tilt <= self.th.stand_leg_tilt_max_deg
+            and (knee is None or knee > self.th.stand_knee_min_deg)
+            and tilt is not None and tilt <= self.th.upright_tilt_exit_deg
+        )
         previous_support = ts.support
         ts.support = self._support(ts, f)
-        if ts.support in ("SUPPORTED", "PARTIAL"):
-            ts.support_seen = True
+        if ts.support in ("SUPPORTED", "PARTIAL") and not standing:
+            if ts.in_bed_since is None:
+                ts.in_bed_since = now
+            if now - ts.in_bed_since >= self.th.support_arm_s:
+                ts.support_seen = True
+        else:
+            ts.in_bed_since = None
         if ts.support == "UNSUPPORTED" and previous_support != "UNSUPPORTED":
             ts.support_lost_since = now
         elif ts.support == "SUPPORTED":
@@ -594,6 +629,9 @@ class BedExitStateMachine:
         # supported by the bed earlier in the episode.  Merely walking through
         # a calibrated bed footprint must not create a medium/high alert.
         elif bed_known and ts.support_seen and ts.support == "UNSUPPORTED" and (
+            standing or not legs_known
+            or (edge is not None and edge < -self.th.exit_far_outside_m)
+        ) and (
             outside
             or edge_directed
             or ts.support_lost_since is not None

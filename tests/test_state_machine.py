@@ -51,6 +51,7 @@ def feats(
     excluded: bool = False,
     torso_tilt: float | None = None,
     knee_angle: float | None = None,
+    hip_angle: float | None = None,
 ) -> Features:
     return Features(
         track_id=track_id,
@@ -74,6 +75,7 @@ def feats(
         in_excluded_zone=excluded,
         torso_tilt=torso_tilt,
         knee_angle=knee_angle,
+        hip_angle=hip_angle,
     )
 
 
@@ -749,3 +751,54 @@ class TestThresholdsAreConfigurable:
         th = FallThresholds()
         for name, value in vars(th).items():
             assert isinstance(value, (int, float, tuple)), name
+
+
+def test_one_drop_and_recovery_is_one_near_miss():
+    """Regression: the drop window must not re-fire the same drop every frame."""
+    m = FallStateMachine()
+    frames = hold(0.0, 2.0, h_torso=1.15)
+    # a fast 0.5 m dip and straight back up -- trigger, then recovery
+    frames += [feats(2.0 + i * DT, h_torso=1.15 - 0.1 * i, v_z=-1.2) for i in range(1, 6)]
+    frames += hold(2.4, 4.0, h_torso=1.15)
+    events = run(m, frames)
+    assert types_of(events).count("NEAR_MISS") <= 1
+
+
+def test_a_near_miss_does_not_hide_a_real_fall_soon_after():
+    """Regression: NEAR_MISS must not start the paging cooldown."""
+    m = FallStateMachine()
+    frames = fall_sequence(down_s=3.0)                      # stumble, quick recovery
+    frames += hold(frames[-1].t + DT, 15.0, h_torso=1.15)    # back on their feet
+    second = fall_sequence(down_s=12.0)                     # a real fall ~20 s later
+    offset = frames[-1].t + DT
+    frames += [Features(**{**f.__dict__, "t": f.t + offset}) for f in second]
+    events = run(m, frames)
+    assert "NEAR_MISS" in types_of(events)
+    assert "FALL_CONFIRMED" in types_of(events)
+
+
+def test_seated_with_legs_stretched_out_stays_sitting():
+    """Straight knees but a bent hip: sitting with legs out, not standing."""
+    m = FallStateMachine()
+    run(m, hold(0.0, 2.0, h_torso=0.80, torso_tilt=8.0, knee_angle=175.0, hip_angle=95.0))
+    assert m.state_of(1) == "SITTING"
+
+
+def test_straight_knee_and_hip_is_standing():
+    m = FallStateMachine()
+    run(m, hold(0.0, 2.0, h_torso=0.80, torso_tilt=8.0, knee_angle=172.0, hip_angle=171.0))
+    assert m.state_of(1) == "UPRIGHT"
+
+
+def test_a_fall_caught_while_the_torso_is_still_high_is_not_dropped():
+    """Regression (code review): trigger fires at 0.85 m, landing comes 2 frames later."""
+    m = FallStateMachine()
+    frames = hold(0.0, 2.0, h_torso=1.15)
+    t = 2.0
+    for h in (1.05, 0.95, 0.85, 0.78):
+        frames.append(feats(t, h_torso=h, v_z=-1.5, motion=0.9)); t += DT
+    for h in (0.45, 0.40):
+        frames.append(feats(t, h_torso=h, v_z=-1.5, floor_spread=SPREAD_DOWN, motion=0.9)); t += DT
+    frames += hold(t, 12.0, h_torso=0.40, floor_spread=SPREAD_DOWN, motion=0.02)
+    kinds = types_of(run(m, frames))
+    assert "FALL_SUSPECTED" in kinds and "FALL_CONFIRMED" in kinds

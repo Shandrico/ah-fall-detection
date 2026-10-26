@@ -47,7 +47,7 @@ from ahfd.geometry.zones import (
     point_in_polygon,
     signed_distance_to_polygon,
 )
-from ahfd.ml.pose_features import _KNEE_CHAINS, _paired_angle
+from ahfd.ml.pose_features import _HIP_CHAINS, _KNEE_CHAINS, _paired_angle
 from ahfd.pose.skeleton import ANKLES, HEAD, HIPS, SHOULDERS
 from ahfd.types import PersonPose
 
@@ -127,6 +127,13 @@ class Features:
     # straight legs, ~90 seated. Scale-free like torso_tilt, so it tells a
     # standing person from a seated one even when the metric heights under-read.
     knee_angle: float | None = None
+    # Hip-centre -> ankle-centre direction from image-vertical, degrees: ~0-15
+    # standing (legs hang straight down), ~20-40 seated on an edge, ~60-80 legs
+    # along a mattress. Separates standing from sitting with straight legs.
+    leg_tilt: float | None = None
+    # Shoulder->hip->knee angle in the image, degrees: ~170 standing, ~70-130
+    # seated -- including seated with straight legs, where knee_angle is ~180.
+    hip_angle: float | None = None
     # Shoulder elevation is the preferred rise signal.  When depth joint
     # heights are attached it is measured directly; otherwise it falls back to
     # the calibrated monocular estimate.
@@ -173,8 +180,13 @@ class FeatureExtractor:
         ground: GroundPlane,
         zones: ZoneMap | None = None,
         min_keypoint_score: float = 0.3,
+        depth_ground: GroundPlane | None = None,
     ):
         self.ground = ground
+        # Geometry for turning measured depth into joint heights. It can differ
+        # from the colour calibration's tilt (see Calibration.depth_ground);
+        # defaults to the same ground.
+        self.depth_ground = depth_ground or ground
         self.zones = zones or ZoneMap()
         self.min_keypoint_score = min_keypoint_score
         self._history: dict[int, _History] = {}
@@ -341,6 +353,38 @@ class FeatureExtractor:
         if denom < 1e-9:
             return 0.0
         return float((t * (h - h.mean())).sum() / denom)
+
+    def _leg_tilt(self, person: PersonPose, valid: np.ndarray) -> float | None:
+        """Angle between the hips->ankles vector and the room's vertical at the hips, degrees.
+
+        With a downtilted camera, world verticals converge on a vanishing point
+        below the image, so "straight down" leans more the farther a person is
+        from the image centre. Measuring against the local vertical (towards
+        that point) keeps a standing person near 0 anywhere in the frame.
+        """
+        hips = [person.keypoints[i] for i in HIPS if valid[i]]
+        ankles = [person.keypoints[i] for i in ANKLES if valid[i]]
+        if not hips or not ankles:
+            return None
+        hip = np.mean(hips, axis=0)
+        leg = np.mean(ankles, axis=0) - hip
+        down = self._image_down_at(hip)
+        if math.hypot(*leg) < 1.0 or down is None:
+            return None
+        cos = float(np.dot(leg, down) / (math.hypot(*leg) * math.hypot(*down)))
+        return float(math.degrees(math.acos(max(-1.0, min(1.0, cos)))))
+
+    def _image_down_at(self, pixel) -> np.ndarray | None:
+        """Image direction of world-down at ``pixel`` (towards the vertical vanishing point)."""
+        k = self.ground.intrinsics
+        d = self.ground.rotation.T @ np.array([0.0, 0.0, -1.0])  # world down, in camera axes
+        if abs(d[2]) < 1e-6:  # level camera: verticals are parallel in the image
+            return np.array([d[0], d[1]]) if math.hypot(d[0], d[1]) > 0 else None
+        vp = np.array([k.fx * d[0] / d[2] + k.cx, k.fy * d[1] / d[2] + k.cy])
+        direction = vp - np.asarray(pixel, dtype=float)
+        if d[2] < 0:  # vanishing point behind the camera (looking up): reverse
+            direction = -direction
+        return direction if math.hypot(*direction) > 0 else None
 
     @staticmethod
     def _torso_tilt(person: PersonPose, valid: np.ndarray) -> float | None:
@@ -557,6 +601,8 @@ class FeatureExtractor:
             bed_overlap=self._bed_overlap(person, valid),
             torso_tilt=self._torso_tilt(person, valid),
             knee_angle=_paired_angle(person, valid, _KNEE_CHAINS),
+            leg_tilt=self._leg_tilt(person, valid),
+            hip_angle=_paired_angle(person, valid, _HIP_CHAINS),
             h_shoulder=shoulder,
             h_shoulder_source=shoulder_source,
             h_torso_source=torso_source,

@@ -110,3 +110,29 @@ class TestSimpleTracker:
         out = tracker.update(frame(0.0, 0, weak))
         assert out.people[0].track_id is None
         assert tracker.live_ids == set()
+
+
+
+def person_box(x, y, w, h):
+    """A synthetic person whose confident keypoints span exactly (x, y, w, h)."""
+    xs = np.linspace(x, x + w, NUM_KEYPOINTS, dtype=np.float32)
+    ys = np.linspace(y, y + h, NUM_KEYPOINTS, dtype=np.float32)
+    return PersonPose(keypoints=np.stack([xs, ys], 1), scores=np.ones(NUM_KEYPOINTS, np.float32), score=1.0)
+
+
+def test_reassociation_keeps_a_shifted_patient():
+    tracker = SimpleTracker(max_miss_s=1.0)
+    first = tracker.update(frame(0.0, 0, person_box(100, 300, 300, 80)))     # lying, wide box
+    # dropout frame, then the same body re-seen a little smaller and shifted (IoU < 0.3)
+    tracker.update(frame(1 / 30, 1))
+    again = tracker.update(frame(2 / 30, 2, person_box(190, 315, 220, 70)))
+    assert again.people[0].track_id == first.people[0].track_id
+
+
+def test_reassociation_does_not_give_the_patient_id_to_a_nurse():
+    """Regression (code review): a standing person near a lost lying patient gets a new id."""
+    tracker = SimpleTracker(max_miss_s=1.0)
+    first = tracker.update(frame(0.0, 0, person_box(100, 300, 300, 80)))     # lying patient
+    tracker.update(frame(1 / 30, 1))
+    nurse = tracker.update(frame(2 / 30, 2, person_box(250, 200, 70, 230)))  # tall box beside the bed
+    assert nurse.people[0].track_id != first.people[0].track_id

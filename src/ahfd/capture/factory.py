@@ -71,6 +71,8 @@ def parse_realsense_uri(uri: str) -> dict:
         "max_laser",
         "max_range",
         "spatial",
+        "serial",
+        "model",
     }
     parsed_query = parse_qs(parsed.query, keep_blank_values=True)
     unknown = sorted(set(parsed_query) - allowed)
@@ -105,10 +107,70 @@ def parse_realsense_uri(uri: str) -> dict:
     if "spatial" in q:
         kwargs["spatial_magnitude"] = int(q["spatial"])
 
+    # Which camera, when more than one is plugged in: an exact serial, or a
+    # model name ("d435i" / "d435f") resolved against the connected devices at
+    # open time -- so a committed config need not carry a raw serial number.
+    if "serial" in q and "model" in q:
+        raise ValueError("RealSense URI takes serial or model, not both")
+    if "serial" in q:
+        if not q["serial"].isalnum():
+            raise ValueError("RealSense serial must be letters and digits")
+        kwargs["device_serial"] = q["serial"]
+    if "model" in q:
+        if not q["model"].isalnum():
+            raise ValueError("RealSense model must be letters and digits, e.g. d435f")
+        kwargs["device_model"] = q["model"].upper()
+
     # Only an explicit w/h in the URI overrides the device's default profile.
     if "w" in q and "h" in q:
         kwargs["ir_size" if infrared else "color_size"] = (int(q["w"]), int(q["h"]))
     return kwargs
+
+
+def resolve_realsense_model(model: str) -> str:
+    """The serial of the one connected camera whose name ends with ``model``.
+
+    Raises when none or several match, rather than silently opening whichever
+    camera the driver lists first (which would pair it with the wrong
+    calibration).
+    """
+    from ahfd.capture.devices import probe_realsense
+
+    probe = probe_realsense()
+    if probe.error:
+        raise ValueError("cannot list RealSense cameras: " + probe.error)
+    wanted = model.upper()
+    hits = [d for d in probe.devices if d.name.upper().replace(" ", "").endswith(wanted)]
+    if len(hits) != 1:
+        seen = ", ".join(d.name for d in probe.devices) or "none"
+        raise ValueError(
+            "need exactly one connected RealSense " + wanted + "; found "
+            + str(len(hits)) + " (connected: " + seen + ")"
+        )
+    return hits[0].serial
+
+
+def open_realsense(uri: str, *, device_serial: str | None = None, strict_depth_controls: bool = False, **overrides):
+    """A RealSenseSource for an rs:// URI, honouring serial=/model= and every URI option.
+
+    ``overrides`` replace URI options (e.g. ``with_depth=True`` for extraction).
+    An explicit ``device_serial`` must agree with the URI's serial= or model=.
+    """
+    from ahfd.capture.realsense import RealSenseSource
+
+    options = parse_realsense_uri(uri)
+    uri_serial = options.pop("device_serial", None)
+    model = options.pop("device_model", None)
+    if device_serial and uri_serial and device_serial != uri_serial:
+        raise ValueError("the URI names a different RealSense serial than requested")
+    serial = device_serial or uri_serial
+    if model is not None:
+        resolved = resolve_realsense_model(model)
+        if serial is not None and serial != resolved:
+            raise ValueError("the URI asks for a " + model + " but the requested serial is a different camera")
+        serial = resolved
+    options.update(overrides)
+    return RealSenseSource(**options, device_serial=serial, strict_depth_controls=strict_depth_controls)
 
 
 def open_source(
@@ -140,15 +202,9 @@ def open_source(
         return VideoSource(uri[len("file://") :], uri=uri)
 
     if uri.startswith("rs://"):
-        from ahfd.capture.realsense import RealSenseSource
-
         # width/height are webcam capture hints; the RealSense uses its own
         # calibrated profile, so they are intentionally not forwarded here.
-        return RealSenseSource(
-            **parse_realsense_uri(uri),
-            device_serial=device_serial,
-            strict_depth_controls=strict_depth_controls,
-        )
+        return open_realsense(uri, device_serial=device_serial, strict_depth_controls=strict_depth_controls)
 
     if uri.startswith("bag://"):
         from ahfd.capture.realsense import BagSource

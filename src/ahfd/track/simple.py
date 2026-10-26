@@ -41,6 +41,26 @@ def iou(a: BBox, b: BBox) -> float:
     return inter / union if union > 0.0 else 0.0
 
 
+def _centre_distance(a: BBox, b: BBox) -> float:
+    return (((a[0] + a[2]) - (b[0] + b[2])) ** 2 + ((a[1] + a[3]) - (b[1] + b[3])) ** 2) ** 0.5 / 2.0
+
+
+def _diagonal(b: BBox) -> float:
+    return ((b[2] - b[0]) ** 2 + (b[3] - b[1]) ** 2) ** 0.5
+
+
+def _similar_shape(a: BBox, b: BBox, factor: float = 2.0) -> bool:
+    """Within ``factor`` in area and in height/width ratio -- the same body, re-seen.
+
+    Stops a different person (a nurse standing beside a lying patient: tall
+    box vs wide box) inheriting an identity through the proximity pass.
+    """
+    aw, ah = max(a[2] - a[0], 1e-6), max(a[3] - a[1], 1e-6)
+    bw, bh = max(b[2] - b[0], 1e-6), max(b[3] - b[1], 1e-6)
+    area, aspect = (aw * ah) / (bw * bh), (ah / aw) / (bh / bw)
+    return 1 / factor <= area <= factor and 1 / factor <= aspect <= factor
+
+
 @dataclass
 class Track:
     """One tracked identity."""
@@ -63,6 +83,15 @@ class SimpleTracker:
     iou_threshold: float = 0.3
     max_misses: int = 15  # ~1 s at 15 fps before an identity is retired
     min_keypoint_score: float = 0.3
+    # Retire by elapsed time instead of frame count when set: 15 frames is 1 s
+    # at 15 fps but only 0.5 s at 30 fps, too short for a patient who rolls
+    # over and briefly loses joints. Live pipelines pass 1.0 s.
+    max_miss_s: float | None = None
+    # Second matching pass for detections the IoU pass left over: re-attach one
+    # to a left-over track whose box centre is within this fraction of that
+    # track's box diagonal. Keeps a rolling patient (shrinking, shifting box)
+    # on one identity; a jump across the room is far beyond it. 0 disables.
+    reassociate_frac: float = 0.5
 
     _tracks: list[Track] = field(default_factory=list, init=False)
     _next_id: int = field(default=0, init=False)
@@ -105,6 +134,24 @@ class SimpleTracker:
             claimed_dets.add(det_i)
             claimed_tracks.add(track_i)
 
+        if self.reassociate_frac > 0:
+            near = []
+            for det_i, box in detections:
+                if det_i in claimed_dets:
+                    continue
+                for track_i, track in enumerate(self._tracks):
+                    if track_i in claimed_tracks:
+                        continue
+                    gap = _centre_distance(box, track.bbox)
+                    if gap <= self.reassociate_frac * _diagonal(track.bbox) and _similar_shape(box, track.bbox):
+                        near.append((gap, det_i, track_i))
+            for _, det_i, track_i in sorted(near):
+                if det_i in claimed_dets or track_i in claimed_tracks:
+                    continue
+                det_to_track[det_i] = self._tracks[track_i]
+                claimed_dets.add(det_i)
+                claimed_tracks.add(track_i)
+
         matched = {id(t) for t in det_to_track.values()}
 
         # Existing tracks that went unmatched this frame accumulate a miss.
@@ -133,7 +180,13 @@ class SimpleTracker:
                 track.misses = 0
                 track.last_t = pose_frame.t
 
-        self._tracks = [t for t in self._tracks if t.misses <= self.max_misses]
+        if self.max_miss_s is not None:
+            self._tracks = [
+                t for t in self._tracks
+                if t.misses == 0 or pose_frame.t - t.last_t <= self.max_miss_s
+            ]
+        else:
+            self._tracks = [t for t in self._tracks if t.misses <= self.max_misses]
 
         people = tuple(
             person.with_track_id(det_to_track[i].track_id)

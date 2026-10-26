@@ -81,6 +81,25 @@ def keypoint_heights_from_depth(
     return heights
 
 
+def reground_heights(keypoints: np.ndarray, heights: np.ndarray, from_ground, to_ground) -> np.ndarray:
+    """Re-express stored depth joint heights under a different camera pose.
+
+    ``keypoint_heights_from_depth`` stores ``h0 + d * (R[2] . ray)`` for each
+    joint; with the pose it used (``from_ground``) the measured depth ``d`` is
+    recovered exactly and re-projected with ``to_ground``. Lets tracks already
+    extracted with the colour calibration adopt a ``depth_ground`` without
+    re-reading the recordings. NaNs stay NaN.
+    """
+    kp = np.asarray(keypoints, dtype=float)
+    h = np.asarray(heights, dtype=float)
+    k = from_ground.intrinsics
+    ray = np.stack([(kp[:, 0] - k.cx) / k.fx, (kp[:, 1] - k.cy) / k.fy, np.ones(len(kp))], axis=1)
+    old_z = ray @ from_ground.rotation[2]
+    with np.errstate(divide="ignore", invalid="ignore"):
+        depth = (h - float(from_ground.height_m)) / old_z
+    return float(to_ground.height_m) + depth * (ray @ to_ground.rotation[2])
+
+
 def region_height(heights: np.ndarray, region) -> float:
     """Mean height over a joint group (head / hips / ...), NaN if none valid."""
     vals = [heights[i] for i in region if i < len(heights) and np.isfinite(heights[i])]

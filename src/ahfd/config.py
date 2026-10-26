@@ -81,6 +81,7 @@ class DetectConfig(BaseModel):
     # On the bed-exit pilot, standing read 156-178 deg (p10-p90) and seated
     # 41-149 deg, so 155 keeps seated frames while catching most standing ones.
     seated_knee_max: float = 155.0
+    seated_hip_max: float = 150.0  # straight hip too; a seated hip stays bent
 
     vz_trigger: float = -0.90
     vz_frames: int = 3
@@ -145,6 +146,10 @@ class BedActivityConfig(BaseModel):
     reclined_tilt_exit_deg: float = 48.0
     upright_tilt_enter_deg: float = 38.0
     upright_tilt_exit_deg: float = 48.0
+    stand_knee_min_deg: float = 140.0  # standing = upright torso, near-vertical legs, knees not clearly bent
+    stand_leg_tilt_max_deg: float = 15.0
+    support_arm_s: float = 2.0  # continuous in-bed support before an exit can count
+    exit_far_outside_m: float = 0.30  # non-standing exit (chair / floor) once this far past the edge
     stable_rest_motion_max: float = 0.08
     support_enter: float = 0.55
     support_exit: float = 0.30

@@ -47,3 +47,11 @@ notes: 'D435f two-bed mount, 2.6 m lens, 30 deg downtilt, roll 0. Intrinsics fro
   ahfd calibrate-zones calib/d435f.yaml --source bag://data/ah_bags_d435f/clip1_01.db3
 
   '
+# Pose the DEPTH stream agrees with: floor plane fitted in depth by
+# `ahfd estimate-ground` on pilot takes 02/05/07 (median). Used only to turn
+# measured depth into joint heights; with it, standing ankles read ~0.1 m
+# (the 30 deg colour geometry above gave -0.2 m).
+depth_ground:
+  height_m: 2.58
+  pitch_deg: 24.1
+  roll_deg: 1.2

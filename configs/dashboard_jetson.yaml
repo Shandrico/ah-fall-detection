@@ -18,7 +18,9 @@
 # block serves both cameras. The initial source below opens the depth-enabled
 # D435i; the webcam remains available from the picker.
 
-source: "rs://?depth=1&emitter=1&max_laser=1&max_range=6"
+# model= picks the camera by name, so with both plugged in each opens with its
+# own calibration (and a missing camera says so instead of opening the other).
+source: "rs://?depth=1&emitter=1&max_laser=1&max_range=6&model=d435i"
 
 # Fallback calibration for a clip path typed into the source box (reviewing a
 # recording): those aren't listed cameras, so without this they'd run pose-only.
@@ -83,8 +85,11 @@ dashboard:
   # no calibration and would run pose-only).
   sources:
     - label: "RealSense D435i (RGB + depth features)"
-      uri: "rs://?depth=1&emitter=1&max_laser=1&max_range=6"
+      uri: "rs://?depth=1&emitter=1&max_laser=1&max_range=6&model=d435i"
       calibration: "calib/d435i.yaml"
+    - label: "RealSense D435f (RGB + depth features)"
+      uri: "rs://?depth=1&emitter=1&max_laser=1&max_range=6&model=d435f"
+      calibration: "calib/d435f.yaml"
     # Bed-exit pilot test takes (block E, on the T9). Each carries its own
     # camera's calibration -- a path typed into the source box would get the
     # D435i file above, which is wrong for the D435f. Review these only after

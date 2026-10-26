@@ -62,7 +62,7 @@ def export_review(
     meta = src.meta
     extractor, machine, _sink, _calib = _build_detection(cfg, str(calibration), meta)
     estimator = build_estimator(cfg.pose)
-    tracker = SimpleTracker(min_keypoint_score=cfg.pose.min_keypoint_score)
+    tracker = SimpleTracker(min_keypoint_score=cfg.pose.min_keypoint_score, max_miss_s=1.0)
     smoother = (
         KeypointSmoother(
             min_cutoff=cfg.smoothing.min_cutoff,

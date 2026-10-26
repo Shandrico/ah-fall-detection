@@ -138,6 +138,8 @@ class FallThresholds:
     seated_h: tuple[float, float] = (0.70, 1.00)
     # ...unless the legs are visibly straight (see DetectConfig.seated_knee_max).
     seated_knee_max: float = 155.0
+    # ...and a straight hip: seated hips stay bent even with legs stretched out.
+    seated_hip_max: float = 150.0
 
     # --- trigger -------------------------------------------------------
     vz_trigger: float = -0.90  # m/s sustained
@@ -180,6 +182,7 @@ class _TrackState:
     vz_streak: int = 0
     trigger_t: float | None = None
     trigger_h: float | None = None
+    trigger_min_h: float | None = None  # lowest torso height since the trigger
     peak_vz: float = 0.0
 
     down_since: float | None = None
@@ -237,8 +240,17 @@ class FallStateMachine:
             ts.state_since = now
 
     def _legs_straight(self, f: Features) -> bool:
-        """Visibly straight legs: a standing body, whatever its torso height reads."""
-        return f.knee_angle is not None and f.knee_angle > self.th.seated_knee_max
+        """Visibly straight legs AND hip: a standing body, whatever its torso height reads.
+
+        Straight knees alone also describe someone seated with their legs
+        stretched out; a seated hip stays bent (~70-130 deg) either way.
+        """
+        hip = getattr(f, "hip_angle", None)
+        return (
+            f.knee_angle is not None
+            and f.knee_angle > self.th.seated_knee_max
+            and (hip is None or hip > self.th.seated_hip_max)
+        )
 
     def _standing_shape(self, f: Features) -> bool:
         """Straight legs under an upright torso: standing, even when the
@@ -408,6 +420,19 @@ class FallStateMachine:
             self._reset_fall(ts)
             return self._enter_sitting(ts, f, now, zone)
 
+        ts.trigger_min_h = (
+            f.h_torso if ts.trigger_min_h is None else min(ts.trigger_min_h, f.h_torso)
+        )
+        # Not low (yet). A real fall can fire the trigger while the torso is
+        # still high, so give the descent the drop window before deciding;
+        # only if the body never went below recover_h in that time was this a
+        # quick bend/sit or tracking jitter -- dropped silently, no NEAR_MISS.
+        if ts.trigger_min_h >= self.th.recover_h and not down:
+            if ts.trigger_t is not None and now - ts.trigger_t < self.th.drop_window_s:
+                return None
+            self._reset_fall(ts)
+            return self._steady_state(ts, f, now, down, on_bed, zone)
+
         # Got back up: a near miss, and free training data.
         if f.h_torso >= self.th.recover_h and not down:
             evidence = {
@@ -420,7 +445,9 @@ class FallStateMachine:
             trigger_t = ts.trigger_t or now
             self._reset_fall(ts)
             self._set_state(ts, "RECOVERED", now)
-            ts.last_alert_t = now
+            # No cooldown: a NEAR_MISS pages nobody, and starting the alert
+            # cooldown here would suppress FALL_CONFIRMED for a genuine fall
+            # within cooldown_s of a stumble.
             return Event(
                 type="NEAR_MISS",
                 track_id=f.track_id,
@@ -682,10 +709,15 @@ class FallStateMachine:
     def _reset_fall(ts: _TrackState) -> None:
         ts.trigger_t = None
         ts.trigger_h = None
+        ts.trigger_min_h = None
         ts.peak_vz = 0.0
         ts.down_since = None
         ts.suspected = False
         ts.vz_streak = 0
+        # Forget the drop that fired this attempt. Otherwise the same old
+        # height is still in the drop window on the next frame and re-triggers
+        # at once -- a NEAR_MISS (or seated reset) every frame for ~2 s.
+        ts.height_log = ts.height_log[-1:]
 
     def _interrupt_observation(self, ts: _TrackState) -> None:
         """Unobserved time proves neither continuous floor rest nor bed exit.

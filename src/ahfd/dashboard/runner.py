@@ -201,7 +201,7 @@ class PipelineRunner:
                     )
 
             estimator = build_estimator(cfg.pose)
-            tracker = SimpleTracker(min_keypoint_score=cfg.pose.min_keypoint_score)
+            tracker = SimpleTracker(min_keypoint_score=cfg.pose.min_keypoint_score, max_miss_s=1.0)
             smoother = (
                 KeypointSmoother(
                     min_cutoff=cfg.smoothing.min_cutoff,
@@ -438,7 +438,7 @@ class PipelineRunner:
                 pose = attach_depth_heights(
                     pose,
                     frame,
-                    extractor.ground,
+                    extractor.depth_ground,
                     min_score=cfg.pose.min_keypoint_score,
                 )
 

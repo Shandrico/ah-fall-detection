@@ -56,10 +56,21 @@ class Calibration:
     # so RECLINED never triggers at the default 58. Keys: reclined_enter,
     # reclined_exit, upright_enter, upright_exit (degrees). None = defaults.
     bed_tilt_deg: dict[str, float] | None = None
+    # Camera pose that the DEPTH stream agrees with, fitted from the floor in
+    # depth (`ahfd estimate-ground`). Depth joint heights are measured points,
+    # so they need the true pose of the depth data; on the pilot mounts it
+    # differed from the colour calibration by 4-6 deg of tilt, which put
+    # standing ankles at -0.2 m and a lying torso below the mattress. With it,
+    # standing ankles read ~0.1 m. None = use `ground`.
+    depth_ground: GroundPlane | None = None
 
     @property
     def height_m(self) -> float:
         return self.ground.height_m
+
+    @property
+    def ground_for_depth(self) -> GroundPlane:
+        return self.depth_ground or self.ground
 
 
 def _intrinsics_from(entry: dict) -> Intrinsics:
@@ -171,6 +182,17 @@ def load_calibration(path: str | Path) -> Calibration:
     if bed_tilt is not None:
         bed_tilt = _validate_bed_tilt(bed_tilt)
 
+    depth_ground = None
+    raw_depth_ground = data.get("depth_ground")
+    if raw_depth_ground is not None:
+        try:
+            dg = {k: float(raw_depth_ground[k]) for k in ("height_m", "pitch_deg", "roll_deg")}
+        except (KeyError, TypeError, ValueError) as exc:
+            raise ValueError("depth_ground needs numeric height_m, pitch_deg and roll_deg") from exc
+        if not all(np.isfinite(v) for v in dg.values()) or dg["height_m"] <= 0:
+            raise ValueError("depth_ground values must be finite with a positive height_m")
+        depth_ground = GroundPlane(intrinsics=intrinsics, **dg)
+
     floor_roi = data.get("floor_roi")
     if floor_roi is not None:
         from ahfd.geometry.orientation import validate_floor_roi
@@ -187,6 +209,7 @@ def load_calibration(path: str | Path) -> Calibration:
         ankle_height_baseline_m=ankle_baseline,
         floor_roi=floor_roi,
         bed_tilt_deg=bed_tilt,
+        depth_ground=depth_ground,
     )
 
 

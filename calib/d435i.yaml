@@ -54,3 +54,11 @@ bed_tilt_deg:
   reclined_exit: 22
   upright_enter: 18
   upright_exit: 22
+# Pose the DEPTH stream agrees with: floor plane fitted in depth by
+# `ahfd estimate-ground` on pilot takes 02/05/07 (median). Used only to turn
+# measured depth into joint heights; with it, standing ankles read ~0.1 m
+# (the colour geometry above gave -0.2 m).
+depth_ground:
+  height_m: 2.69
+  pitch_deg: 26.4
+  roll_deg: 0.8

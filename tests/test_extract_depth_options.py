@@ -32,7 +32,10 @@ def test_depth_options_reach_source(monkeypatch, tmp_path, source, extra, expect
     monkeypatch.setattr(pose, "build_estimator", lambda cfg: SimpleNamespace(name="fake"))
     result = CliRunner().invoke(app, ["extract", source, str(tmp_path / "tracks.jsonl"), "--depth", *extra])
     assert result.exit_code == 0, result.output
-    assert calls[0][1] == {"with_depth": True, "max_range_m": expected[0], "spatial_magnitude": expected[1]}
+    # rs:// also carries the URI's own options (model=/serial=, emitter, ...) since
+    # extract parses it like every other command; the requested depth settings win.
+    wanted = {"with_depth": True, "max_range_m": expected[0], "spatial_magnitude": expected[1]}
+    assert {k: calls[0][1].get(k) for k in wanted} == wanted
 
 
 @pytest.mark.parametrize("extra", [["--max-range", "0"], ["--max-range", "nan"], ["--max-range", "inf"], ["--smooth", "0"], ["--smooth", "6"]])

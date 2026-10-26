@@ -52,7 +52,8 @@ def _build_detection(
     _check_calibration_resolution(calib, meta)
 
     extractor = FeatureExtractor(
-        calib.ground, zones=calib.zones, min_keypoint_score=cfg.pose.min_keypoint_score
+        calib.ground, zones=calib.zones, min_keypoint_score=cfg.pose.min_keypoint_score,
+        depth_ground=calib.ground_for_depth,
     )
     bed_thresholds = cfg.bed_activity.to_thresholds()
     if calib.bed_tilt_deg is not None:
@@ -565,7 +566,7 @@ def run(
     typer.echo("loading pose model (the first run downloads weights)...")
 
     estimator = build_estimator(cfg.pose)
-    tracker = SimpleTracker(min_keypoint_score=cfg.pose.min_keypoint_score)
+    tracker = SimpleTracker(min_keypoint_score=cfg.pose.min_keypoint_score, max_miss_s=1.0)
     smoother = (
         KeypointSmoother(
             min_cutoff=cfg.smoothing.min_cutoff,
@@ -645,7 +646,7 @@ def run(
                 pose = attach_depth_heights(
                     pose,
                     frame,
-                    extractor.ground,
+                    extractor.depth_ground,
                     min_score=cfg.pose.min_keypoint_score,
                 )
 
@@ -1483,7 +1484,7 @@ def collect_onsite(
 
         floor_monitor = FloorMonitor(calib) if device_model == "d435f" else None
         verified_depth_controls = src.preflight()
-        tracker = SimpleTracker(min_keypoint_score=cfg.pose.min_keypoint_score)
+        tracker = SimpleTracker(min_keypoint_score=cfg.pose.min_keypoint_score, max_miss_s=1.0)
         temporal = CausalTemporalSummarizer(
             max_gap_s=cfg.bed_activity.cusum.max_gap_s,
             near_edge_m=cfg.bed_activity.near_edge_enter_m,
@@ -1746,7 +1747,7 @@ def collect_onsite(
             pose = attach_depth_heights(
                 pose,
                 frame,
-                extractor.ground,
+                extractor.depth_ground,
                 min_score=cfg.pose.min_keypoint_score,
             )
             previous_observed_tracks = current_observed_tracks
@@ -2641,6 +2642,13 @@ def extract(
         "Defaults to MOUNT_PITCH_DEG (set once at the top of cli.py). Ignored when the "
         "clip carries IMU gravity (D435i).",
     ),
+    calibration: Path = typer.Option(
+        None,
+        help="For --depth: take the camera height and tilt from this calibration "
+        "(the same geometry the features use) instead of --height/--pitch. "
+        "Recommended -- recorded clips play back without IMU gravity, so the "
+        "--pitch default would otherwise apply even to a D435i.",
+    ),
 ) -> None:
     """Run pose once over a clip and write keypoints to tracks.jsonl.
 
@@ -2674,16 +2682,18 @@ def extract(
                 max_range_m=max_range, spatial_magnitude=smooth,
             )
         elif source.startswith("rs://"):
-            from ahfd.capture.realsense import RealSenseSource
+            from ahfd.capture.factory import open_realsense
 
-            src = RealSenseSource(
-                with_depth=True, max_range_m=max_range, spatial_magnitude=smooth,
+            src = open_realsense(
+                source, with_depth=True, max_range_m=max_range, spatial_magnitude=smooth,
             )
         else:
             raise typer.BadParameter(
                 "--depth needs a RealSense source (bag://<clip>.bag or rs://); got " + source
             )
     else:
+        if calibration is not None:
+            typer.echo("WARNING: --calibration only affects --depth joint heights; ignored without --depth")
         src = open_source(source)
     typer.echo(
         "source:  " + source + "  "
@@ -2692,7 +2702,7 @@ def extract(
     )
     typer.echo("loading pose model (the first run downloads weights)...")
     estimator = build_estimator(cfg.pose)
-    tracker = SimpleTracker(min_keypoint_score=cfg.pose.min_keypoint_score)
+    tracker = SimpleTracker(min_keypoint_score=cfg.pose.min_keypoint_score, max_miss_s=1.0)
     smoother = (
         KeypointSmoother(
             min_cutoff=cfg.smoothing.min_cutoff,
@@ -2709,7 +2719,23 @@ def extract(
         from ahfd.geometry.depth_height import keypoint_heights_from_depth
         from ahfd.geometry.ground import GroundPlane
 
-        typer.echo("depth:   ON -- storing joint heights above floor (mount " + str(height) + " m)")
+        calib_ground = None
+        if calibration is not None:
+            from ahfd.geometry.calibration import load_calibration
+
+            try:
+                calib = load_calibration(calibration)
+                _check_calibration_resolution(calib, src.meta)
+            except Exception:
+                src.close()  # do not leave a live camera streaming on a bad calibration
+                raise
+            calib_ground = calib.ground_for_depth
+            typer.echo(
+                "depth:   ON -- joint heights from the " + str(calibration) + " geometry ("
+                + format(calib_ground.height_m, ".2f") + " m)"
+            )
+        else:
+            typer.echo("depth:   ON -- storing joint heights above floor (mount " + str(height) + " m)")
 
     writer = TracksWriter(out)
     n = 0
@@ -2735,7 +2761,9 @@ def extract(
                 # Ground tilt from the live IMU (D435i), or the fixed --pitch when
                 # the recording has no gravity (D435f). depth_raw = measurement
                 # depth (no hole filling), the right one for a per-joint reading.
-                if frame.gravity is not None:
+                if calib_ground is not None:
+                    gp = calib_ground
+                elif frame.gravity is not None:
                     gp = GroundPlane.from_gravity(frame.intrinsics, height, _np.asarray(frame.gravity))
                 elif pitch is not None:
                     gp = GroundPlane(intrinsics=frame.intrinsics, height_m=height,
@@ -3238,6 +3266,84 @@ def train_posture(
         label_key="posture", unit="posture",
         pilot="only" if pilot_only else ("add" if pilot else None),
     )
+
+
+@app.command(name="reground-tracks")
+def reground_tracks(
+    src: Path = typer.Argument(..., help="tracks.jsonl whose depth heights used the calibration's COLOUR geometry."),
+    out: Path = typer.Argument(..., help="Output tracks.jsonl with heights in the calibration's depth_ground."),
+    calibration: Path = typer.Option(..., help="Calibration YAML with a depth_ground block."),
+) -> None:
+    """Convert stored depth joint heights to the calibration's depth_ground pose.
+
+    For tracks made with `extract --depth --calibration` before depth_ground
+    existed (heights computed with the colour geometry). The measured depth is
+    recovered exactly per joint and re-projected, so no recording is re-read.
+    Tracks extracted with other geometry (e.g. --height/--pitch) cannot be
+    converted this way.
+    """
+    from ahfd.geometry.calibration import load_calibration
+    from ahfd.geometry.depth_height import reground_heights
+    from ahfd.io import TracksWriter, read_tracks
+
+    calib = load_calibration(calibration)
+    if calib.depth_ground is None:
+        raise typer.BadParameter(str(calibration) + " has no depth_ground block; nothing to convert to")
+    if out.exists():
+        raise typer.BadParameter("refusing to overwrite " + str(out))
+    writer = TracksWriter(out)
+    n = 0
+    try:
+        for pose in read_tracks(src):
+            writer.write(pose.with_people(tuple(
+                p.with_heights(reground_heights(p.keypoints, p.heights, calib.ground, calib.depth_ground))
+                if p.heights is not None else p
+                for p in pose.people
+            )))
+            n += 1
+    finally:
+        writer.close()
+    typer.echo("wrote " + str(n) + " frames to " + str(out))
+
+
+@app.command(name="compare-phases")
+def compare_phases(
+    config: Path = typer.Option(Path("configs/dashboard_jetson.yaml"), help="Pose/detection settings (bed engine context)."),
+    cameras: str = typer.Option("d435f,d435i", help="Comma-separated cameras: data/phases_<cam>, data/tracks_<cam>, calib/<cam>.yaml."),
+    every: int = typer.Option(2, min=1, help="Use every Nth frame as a row (2 = 15 Hz)."),
+) -> None:
+    """Do movement-over-time features help the 7 bed-exit phases? (pilot dev takes)
+
+    Scores single-frame posture features, causal over-time summaries and both,
+    with a small tree and a balanced logistic regression, leave-one-block-out
+    (A-D) per camera. Takes 09/10 (block E) are never read. Re-run after new
+    recordings are labelled to see whether the short phases (TORSO_RISING,
+    ATTEMPTING_STAND) improve. Slow: a few minutes per camera.
+
+    Depth features come from the heights stored in data/tracks_<cam>. If those
+    were extracted before the calibration had a depth_ground block, convert
+    them first with `ahfd reground-tracks` so they match what live runs produce.
+    """
+    from ahfd.ml.phase_compare import PHASES, build_rows, compare
+
+    cfg = load_config(config)
+    cfg.alert.console = False
+    cfg.alert.jsonl_path = None
+    short = {"RECLINED": "RECL", "TORSO_RISING": "RISE", "UPRIGHT_IN_BED": "UPRT",
+             "SHIFTING_TO_EDGE": "SHFT", "EDGE_SITTING": "EDGE", "ATTEMPTING_STAND": "STND", "OUT_OF_BED": "OUT"}
+    for cam in [c.strip() for c in cameras.split(",") if c.strip()]:
+        rows = build_rows(cam, cfg, every=every)
+        if not len(rows.labels):
+            typer.echo(cam + ": no labelled rows found")
+            continue
+        typer.echo("\n" + cam.upper() + ": " + str(len(rows.labels)) + " rows, blocks " + ", ".join(sorted(set(rows.groups))))
+        typer.echo("  %-22s %6s %6s  " % ("features / model", "acc", "mF1") + " ".join("%5s" % short[p] for p in PHASES))
+        for name, r in compare(rows).items():
+            typer.echo("  %-22s %6.3f %6.3f  " % (name, r["accuracy"], r["macro_f1"])
+                       + " ".join("%5.2f" % r["per_phase"].get(p, float("nan")) for p in PHASES))
+        typer.echo("  labelled rows: " + ", ".join(
+            short[p] + " " + str(int((rows.labels == p).sum())) for p in PHASES if (rows.labels == p).any()
+        ))
 
 
 @app.command(name="train-phases")
@@ -4994,7 +5100,7 @@ def measure_ankle_baseline(
             pose = attach_depth_heights(
                 pose,
                 frame,
-                calib.ground,
+                calib.ground_for_depth,
                 min_score=cfg.pose.min_keypoint_score,
             )
             if len(pose.people) > 1:
