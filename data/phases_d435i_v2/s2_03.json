@@ -1,0 +1,19 @@
+{
+  "clip_id": "s2_03_phaselabel",
+  "duration_s": 88.57,
+  "segments": [
+    { "start_s": 1, "end_s": 11, "phase": "RECLINED" },
+    { "start_s": 11, "end_s": 14, "phase": "TORSO_RISING" },
+    { "start_s": 14, "end_s": 22, "phase": "UPRIGHT_IN_BED" },
+    { "start_s": 22, "end_s": 27, "phase": "SHIFTING_TO_EDGE" },
+    { "start_s": 27, "end_s": 39, "phase": "EDGE_SITTING" },
+    { "start_s": 39, "end_s": 40, "phase": "ATTEMPTING_STAND" },
+    { "start_s": 40, "end_s": 41, "phase": "OUT_OF_BED" },
+    { "start_s": 43, "end_s": 48, "phase": "EDGE_SITTING" },
+    { "start_s": 48, "end_s": 51, "phase": "ATTEMPTING_STAND" },
+    { "start_s": 53, "end_s": 59, "phase": "EDGE_SITTING" },
+    { "start_s": 59, "end_s": 61, "phase": "ATTEMPTING_STAND" },
+    { "start_s": 61, "end_s": 70, "phase": "OUT_OF_BED" },
+    { "start_s": 78, "end_s": 88.53, "phase": "RECLINED" }
+  ]
+}

@@ -1,0 +1,17 @@
+{
+  "clip_id": "s1_01_phaselabel",
+  "duration_s": 71.83,
+  "segments": [
+    { "start_s": 1, "end_s": 16, "phase": "EDGE_SITTING" },
+    { "start_s": 19, "end_s": 36, "phase": "RECLINED" },
+    { "start_s": 36, "end_s": 39, "phase": "TORSO_RISING" },
+    { "start_s": 39, "end_s": 43, "phase": "UPRIGHT_IN_BED" },
+    { "start_s": 45, "end_s": 46, "phase": "RECLINED" },
+    { "start_s": 46, "end_s": 48, "phase": "TORSO_RISING" },
+    { "start_s": 48, "end_s": 60, "phase": "UPRIGHT_IN_BED" },
+    { "start_s": 60, "end_s": 63, "phase": "SHIFTING_TO_EDGE" },
+    { "start_s": 63, "end_s": 64, "phase": "ATTEMPTING_STAND" },
+    { "start_s": 64, "end_s": 68, "phase": "OUT_OF_BED" },
+    { "start_s": 70, "end_s": 71.8, "phase": "EDGE_SITTING" }
+  ]
+}

@@ -1,0 +1,12 @@
+{
+  "clip_id": "s3_03_phaselabel",
+  "duration_s": 86.47,
+  "segments": [
+    { "start_s": 1, "end_s": 42, "phase": "RECLINED" },
+    { "start_s": 42, "end_s": 43, "phase": "RECLINED" },
+    { "start_s": 52, "end_s": 63, "phase": "UPRIGHT_IN_BED" },
+    { "start_s": 63, "end_s": 68, "phase": "SHIFTING_TO_EDGE" },
+    { "start_s": 68, "end_s": 75, "phase": "EDGE_SITTING" },
+    { "start_s": 80, "end_s": 86.43, "phase": "RECLINED" }
+  ]
+}

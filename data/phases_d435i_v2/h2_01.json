@@ -1,0 +1,15 @@
+{
+  "clip_id": "h2_01_phaselabel",
+  "duration_s": 50.47,
+  "segments": [
+    { "start_s": 1, "end_s": 6, "phase": "RECLINED" },
+    { "start_s": 6, "end_s": 8, "phase": "TORSO_RISING" },
+    { "start_s": 8, "end_s": 14, "phase": "SHIFTING_TO_EDGE" },
+    { "start_s": 19, "end_s": 28, "phase": "OUT_OF_BED" },
+    { "start_s": 34, "end_s": 38, "phase": "RECLINED" },
+    { "start_s": 38, "end_s": 40, "phase": "TORSO_RISING" },
+    { "start_s": 40, "end_s": 45, "phase": "SHIFTING_TO_EDGE" },
+    { "start_s": 45, "end_s": 47, "phase": "ATTEMPTING_STAND" },
+    { "start_s": 47, "end_s": 50.43, "phase": "OUT_OF_BED" }
+  ]
+}

@@ -1,0 +1,13 @@
+{
+  "clip_id": "h3_01_phaselabel",
+  "duration_s": 56.83,
+  "segments": [
+    { "start_s": 1, "end_s": 4, "phase": "OUT_OF_BED" },
+    { "start_s": 4, "end_s": 15, "phase": "OUT_OF_BED" },
+    { "start_s": 15, "end_s": 26, "phase": "OUT_OF_BED" },
+    { "start_s": 26, "end_s": 38, "phase": "OUT_OF_BED" },
+    { "start_s": 40, "end_s": 49, "phase": "EDGE_SITTING" },
+    { "start_s": 49, "end_s": 51, "phase": "ATTEMPTING_STAND" },
+    { "start_s": 51, "end_s": 56.8, "phase": "OUT_OF_BED" }
+  ]
+}

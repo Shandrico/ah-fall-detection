@@ -1,0 +1,16 @@
+{
+  "clip_id": "s1_03_phaselabel",
+  "duration_s": 68.77,
+  "segments": [
+    { "start_s": 1, "end_s": 8, "phase": "RECLINED" },
+    { "start_s": 8, "end_s": 13, "phase": "TORSO_RISING" },
+    { "start_s": 15, "end_s": 20, "phase": "RECLINED" },
+    { "start_s": 20, "end_s": 24, "phase": "TORSO_RISING" },
+    { "start_s": 27, "end_s": 32, "phase": "RECLINED" },
+    { "start_s": 32, "end_s": 36, "phase": "TORSO_RISING" },
+    { "start_s": 38, "end_s": 47, "phase": "RECLINED" },
+    { "start_s": 47, "end_s": 51, "phase": "TORSO_RISING" },
+    { "start_s": 52, "end_s": 58, "phase": "UPRIGHT_IN_BED" },
+    { "start_s": 61, "end_s": 68.73, "phase": "RECLINED" }
+  ]
+}
