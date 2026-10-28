@@ -69,3 +69,39 @@ def test_frame_cache_round_trip_with_all_three_switches(tmp_path, monkeypatch):
 
     assert path == tmp_path / "session_01.pkl"
     assert load_cache("session_01", root=tmp_path) == payload
+
+
+def test_color_export_keeps_recording_time_when_frames_were_dropped(tmp_path, monkeypatch):
+    import cv2
+    import numpy as np
+
+    import ahfd.capture.realsense as realsense
+    from ahfd.capture.base import Frame, SourceMeta
+    from ahfd.debug.color_export import export_color
+
+    times = [0.0, 0.1, 0.2, 0.7, 0.8, 2.0]  # a 0.5 s and a 1.2 s hole, as in a write-limited recording
+
+    class FakeBag:
+        def __init__(self, path, with_depth=False):
+            pass
+
+        @property
+        def meta(self):
+            return SourceMeta(uri="bag://x", width=64, height=48, fps=30.0)
+
+        def __iter__(self):
+            for i, t in enumerate(times):
+                yield Frame(index=i, t=100.0 + t, bgr=np.full((48, 64, 3), i * 40, np.uint8))
+
+        def close(self):
+            pass
+
+    monkeypatch.setattr(realsense, "BagSource", FakeBag)
+    monkeypatch.setenv("AHFD_ALLOW_RAW", "1")
+    out = tmp_path / "clip.mp4"
+    assert export_color("clip.db3", out, config_flag=True, cli_flag=True) == len(times)
+    cap = cv2.VideoCapture(str(out))
+    n, fps = int(cap.get(cv2.CAP_PROP_FRAME_COUNT)), cap.get(cv2.CAP_PROP_FPS)
+    cap.release()
+    assert fps == 30.0
+    assert abs(n / fps - 2.0) <= 2 / fps  # video time is recording time (2 s), not 6 frames

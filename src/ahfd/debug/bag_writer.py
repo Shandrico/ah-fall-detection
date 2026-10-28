@@ -18,6 +18,52 @@ from pathlib import Path
 from ahfd.privacy import require_raw_capture
 
 
+def filesystem_type(path, mounts_file: str = "/proc/mounts") -> str | None:
+    """Filesystem type of the mount holding ``path`` (Linux), else None.
+
+    Recording to a FUSE mount (the T9 under ``mount.exfat-fuse``) caps SQLite
+    writes at ~15-25 frames/s in total: the 27 Oct dual session came out at
+    6-11 fps per camera instead of 30.
+    """
+    target = Path(path).resolve()
+    best, kind = "", None
+    try:
+        with open(mounts_file) as fh:
+            for line in fh:
+                parts = line.split()
+                if len(parts) < 3:
+                    continue
+                mount = parts[1].replace("\\040", " ")
+                inside = str(target) == mount or str(target).startswith(mount.rstrip("/") + "/")
+                if inside and len(mount) > len(best):
+                    best, kind = mount, parts[2]
+    except OSError:
+        return None
+    return kind
+
+
+def recorded_rate(path) -> tuple[int, float] | None:
+    """(colour frames, seconds) actually saved in a .db3, from its index."""
+    import sqlite3
+
+    if not str(path).lower().endswith(".db3"):
+        return None
+    try:
+        con = sqlite3.connect(Path(path).resolve().as_uri() + "?mode=ro", uri=True, timeout=5)
+        try:
+            row = con.execute(
+                "SELECT COUNT(*), MIN(m.timestamp), MAX(m.timestamp) FROM messages m"
+                " JOIN topics t ON m.topic_id = t.id WHERE t.name LIKE '%/Color_0/image/data'"
+            ).fetchone()
+        finally:
+            con.close()
+    except sqlite3.Error:
+        return None
+    if not row or not row[0] or row[1] is None:
+        return None
+    return int(row[0]), (row[2] - row[1]) / 1e9
+
+
 def _label(cv2, img, text):
     """Caption a preview pane at its bottom-left; returns the same image."""
     cv2.putText(img, text, (8, img.shape[0] - 10), cv2.FONT_HERSHEY_SIMPLEX,

@@ -3906,9 +3906,15 @@ def label_postures(
 
 
 def _clip_index(stem: str) -> int | None:
-    """The take number from a clip stem like ``clip1_03`` -> 3, else None."""
-    _head, sep, tail = stem.rpartition("_")
-    return int(tail) if sep and tail.isdigit() else None
+    """The pilot take number from a clip stem like ``clip1_03`` -> 3, else None.
+
+    Only the pilot's ``clip1_NN`` takes follow the A-E script; any other
+    ``<name>_NN`` (the 27 Oct ``s2_01``) must not be seeded with take NN's draft.
+    """
+    import re
+
+    match = re.fullmatch(r"clip1_(\d+)", stem)
+    return int(match.group(1)) if match else None
 
 
 @app.command(name="label-phases")
@@ -4702,7 +4708,7 @@ def record_dual(
     cameras on SEPARATE USB controllers (e.g. one USB-A, one USB-C/Thunderbolt),
     or 1080p on both will overrun a shared bus.
     """
-    from ahfd.debug.bag_writer import record_bag_dual
+    from ahfd.debug.bag_writer import filesystem_type, record_bag_dual, recorded_rate
     from ahfd.privacy import require_raw_capture
 
     cfg = load_config(config)
@@ -4743,6 +4749,15 @@ def record_dual(
         raise typer.BadParameter("camera A and B resolved to the same device " + sa
                                  + " -- pass --serial-a / --serial-b explicitly.")
 
+    for out in (out_a, out_b):
+        kind = filesystem_type(out.parent if out.parent.exists() else Path.cwd())
+        if kind is not None and kind.startswith("fuse"):
+            typer.secho(
+                "WARNING: %s is on a %s mount. Writes through FUSE (the exFAT T9) cap a "
+                "dual recording at ~6-11 fps per camera. Record to the internal disk and "
+                "copy the .db3 files to the T9 afterwards." % (out, kind),
+                fg=typer.colors.YELLOW, err=True)
+
     typer.echo("connected: " + ", ".join("%s %s" % (n, s[-4:]) for s, n in devices))
     typer.echo("RECORDING 2 cameras at %dx%d @ %d fps (q to stop):" % (color_size[0], color_size[1], fps))
     counts = record_bag_dual(
@@ -4752,6 +4767,18 @@ def record_dual(
     )
     for label, n in counts.items():
         typer.echo("saved ~%d framesets: %s" % (n, label))
+    for out in (out_a, out_b):
+        rate = recorded_rate(out)
+        if rate is None or rate[1] <= 0:
+            continue
+        frames, secs = rate
+        achieved = frames / secs
+        typer.echo("%s: %d colour frames in %.1f s = %.1f fps" % (out.name, frames, secs, achieved))
+        if achieved < 0.8 * fps:
+            typer.secho(
+                "WARNING: %s saved only %.1f of %d fps -- the writer could not keep up. "
+                "Record to the internal disk, or use --fps 15 / --rgb 720." % (out.name, achieved, fps),
+                fg=typer.colors.YELLOW, err=True)
     typer.echo("next: verify each with  ahfd depth-view --pose --source <clip>.db3")
 
 
@@ -4832,6 +4859,56 @@ def export_review(
         progress=typer.echo,
     )
     typer.echo("wrote " + str(n) + " frames to " + str(out))
+
+
+@app.command(name="review-clip")
+def review_clip(
+    recording: Path = typer.Argument(..., help="Recorded .db3/.bag (for the images)."),
+    tracks: Path = typer.Argument(..., help="That recording's extracted tracks.jsonl (the keypoints that are scored)."),
+    out: Path = typer.Argument(..., help="Output .mp4 (keep it on the recordings' approved storage)."),
+    calibration: Path = typer.Option(..., help="That camera's calibration YAML."),
+    config: Path = typer.Option(None, help="YAML whose privacy.allow_raw_capture is true (detect settings too)."),
+    posture_model: Path = typer.Option(None, help="Trained posture model (.joblib) to show beside the rules."),
+    phase_model: Path = typer.Option(None, help="Trained 7-phase model (.joblib) for this camera."),
+    labels: Path = typer.Option(None, help="Phase/posture label JSON for this clip, if labelled."),
+    labels_clock: Path = typer.Option(
+        None, help="Tracks file whose first frame is label second 0 (labels made on the other camera)."),
+    crf: int = typer.Option(23, min=15, max=35, help="H.264 quality: lower = sharper and larger."),
+    consent: bool = typer.Option(
+        False, "--i-understand-raw-capture", help="Required. Confirms this is consented staged data."),
+) -> None:
+    """Review video: stored keypoints with labels, rule states and model predictions.
+
+    Draws the skeleton, the calibrated bed outlines, a label / rules / model
+    table for the 4-state posture and the 7 bed phases (green = agrees with the
+    label, red = not), and a whole-clip timeline. Plays at real speed even for
+    recordings with dropped frames. Prints per-source agreement when labelled.
+    Raw imagery: staged, consented volunteers only; all three privacy switches.
+    """
+    from ahfd.debug.annotated_review import export_labelled_review
+    from ahfd.privacy import require_raw_capture
+
+    cfg = load_config(config)
+    require_raw_capture(config_flag=cfg.privacy.allow_raw_capture, cli_flag=consent)
+    cfg.alert.console = False
+    cfg.alert.jsonl_path = None
+    if out.suffix.lower() != ".mp4":
+        raise typer.BadParameter("output must be an .mp4")
+    label_t0 = None
+    if labels_clock is not None:
+        from ahfd.ml.posture import _first_track_time
+
+        label_t0 = _first_track_time(labels_clock)
+    typer.echo("rendering  " + str(recording) + "  ->  " + str(out))
+    n, agreement = export_labelled_review(
+        recording, tracks, out, cfg=cfg, calibration=calibration,
+        posture_model=posture_model, phase_model=phase_model, labels=labels, label_t0=label_t0,
+        crf=crf, config_flag=cfg.privacy.allow_raw_capture, cli_flag=consent, progress=typer.echo,
+    )
+    typer.echo("wrote " + str(n) + " frames to " + str(out))
+    for name, (agree, total) in agreement.items():
+        if total:
+            typer.echo("  %-14s agrees with labels on %5.1f%% of %d frames" % (name, 100.0 * agree / total, total))
 
 
 @app.command(name="serve-review")

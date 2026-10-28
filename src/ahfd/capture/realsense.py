@@ -854,6 +854,9 @@ class BagSource(_RealSenseBase):
         return self._player
 
     def __iter__(self) -> Iterator[Frame]:
+        if self._with_depth:
+            yield from self._iter_paired()
+            return
         rs = self._rs
         profile = self._pipeline.start(self._config)
         self._align = rs.align(rs.stream.color)
@@ -865,15 +868,138 @@ class BagSource(_RealSenseBase):
         playback.set_real_time(False)
 
         index = 0
+        last_color = None
         try:
             while True:
                 ok, frames = self._pipeline.try_wait_for_frames()
                 if not ok:
                     break
-                t = frames.get_timestamp() / 1000.0
+                # The syncer emits a frameset whenever EITHER stream has a new
+                # frame. On a recording whose colour and depth rates drifted
+                # apart (a write-limited dual recording ran at 6-11 fps), the
+                # same colour image came out 2-3 times, duplicating pose rows.
+                # Time the pose by its colour image: the frameset's own stamp can
+                # be the depth frame's when the two streams are not in lockstep.
+                color = frames.get_color_frame()
+                if color:
+                    number = color.get_frame_number()
+                    if number == last_color:
+                        continue
+                    last_color = number
+                    t = color.get_timestamp() / 1000.0
+                else:
+                    t = frames.get_timestamp() / 1000.0
                 frame = self._assemble(frames, index, t)
                 if frame is not None:
                     yield frame
                     index += 1
         finally:
             self.close()
+
+    def _iter_paired(self) -> Iterator[Frame]:
+        """Colour + depth playback without the pipeline syncer.
+
+        With non-real-time playback the syncer can deadlock: when colour has a
+        gap (the 27 Oct write-limited recordings drop 1-3 s of colour while
+        depth continues), depth fills its queue, the file reader blocks, and the
+        colour frame the syncer is waiting for is never read. h2_01 stopped
+        after 24 of 344 frames that way. Here each sensor delivers through its
+        own callback; every colour frame is paired with the depth frame nearest
+        in time and composed into a real frameset, so ``_assemble`` (rs.align,
+        filters) runs exactly as before.
+        """
+        import collections
+        import queue
+        import threading
+
+        rs = self._rs
+        device = rs.context().load_device(self._path)
+        playback = device.as_playback()
+        playback.set_real_time(False)
+        self._align = rs.align(rs.stream.color)
+        self._depth_scale = float(device.first_depth_sensor().get_depth_scale())
+
+        colors: queue.Queue = queue.Queue(maxsize=4)
+        depths: collections.deque = collections.deque(maxlen=8)
+        depth_ready = threading.Condition()
+        closing = threading.Event()
+
+        def on_depth(f):
+            f.keep()
+            with depth_ready:
+                depths.append(f)
+                depth_ready.notify_all()
+
+        def on_color(f):
+            f.keep()
+            # A blocking put gives the reader back-pressure (nothing is dropped),
+            # but must give up once the consumer has gone, or stop() would hang.
+            while not closing.is_set():
+                try:
+                    colors.put(f, timeout=0.2)
+                    return
+                except queue.Full:
+                    continue
+
+        sensors = []
+        for sensor in device.query_sensors():
+            for profile in sensor.get_stream_profiles():
+                kind = profile.stream_type()
+                if kind in (rs.stream.color, rs.stream.depth):
+                    sensor.open(profile)
+                    sensor.start(on_depth if kind == rs.stream.depth else on_color)
+                    sensors.append(sensor)
+                    break
+
+        composer = _FramesetComposer(rs)
+        index = 0
+        try:
+            while True:
+                try:
+                    color = colors.get(timeout=1.0)
+                except queue.Empty:
+                    if playback.current_status() == rs.playback_status.stopped:
+                        break
+                    continue
+                tc = color.get_timestamp()
+                # Wait (briefly) for a depth frame at or after this colour frame,
+                # so the nearest one can be chosen from either side.
+                with depth_ready:
+                    depth_ready.wait_for(
+                        lambda: (depths and depths[-1].get_timestamp() >= tc)
+                        or playback.current_status() == rs.playback_status.stopped,
+                        timeout=1.0,
+                    )
+                    depth = min(depths, key=lambda d: abs(d.get_timestamp() - tc), default=None)
+                if depth is None:
+                    continue
+                frame = self._assemble(composer(depth, color), index, tc / 1000.0)
+                if frame is not None:
+                    yield frame
+                    index += 1
+        finally:
+            closing.set()
+            for sensor in sensors:
+                try:
+                    sensor.stop()
+                    sensor.close()
+                except Exception:  # pragma: no cover - already stopped
+                    pass
+
+
+class _FramesetComposer:
+    """Turn a (depth, colour) frame pair into a frameset that rs.align accepts."""
+
+    def __init__(self, rs):
+        self._depth = None
+        self._out = rs.frame_queue(2, keep_frames=True)
+        self._block = rs.processing_block(self._make)
+        self._block.start(self._out)
+
+    def _make(self, frame, source):
+        source.frame_ready(source.allocate_composite_frame([self._depth, frame]))
+
+    def __call__(self, depth, color):
+        self._depth = depth
+        self._block.invoke(color)
+        return self._out.wait_for_frame(2000).as_frameset()

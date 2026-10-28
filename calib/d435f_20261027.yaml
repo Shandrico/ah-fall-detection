@@ -1,0 +1,59 @@
+# 27 Oct 2026 session: depth_ground = median of estimate-ground on rails_test_01, s1_01, h1_01.
+# Bed outlines copied from calib/d435f.yaml and NOT yet re-checked for this session.
+camera_id: d435f
+camera:
+  width: 1920
+  height: 1080
+  fx: 1360.15625
+  fy: 1358.337158
+  cx: 980.76001
+  cy: 572.590088
+  height_m: 2.6
+  gravity:
+  - 0.0
+  - -8.487
+  - -4.9
+zones:
+- name: nearest (15/10/2026)
+  kind: bed
+  top_m: 0.53
+  risk_level: medium
+  polygon:
+  - - -1.382
+    - 4.403
+  - - -1.725
+    - 3.291
+  - - -0.096
+    - 2.106
+  - - 0.335
+    - 3.151
+- name: middle
+  kind: bed
+  top_m: 0.51
+  risk_level: medium
+  polygon:
+  - - -0.351
+    - 4.558
+  - - 0.209
+    - 5.886
+  - - 1.656
+    - 4.674
+  - - 1.137
+    - 3.44
+notes: 'D435f two-bed mount, 2.6 m lens, 30 deg downtilt, roll 0. Intrinsics from
+  the D435f factory RGB profile (pending_two_bed_setup). Gravity is SYNTHESISED (D435f
+  has no IMU) from the operator-measured 30 deg tilt -- re-derive if the mount angle
+  changes. Zones cleared 2026-10-16 (camera moved; old 15 deg zone stale). Redraw
+  on a frozen frame from the RECORDED clip, not the live view:
+
+  ahfd calibrate-zones calib/d435f.yaml --source bag://data/ah_bags_d435f/clip1_01.db3
+
+  '
+# Pose the DEPTH stream agrees with: floor plane fitted in depth by
+# `ahfd estimate-ground` on pilot takes 02/05/07 (median). Used only to turn
+# measured depth into joint heights; with it, standing ankles read ~0.1 m
+# (the 30 deg colour geometry above gave -0.2 m).
+depth_ground:
+  height_m: 2.56
+  pitch_deg: 25.2
+  roll_deg: 3.7

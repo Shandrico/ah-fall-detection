@@ -31,9 +31,10 @@ def export_color(
 
     Returns the frame count. Colour only (``with_depth=False``), so there is no
     depth align/filter cost and it runs fast. The output fps is the recording's
-    nominal rate; the labeller's segment times still line up with the extracted
-    tracks because ``build_dataset`` normalises each clip's track timestamps to
-    start at zero.
+    nominal rate, with frames held to their timestamps, so video time is
+    recording time even when frames were dropped; the labeller's segment times
+    line up with the extracted tracks because ``build_dataset`` normalises each
+    clip's track timestamps to start at zero.
     """
     # Refuse before importing codecs, decoding imagery, creating a directory,
     # or opening a VideoWriter.
@@ -50,6 +51,9 @@ def export_color(
     fps = float(src.meta.fps or 30.0)
     writer = None
     n = 0
+    t0 = None
+    previous = None
+    written = 0  # output frames so far
     try:
         for frame in src:
             img = frame.bgr
@@ -58,7 +62,16 @@ def export_color(
                 writer = cv2.VideoWriter(
                     str(out_path), cv2.VideoWriter_fourcc(*"mp4v"), fps, (w, h)
                 )
-            writer.write(img)
+                t0 = frame.t
+            # Keep the video on the recording's clock: the labeller reads time as
+            # frame / fps, so a write-limited recording (6-11 of a nominal 30 fps)
+            # written one frame per frame would play 3-5x fast and every label
+            # time would be wrong. Hold each frame until the next one's timestamp.
+            if previous is not None:
+                for _ in range(max(1, round((frame.t - t0) * fps) - written)):
+                    writer.write(previous)
+                    written += 1
+            previous = img
             n += 1
             if preview:
                 disp = cv2.resize(img, (960, int(img.shape[0] * 960 / img.shape[1])))
@@ -68,6 +81,8 @@ def export_color(
     finally:
         src.close()
         if writer is not None:
+            if previous is not None:
+                writer.write(previous)
             writer.release()
         if preview:
             cv2.destroyAllWindows()

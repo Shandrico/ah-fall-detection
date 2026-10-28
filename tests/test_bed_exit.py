@@ -635,3 +635,35 @@ def test_exit_into_a_bedside_chair_without_standing_still_counts():
                       supported_by_bed=None, bed_support_fraction=0.0, bed_overlap=0.0, bed_edge_distance_m=-0.5,
                       motion=0.3)
     assert [e.evidence["trigger"] for e in events] == ["out_of_bed"]
+
+
+def test_edge_distance_jitter_is_not_edge_directed_motion():
+    # +/-3 cm of keypoint jitter on a still patient: a frame-to-frame difference
+    # reads it as +/-0.6 m/s; the windowed slope sees no movement.
+    machine = BedExitStateMachine()
+    t = establish_recline(machine)
+    _t, _events = feed(
+        machine, t, 3.0,
+        values=lambda i, _n: {"bed_edge_distance_m": 0.60 + (0.03 if i % 2 else -0.03)},
+    )
+    snap = machine.snapshot_of(1)
+    assert abs(snap.edge_velocity_mps) < 0.02
+    assert "edge_directed_motion" not in snap.reasons
+    assert machine.phase_of(1) == "RECLINED"
+
+
+def test_steady_shift_towards_the_edge_is_edge_directed():
+    machine = BedExitStateMachine()
+    t = establish_recline(machine)
+    feed(machine, t, 2.0, values=lambda i, _n: {"bed_edge_distance_m": 0.60 - 0.01 * i})  # 1 cm per 0.1 s frame = 0.1 m/s
+    snap = machine.snapshot_of(1)
+    assert abs(snap.edge_velocity_mps + 0.1) < 0.01
+    assert "edge_directed_motion" in snap.reasons
+
+
+def test_an_edge_distance_jump_restarts_the_velocity_window():
+    machine = BedExitStateMachine()
+    t = establish_recline(machine)
+    t, _ = feed(machine, t, 1.0, bed_edge_distance_m=0.85)
+    feed(machine, t, 0.2, bed_edge_distance_m=0.15)  # 0.7 m in one frame: a glitch
+    assert machine.snapshot_of(1).edge_velocity_mps is None  # unknown, not -0.7 m/s

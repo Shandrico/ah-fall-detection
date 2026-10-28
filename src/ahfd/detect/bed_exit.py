@@ -19,6 +19,7 @@ and bed-edge corroboration instead of emitting on raw CUSUM onset.
 from __future__ import annotations
 
 import math
+from collections import deque
 from dataclasses import asdict, dataclass, field
 from typing import Literal
 
@@ -72,6 +73,14 @@ class BedExitThresholds:
     outside_edge_m: float = 0.05
     edge_velocity_enter_mps: float = -0.05
     edge_velocity_exit_mps: float = -0.015
+    # Edge/support velocities are least-squares slopes over this window, not
+    # frame-to-frame differences: on the D435f pilot those flagged
+    # "edge-directed" motion on 22% of frames of a patient lying still (6%
+    # with a 1 s slope; RECLINED 69 -> 87% of frames, exits unchanged).
+    kinematics_window_s: float = 1.0
+    # An edge distance that jumps faster than this between samples is a pose or
+    # identity glitch, not a patient shifting on a mattress: restart the window.
+    edge_jump_mps: float = 1.5
 
     # Standing = upright torso over near-vertical legs (hip->ankle image angle,
     # Features.leg_tilt) whose knees are not clearly bent. A standing body is
@@ -182,6 +191,8 @@ class _BedTrack:
     last_support_fraction: float | None = None
     last_support_t: float | None = None
     support_velocity: float | None = None
+    edge_samples: deque = field(default_factory=deque)  # (t, edge distance) in the window
+    support_samples: deque = field(default_factory=deque)  # (t, support fraction)
     onset_t: float | None = None
     warning_candidate_since: float | None = None
     warning_emitted: bool = False
@@ -307,6 +318,8 @@ class BedExitStateMachine:
         ts.support_velocity = None
         ts.last_edge_t = None
         ts.last_support_t = None
+        ts.edge_samples.clear()
+        ts.support_samples.clear()
 
     def _quality_ok(self, f: Features) -> bool:
         try:
@@ -340,19 +353,37 @@ class BedExitStateMachine:
         self, ts: _BedTrack, now: float, edge: float | None, support: float | None
     ) -> None:
         if edge is not None:
-            if ts.last_edge_distance is not None and ts.last_edge_t is not None:
-                dt = now - ts.last_edge_t
-                if 1e-6 < dt <= self.th.cusum.max_gap_s:
-                    ts.edge_velocity = (edge - ts.last_edge_distance) / dt
+            if ts.edge_samples:
+                t_prev, e_prev = ts.edge_samples[-1]
+                if abs(edge - e_prev) > self.th.edge_jump_mps * max(now - t_prev, 1e-3):
+                    ts.edge_samples.clear()
+            ts.edge_velocity = self._windowed_slope(ts.edge_samples, now, edge)
             ts.last_edge_distance = edge
             ts.last_edge_t = now
         if support is not None:
-            if ts.last_support_fraction is not None and ts.last_support_t is not None:
-                dt = now - ts.last_support_t
-                if 1e-6 < dt <= self.th.cusum.max_gap_s:
-                    ts.support_velocity = (support - ts.last_support_fraction) / dt
+            ts.support_velocity = self._windowed_slope(ts.support_samples, now, support)
             ts.last_support_fraction = support
             ts.last_support_t = now
+
+    def _windowed_slope(self, samples: deque, now: float, value: float) -> float | None:
+        """Least-squares slope of ``value`` over the last ``kinematics_window_s``.
+
+        A gap longer than ``cusum.max_gap_s`` restarts the window. Needs three
+        samples spanning at least a third of the window, else None (unknown).
+        """
+        if samples and now - samples[-1][0] > self.th.cusum.max_gap_s:
+            samples.clear()
+        samples.append((now, value))
+        while samples and now - samples[0][0] > self.th.kinematics_window_s:
+            samples.popleft()
+        if len(samples) < 3 or now - samples[0][0] < self.th.kinematics_window_s / 3:
+            return None
+        t_mean = sum(t for t, _ in samples) / len(samples)
+        v_mean = sum(v for _, v in samples) / len(samples)
+        denom = sum((t - t_mean) ** 2 for t, _ in samples)
+        if denom < 1e-12:
+            return None
+        return sum((t - t_mean) * (v - v_mean) for t, v in samples) / denom
 
     def _advance(
         self,
@@ -420,6 +451,8 @@ class BedExitStateMachine:
         ts.support_velocity = None
         ts.last_edge_t = None
         ts.last_support_t = None
+        ts.edge_samples.clear()
+        ts.support_samples.clear()
         # Bed-support arming needs *continuous observed* support; a gap restarts it.
         ts.in_bed_since = None
 

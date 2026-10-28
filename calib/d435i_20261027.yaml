@@ -1,0 +1,66 @@
+# 27 Oct 2026 session: depth_ground = median of estimate-ground on rails_test_01, s1_01, h1_01.
+# Bed outlines copied from calib/d435i.yaml and NOT yet re-checked for this session.
+camera_id: d435i
+camera:
+  width: 1920
+  height: 1080
+  fx: 1366.562
+  fy: 1366.669
+  cx: 961.371
+  cy: 575.348
+  height_m: 2.6
+  gravity:
+  - 0.17652
+  - -8.34546
+  - -4.80526
+zones:
+- name: nearest (15/10/2026)
+  kind: bed
+  top_m: 0.53
+  risk_level: medium
+  polygon:
+  - - -1.116
+    - 5.622
+  - - -0.44
+    - 3.036
+  - - 0.342
+    - 3.267
+  - - -0.125
+    - 5.916
+- name: "\tmiddle (15/10/2026)"
+  kind: bed
+  top_m: 0.51
+  risk_level: medium
+  polygon:
+  - - 1.189
+    - 5.418
+  - - 2.53
+    - 6.369
+  - - 2.667
+    - 4.525
+  - - 1.575
+    - 3.33
+notes: 'D435i two-bed mount, 2.6 m lens, ~30 deg downtilt (gravity from the recorded
+  D435i IMU). Six duplicate calibration-attempt zones cleared 2026-10-16 (camera position
+  moved slightly since). Redraw nearest+middle on a frozen frame from the RECORDED
+  clip, not the live view:
+
+  ahfd calibrate-zones calib/d435i.yaml --source bag://data/ah_bags_d435i/clip1_01.db3
+
+  '
+# This mount looks along the beds, so a lying torso reads ~34 deg of image tilt
+# (p10-p90 18-45) instead of ~73 side-on; sitting up reads ~15 (4-22). Tuned on
+# pilot dev takes 01-08 only; the defaults (58/48/38/48) suit the D435f view.
+bed_tilt_deg:
+  reclined_enter: 26
+  reclined_exit: 22
+  upright_enter: 18
+  upright_exit: 22
+# Pose the DEPTH stream agrees with: floor plane fitted in depth by
+# `ahfd estimate-ground` on pilot takes 02/05/07 (median). Used only to turn
+# measured depth into joint heights; with it, standing ankles read ~0.1 m
+# (the colour geometry above gave -0.2 m).
+depth_ground:
+  height_m: 2.74
+  pitch_deg: 29.3
+  roll_deg: 1.3

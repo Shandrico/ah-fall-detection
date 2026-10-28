@@ -36,6 +36,71 @@ def _bag(path):
     return bag
 
 
+def test_bag_playback_skips_framesets_that_repeat_the_colour_frame():
+    class Color:
+        def __init__(self, number):
+            self.number = number
+
+        def __bool__(self):
+            return True
+
+        def get_frame_number(self):
+            return self.number
+
+        def get_timestamp(self):
+            return self.number * 133.0  # the colour image's own clock
+
+    class Frameset:
+        def __init__(self, number, t_ms):
+            self.color, self.t_ms = Color(number), t_ms
+
+        def get_color_frame(self):
+            return self.color
+
+        def get_timestamp(self):
+            return self.t_ms
+
+    # A depth-only update re-emits colour frame 1, then colour 2 arrives twice;
+    # the frameset stamps follow depth, not colour.
+    queue = [Frameset(1, 120.0), Frameset(1, 150.0), Frameset(2, 250.0), Frameset(2, 280.0)]
+
+    class Pipeline:
+        def start(self, _config):
+            class Profile:
+                def get_device(self):
+                    class Device:
+                        def first_depth_sensor(self):
+                            class Sensor:
+                                def get_depth_scale(self):
+                                    return 0.001
+                            return Sensor()
+
+                        def as_playback(self):
+                            class Playback:
+                                def set_real_time(self, _on):
+                                    pass
+                            return Playback()
+                    return Device()
+            return Profile()
+
+        def try_wait_for_frames(self, *_a):
+            return (True, queue.pop(0)) if queue else (False, None)
+
+    class RS:
+        class stream:
+            color = "color"
+
+        @staticmethod
+        def align(_stream):
+            return None
+
+    bag = _bag("clip.db3")
+    bag._rs, bag._pipeline, bag._config = RS, Pipeline(), None
+    bag._assemble = lambda frames, index, t: (index, t)
+    bag.close = lambda: None
+    assert list(bag) == [(0, 0.133), (1, 0.266)]
+
+
 def test_db3_recording_counts_colour_frames_and_is_seekable(tmp_path):
     import sqlite3
 
@@ -373,3 +438,45 @@ class TestOpenRealsense:
         factory, _ = self._fake(monkeypatch, [("Intel RealSense D435I", "111"), ("Intel RealSense D435F", "222")])
         with pytest.raises(ValueError, match="different camera"):
             factory.open_realsense("rs://?model=d435f", device_serial="111")
+
+
+def test_filesystem_type_picks_the_deepest_mount(tmp_path):
+    from ahfd.debug.bag_writer import filesystem_type
+
+    mounts = tmp_path / "mounts"
+    mounts.write_text(
+        "/dev/nvme0n1p1 / ext4 rw 0 0\n"
+        "/dev/sda1 /media/anormalm/T9 fuseblk rw 0 0\n"
+    )
+    assert filesystem_type("/media/anormalm/T9/ah_bags_d435f/x.db3", str(mounts)) == "fuseblk"
+    assert filesystem_type("/media/anormalm/T9x/x.db3", str(mounts)) == "ext4"
+    assert filesystem_type("/home/user/rec/x.db3", str(mounts)) == "ext4"
+
+
+def test_recorded_rate_reads_colour_frames_and_span(tmp_path):
+    import sqlite3
+
+    from ahfd.debug.bag_writer import recorded_rate
+
+    path = tmp_path / "clip.db3"
+    con = sqlite3.connect(path)
+    con.execute("CREATE TABLE topics (id INTEGER PRIMARY KEY, name TEXT)")
+    con.execute("CREATE TABLE messages (id INTEGER PRIMARY KEY, topic_id INTEGER, timestamp INTEGER)")
+    con.executemany("INSERT INTO topics VALUES (?, ?)", [
+        (1, "/device_0/sensor_1/Color_0/image/data"), (2, "/device_0/sensor_0/Depth_0/image/data")])
+    con.executemany("INSERT INTO messages (topic_id, timestamp) VALUES (?, ?)",
+                    [(1, int(i * 1e8)) for i in range(11)] + [(2, 5)])
+    con.commit()
+    con.close()
+    frames, secs = recorded_rate(path)
+    assert frames == 11 and abs(secs - 1.0) < 1e-9
+    assert recorded_rate(tmp_path / "clip.bag") is None
+
+
+def test_only_pilot_takes_are_seeded_from_the_script():
+    from ahfd.cli import _clip_index
+
+    assert _clip_index("clip1_03") == 3 and _clip_index("clip1_10") == 10
+    # 27 Oct clips share the "_NN" suffix but are not pilot takes
+    assert _clip_index("s2_01") is None and _clip_index("h1_01") is None
+    assert _clip_index("clip2_test") is None
