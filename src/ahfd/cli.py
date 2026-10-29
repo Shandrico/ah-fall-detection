@@ -4697,9 +4697,17 @@ def record_dual(
     seconds: float = typer.Option(0.0, help="Auto-stop after N seconds. 0 = until you press q."),
     rgb: str = typer.Option("1080", help="RGB resolution for BOTH cameras: 1080 or 720."),
     fps: int = typer.Option(30, help="Frame rate for both; drop to 15 if 1080p+1080p stalls the USB."),
+    copy_a_to: Path = typer.Option(
+        None, help="After recording, copy camera A's file into this folder (e.g. the T9's ah_bags_d435i)."),
+    copy_b_to: Path = typer.Option(
+        None, help="After recording, copy camera B's file into this folder (e.g. the T9's ah_bags_d435f)."),
     consent: bool = typer.Option(False, "--i-understand-raw-capture", help="Required. Confirms consented raw capture."),
 ) -> None:
     """Record TWO cameras at once, each to its own .db3 (software-synced).
+
+    With --copy-a-to / --copy-b-to, both files are copied there once recording has
+    stopped (never during it: the copy would cost frames), checked for size, and
+    the command returns only when the copies are complete. Originals are kept.
 
     Each camera runs on its own pipeline and is polled independently, so one
     dropping on a USB stall does not stop the other -- its clip is still saved.
@@ -4708,7 +4716,7 @@ def record_dual(
     cameras on SEPARATE USB controllers (e.g. one USB-A, one USB-C/Thunderbolt),
     or 1080p on both will overrun a shared bus.
     """
-    from ahfd.debug.bag_writer import filesystem_type, record_bag_dual, recorded_rate
+    from ahfd.debug.bag_writer import copy_recording, filesystem_type, record_bag_dual, recorded_rate
     from ahfd.privacy import require_raw_capture
 
     cfg = load_config(config)
@@ -4721,11 +4729,16 @@ def record_dual(
         raise typer.BadParameter("camera A and B would write the same file: " + str(out_a))
     # librealsense silently overwrites an existing recording; a reused clip name
     # (s1_01 typed twice) must never cost a take that cannot be re-recorded.
-    existing = [out for out in (out_a, out_b) if out.exists()]
+    copies = [(out, dest) for out, dest in ((out_a, copy_a_to), (out_b, copy_b_to)) if dest is not None]
+    for _out, dest in copies:
+        if not dest.is_dir():
+            raise typer.BadParameter("copy destination not found: " + str(dest) + " (is the T9 mounted?)")
+    targets = [out_a, out_b] + [dest / out.name for out, dest in copies]
+    existing = [path for path in targets if path.exists()]
     if existing:
         raise typer.BadParameter(
-            "already exists, refusing to overwrite: " + ", ".join(str(out) for out in existing)
-            + ". Next free name: " + _next_free_take(out_a, out_b)
+            "already exists, refusing to overwrite: " + ", ".join(str(path) for path in existing)
+            + ". Next free name: " + _next_free_take(out_a, out_b, *[dest for _out, dest in copies])
         )
     color_size = {"720": (1280, 720), "1080": (1920, 1080)}.get(str(rgb))
     if color_size is None:
@@ -4789,6 +4802,21 @@ def record_dual(
                 "WARNING: %s saved only %.1f of %d fps -- the writer could not keep up. "
                 "Record to the internal disk, or use --fps 15 / --rgb 720." % (out.name, achieved, fps),
                 fg=typer.colors.YELLOW, err=True)
+    for out, dest in copies:
+        if not out.exists():
+            typer.secho("not copied (no recording was saved): " + str(out), fg=typer.colors.YELLOW, err=True)
+            continue
+        typer.echo("copying %s (%.1f GB) -> %s ... don't start the next recording yet"
+                   % (out.name, out.stat().st_size / 1e9, dest))
+        started = time.monotonic()
+        try:
+            copied = copy_recording(out, dest)
+        except (OSError, FileExistsError) as exc:
+            typer.secho("COPY FAILED, the original is kept at %s: %s" % (out, exc), fg=typer.colors.RED, err=True)
+            continue
+        typer.echo("  copied in %.0f s: %s (original kept)" % (time.monotonic() - started, copied))
+    if copies:
+        typer.echo("ready for the next recording")
     typer.echo("next: verify each with  ahfd depth-view --pose --source <clip>.db3")
 
 
@@ -4871,8 +4899,8 @@ def export_review(
     typer.echo("wrote " + str(n) + " frames to " + str(out))
 
 
-def _next_free_take(out_a: Path, out_b: Path) -> str:
-    """The first ``<name>_NN`` stem that is free in both output folders (s1_01 -> s1_02 ...)."""
+def _next_free_take(out_a: Path, out_b: Path, *copy_dirs: Path) -> str:
+    """The first ``<name>_NN`` stem free in both output folders and any copy folders (s1_01 -> s1_02 ...)."""
     import re
 
     stem = out_a.stem
@@ -4881,7 +4909,8 @@ def _next_free_take(out_a: Path, out_b: Path) -> str:
     while True:
         number += 1
         candidate = head + str(number).zfill(width)
-        if not any((out.parent / (candidate + out.suffix)).exists() for out in (out_a, out_b)):
+        folders = [out_a.parent, out_b.parent, *copy_dirs]
+        if not any((folder / (candidate + out_a.suffix)).exists() for folder in folders):
             return candidate
 
 

@@ -40,7 +40,8 @@ cd ~/projects/ah-fall-detection
    to the T9 if the internal disk drops below 50 GB.**
 
 > **Record to the internal disk, never straight to the T9.** Writing to the T9 from the Jetson only
-> manages 6-11 fps (what went wrong on 27 Oct). Copy to the T9 after each person (step 4).
+> manages 6-11 fps (what went wrong on 27 Oct). Each clip is copied to the T9 automatically after it
+> finishes (section 4).
 
 ### 0.3 Cameras
 1. Both RealSense cameras in **USB-A** ports (the developer kit's USB-C port does not run them).
@@ -61,15 +62,18 @@ mkdir -p ~/recordings/d435i ~/recordings/d435f
 Two short clips, both cameras. Change only the clip name each time.
 ```
 AHFD_ALLOW_RAW=1 ahfd record-dual ~/recordings/d435i/setup_empty_01.db3 ~/recordings/d435f/setup_empty_01.db3 \
-  --serial-a 346122072607 --serial-b 406122070025 --fps 15 --seconds 10 \
+  --serial-a 346122072607 --serial-b 406122070025 --fps 15 \
+  --copy-a-to /media/anormalm/T9/ah_bags_d435i --copy-b-to /media/anormalm/T9/ah_bags_d435f \
   --config configs/raw_capture.yaml --i-understand-raw-capture
 ```
-- `setup_empty_01`: **empty room**, nobody in view, beds made, 10 s.
-- `setup_stand_01`: **one person of known height standing still** in front of the nearest bed, 10 s.
+Press **q** in the preview window after about 10 s to stop.
+- `setup_empty_01`: **empty room**, nobody in view, beds made, about 10 s.
+- `setup_stand_01`: **one person of known height standing still** in front of the nearest bed, about 10 s.
   Write their height in the log.
 
 After each recording the terminal prints the saved frame rate, for example
-`s1_01.db3: 150 colour frames in 10.0 s = 15.0 fps`.
+`setup_empty_01.db3: 150 colour frames in 10.0 s = 15.0 fps`, then copies both files to the T9
+(section 4).
 **If it says less than 12 fps or shows a yellow WARNING, stop and check** (internal disk? USB-A ports?).
 
 ---
@@ -78,11 +82,16 @@ After each recording the terminal prints the saved frame rate, for example
 
 ```
 AHFD_ALLOW_RAW=1 ahfd record-dual ~/recordings/d435i/<NAME>.db3 ~/recordings/d435f/<NAME>.db3 \
-  --serial-a 346122072607 --serial-b 406122070025 --fps 15 --seconds <LENGTH> \
+  --serial-a 346122072607 --serial-b 406122070025 --fps 15 \
+  --copy-a-to /media/anormalm/T9/ah_bags_d435i --copy-b-to /media/anormalm/T9/ah_bags_d435f \
   --config configs/raw_capture.yaml --i-understand-raw-capture
 ```
-- Replace `<NAME>` (same in both places) and `<LENGTH>` (seconds; the table gives it). Press **q** in
-  the preview window to stop early.
+- Replace `<NAME>` (the same in both places).
+- **There is no time limit.** Recording runs until you press **q** in the preview window. The lengths in
+  the tables below are a guide to when the scenario is finished, not a cut-off: let the volunteer finish,
+  then press q.
+- When you press q it prints the saved fps, then **copies both files to the T9 automatically**. Wait
+  for **"ready for the next recording"** before starting the next clip (about 1 min for a 100 s clip).
 - **Names:** `<clip>_<person>_<bed>`, for example `h1_02_nearest`, `f1_04`. People are numbered: staff
   `02` and `03` (staff `01` was recorded on 27 Oct); students start at `04` (students 01-03 were 27 Oct).
 - If you reuse a name by mistake, the recorder **refuses** and suggests the next free name. Nothing
@@ -157,15 +166,24 @@ prevent it.
 
 ---
 
-## 4. After each person: copy to the T9
+## 4. Copying to the T9 (automatic)
 
+Each recording is copied to the T9 by `record-dual` itself, **after** you press q:
 ```
-cp -n ~/recordings/d435i/*.db3 /media/anormalm/T9/ah_bags_d435i/
-cp -n ~/recordings/d435f/*.db3 /media/anormalm/T9/ah_bags_d435f/
-ls -la ~/recordings/d435i ~/recordings/d435f /media/anormalm/T9/ah_bags_d435i /media/anormalm/T9/ah_bags_d435f | tail -40
+copying h1_02_nearest.db3 (17.2 GB) -> /media/anormalm/T9/ah_bags_d435i ... don't start the next recording yet
+  copied in 58 s: /media/anormalm/T9/ah_bags_d435i/h1_02_nearest.db3 (original kept)
+...
+ready for the next recording
 ```
-- `cp -n` never overwrites anything already on the T9.
-- Check that the copies on the T9 are **the same size** as the originals.
+- It copies **between** recordings, never during one: copying while recording would cost frames.
+- It checks that each copy is the same size, never overwrites a file already on the T9, and **keeps the
+  original** on the internal disk.
+- If the T9 is not mounted it refuses to start the recording (mount it, section 0.2).
+- **COPY FAILED** (red): the recording is safe on the internal disk. Note it in the log and copy it later:
+  ```
+  cp -n ~/recordings/d435i/<NAME>.db3 /media/anormalm/T9/ah_bags_d435i/
+  cp -n ~/recordings/d435f/<NAME>.db3 /media/anormalm/T9/ah_bags_d435f/
+  ```
 - **Don't delete anything from the internal disk today.** Claude checks the copies (sizes and frame
   counts) before the internal copies are removed.
 

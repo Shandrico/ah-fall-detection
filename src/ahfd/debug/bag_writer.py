@@ -42,6 +42,29 @@ def filesystem_type(path, mounts_file: str = "/proc/mounts") -> str | None:
     return kind
 
 
+def copy_recording(src, dest_dir) -> Path:
+    """Copy a finished recording into ``dest_dir`` (the T9), never overwriting.
+
+    Run between recordings, not during one: a copy onto the FUSE-mounted T9 is
+    CPU- and disk-heavy and would cost the recorder frames. Writes
+    ``<name>.partial`` and renames it only once the size matches the source, so
+    an interrupted copy never looks like a complete take. The source is kept.
+    """
+    import os
+    import shutil
+
+    src, dest_dir = Path(src), Path(dest_dir)
+    dest = dest_dir / src.name
+    if dest.exists():
+        raise FileExistsError("refusing to overwrite " + str(dest))
+    partial = dest_dir / (src.name + ".partial")
+    shutil.copyfile(src, partial)
+    if partial.stat().st_size != src.stat().st_size:
+        raise OSError("copy of " + src.name + " is incomplete; kept as " + str(partial))
+    os.replace(partial, dest)
+    return dest
+
+
 def recorded_rate(path) -> tuple[int, float] | None:
     """(colour frames, seconds) actually saved in a .db3, from its index."""
     import sqlite3
