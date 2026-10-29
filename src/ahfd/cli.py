@@ -4717,6 +4717,16 @@ def record_dual(
     for out in (out_a, out_b):
         if out.suffix.lower() not in (".bag", ".db3"):
             raise typer.BadParameter("outputs must be .bag or .db3; got " + repr(out.suffix or out.name))
+    if out_a.resolve() == out_b.resolve():
+        raise typer.BadParameter("camera A and B would write the same file: " + str(out_a))
+    # librealsense silently overwrites an existing recording; a reused clip name
+    # (s1_01 typed twice) must never cost a take that cannot be re-recorded.
+    existing = [out for out in (out_a, out_b) if out.exists()]
+    if existing:
+        raise typer.BadParameter(
+            "already exists, refusing to overwrite: " + ", ".join(str(out) for out in existing)
+            + ". Next free name: " + _next_free_take(out_a, out_b)
+        )
     color_size = {"720": (1280, 720), "1080": (1920, 1080)}.get(str(rgb))
     if color_size is None:
         raise typer.BadParameter("--rgb must be 720 or 1080; got " + repr(rgb))
@@ -4859,6 +4869,20 @@ def export_review(
         progress=typer.echo,
     )
     typer.echo("wrote " + str(n) + " frames to " + str(out))
+
+
+def _next_free_take(out_a: Path, out_b: Path) -> str:
+    """The first ``<name>_NN`` stem that is free in both output folders (s1_01 -> s1_02 ...)."""
+    import re
+
+    stem = out_a.stem
+    match = re.fullmatch(r"(.*_)(\d+)", stem)
+    head, number, width = (match.group(1), int(match.group(2)), len(match.group(2))) if match else (stem + "_", 1, 2)
+    while True:
+        number += 1
+        candidate = head + str(number).zfill(width)
+        if not any((out.parent / (candidate + out.suffix)).exists() for out in (out_a, out_b)):
+            return candidate
 
 
 @app.command(name="review-clip")

@@ -480,3 +480,41 @@ def test_only_pilot_takes_are_seeded_from_the_script():
     # 27 Oct clips share the "_NN" suffix but are not pilot takes
     assert _clip_index("s2_01") is None and _clip_index("h1_01") is None
     assert _clip_index("clip2_test") is None
+
+
+def test_record_dual_refuses_to_overwrite_an_existing_take(tmp_path, monkeypatch):
+    from typer.testing import CliRunner
+
+    from ahfd.cli import app
+
+    monkeypatch.setenv("AHFD_ALLOW_RAW", "1")
+    monkeypatch.setenv("COLUMNS", "200")
+    config = tmp_path / "raw.yaml"
+    config.write_text("privacy:\n  allow_raw_capture: true\n")
+    (tmp_path / "d435i").mkdir()
+    (tmp_path / "d435f").mkdir()
+    taken = tmp_path / "d435f" / "s1_01.db3"
+    taken.write_bytes(b"irreplaceable take")
+    (tmp_path / "d435i" / "s1_02.db3").write_bytes(b"also taken")
+    result = CliRunner().invoke(app, [
+        "record-dual", str(tmp_path / "d435i" / "s1_01.db3"), str(taken),
+        "--config", str(config), "--i-understand-raw-capture",
+    ])
+    assert result.exit_code != 0
+    assert "refusing to overwrite" in result.output and "s1_03" in result.output  # s1_02 is taken on one camera
+    assert taken.read_bytes() == b"irreplaceable take"
+    assert not (tmp_path / "d435i" / "s1_01.db3").exists()
+
+
+def test_record_dual_refuses_the_same_file_for_both_cameras(tmp_path, monkeypatch):
+    from typer.testing import CliRunner
+
+    from ahfd.cli import app
+
+    monkeypatch.setenv("AHFD_ALLOW_RAW", "1")
+    monkeypatch.setenv("COLUMNS", "200")
+    config = tmp_path / "raw.yaml"
+    config.write_text("privacy:\n  allow_raw_capture: true\n")
+    out = tmp_path / "s1_01.db3"
+    result = CliRunner().invoke(app, ["record-dual", str(out), str(out), "--config", str(config), "--i-understand-raw-capture"])
+    assert result.exit_code != 0 and "same file" in result.output
