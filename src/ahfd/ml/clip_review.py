@@ -137,7 +137,7 @@ def predict_clip(
     )
     posture = _load_model(posture_model)
     phase = _load_model(phase_model)
-    segments = P._labelled_segments(labels) if labels is not None else []
+    segments = P._labelled_segments(Path(labels)) if labels is not None else []
     min_kp = cfg.pose.min_keypoint_score
 
     subject = subject_track(tracks, calib, 0.3)

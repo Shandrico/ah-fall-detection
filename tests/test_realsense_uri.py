@@ -480,3 +480,144 @@ def test_only_pilot_takes_are_seeded_from_the_script():
     # 27 Oct clips share the "_NN" suffix but are not pilot takes
     assert _clip_index("s2_01") is None and _clip_index("h1_01") is None
     assert _clip_index("clip2_test") is None
+
+
+def test_record_dual_refuses_to_overwrite_an_existing_take(tmp_path, monkeypatch):
+    from typer.testing import CliRunner
+
+    from ahfd.cli import app
+
+    monkeypatch.setenv("AHFD_ALLOW_RAW", "1")
+    monkeypatch.setenv("COLUMNS", "200")
+    config = tmp_path / "raw.yaml"
+    config.write_text("privacy:\n  allow_raw_capture: true\n")
+    (tmp_path / "d435i").mkdir()
+    (tmp_path / "d435f").mkdir()
+    taken = tmp_path / "d435f" / "s1_01.db3"
+    taken.write_bytes(b"irreplaceable take")
+    (tmp_path / "d435i" / "s1_02.db3").write_bytes(b"also taken")
+    result = CliRunner().invoke(app, [
+        "record-dual", str(tmp_path / "d435i" / "s1_01.db3"), str(taken),
+        "--config", str(config), "--i-understand-raw-capture",
+    ])
+    assert result.exit_code != 0
+    assert "refusing to overwrite" in result.output and "s1_03" in result.output  # s1_02 is taken on one camera
+    assert taken.read_bytes() == b"irreplaceable take"
+    assert not (tmp_path / "d435i" / "s1_01.db3").exists()
+
+
+def test_record_dual_refuses_the_same_file_for_both_cameras(tmp_path, monkeypatch):
+    from typer.testing import CliRunner
+
+    from ahfd.cli import app
+
+    monkeypatch.setenv("AHFD_ALLOW_RAW", "1")
+    monkeypatch.setenv("COLUMNS", "200")
+    config = tmp_path / "raw.yaml"
+    config.write_text("privacy:\n  allow_raw_capture: true\n")
+    out = tmp_path / "s1_01.db3"
+    result = CliRunner().invoke(app, ["record-dual", str(out), str(out), "--config", str(config), "--i-understand-raw-capture"])
+    assert result.exit_code != 0 and "same file" in result.output
+
+
+def test_copy_recording_never_overwrites_and_keeps_the_original(tmp_path):
+    from ahfd.debug.bag_writer import copy_recording
+
+    src = tmp_path / "local" / "h1_02.db3"
+    src.parent.mkdir()
+    src.write_bytes(b"x" * 1000)
+    t9 = tmp_path / "t9"
+    t9.mkdir()
+    dest = copy_recording(src, t9)
+    assert dest == t9 / "h1_02.db3" and dest.read_bytes() == src.read_bytes()
+    assert src.exists() and not (t9 / "h1_02.db3.partial").exists()
+    with pytest.raises(FileExistsError):
+        copy_recording(src, t9)
+
+
+def _raw_config(tmp_path, monkeypatch):
+    monkeypatch.setenv("AHFD_ALLOW_RAW", "1")
+    monkeypatch.setenv("COLUMNS", "200")
+    config = tmp_path / "raw.yaml"
+    config.write_text("privacy:\n  allow_raw_capture: true\n")
+    return config
+
+
+def test_record_dual_refuses_a_missing_copy_destination(tmp_path, monkeypatch):
+    from typer.testing import CliRunner
+
+    from ahfd.cli import app
+
+    config = _raw_config(tmp_path, monkeypatch)
+    result = CliRunner().invoke(app, [
+        "record-dual", str(tmp_path / "a.db3"), str(tmp_path / "b.db3"), "--config", str(config),
+        "--copy-a-to", str(tmp_path / "T9_not_mounted"), "--i-understand-raw-capture",
+    ])
+    assert result.exit_code != 0 and "is the T9 mounted" in result.output
+
+
+def test_record_dual_refuses_a_name_already_on_the_t9(tmp_path, monkeypatch):
+    from typer.testing import CliRunner
+
+    from ahfd.cli import app
+
+    config = _raw_config(tmp_path, monkeypatch)
+    t9 = tmp_path / "t9_d435f"
+    t9.mkdir()
+    (t9 / "h1_02.db3").write_bytes(b"recorded yesterday")
+    result = CliRunner().invoke(app, [
+        "record-dual", str(tmp_path / "i" / "h1_02.db3"), str(tmp_path / "f" / "h1_02.db3"), "--config", str(config),
+        "--copy-b-to", str(t9), "--i-understand-raw-capture",
+    ])
+    assert result.exit_code != 0 and "refusing to overwrite" in result.output and "h1_03" in result.output
+    assert (t9 / "h1_02.db3").read_bytes() == b"recorded yesterday"
+
+
+def test_record_dual_copies_both_takes_after_recording(tmp_path, monkeypatch):
+    import sys
+    import types
+
+    from typer.testing import CliRunner
+
+    import ahfd.debug.bag_writer as bag_writer
+    from ahfd.cli import app
+
+    config = _raw_config(tmp_path, monkeypatch)
+
+    class Device:
+        def __init__(self, serial, name):
+            self.info = {"serial": serial, "name": name}
+
+        def get_info(self, key):
+            return self.info[key]
+
+    fake_rs = types.SimpleNamespace(
+        camera_info=types.SimpleNamespace(serial_number="serial", name="name"),
+        context=lambda: types.SimpleNamespace(query_devices=lambda: [
+            Device("346122072607", "Intel RealSense D435I"), Device("406122070025", "Intel RealSense D435F")]),
+    )
+    monkeypatch.setitem(sys.modules, "pyrealsense2", fake_rs)
+    recorded = []
+
+    def fake_record(cams, **_kwargs):
+        for out, _serial, label in cams:
+            out.parent.mkdir(parents=True, exist_ok=True)
+            out.write_bytes(label.encode() * 100)
+            recorded.append(out)
+        return {label: 10 for _out, _serial, label in cams}
+
+    monkeypatch.setattr(bag_writer, "record_bag_dual", fake_record)
+    t9_i, t9_f = tmp_path / "T9" / "ah_bags_d435i", tmp_path / "T9" / "ah_bags_d435f"
+    t9_i.mkdir(parents=True)
+    t9_f.mkdir(parents=True)
+    out_i, out_f = tmp_path / "rec" / "d435i" / "h1_02.db3", tmp_path / "rec" / "d435f" / "h1_02.db3"
+    result = CliRunner().invoke(app, [
+        "record-dual", str(out_i), str(out_f), "--config", str(config),
+        "--copy-a-to", str(t9_i), "--copy-b-to", str(t9_f), "--i-understand-raw-capture",
+    ])
+    assert result.exit_code == 0, result.output
+    assert recorded == [out_i, out_f]
+    assert (t9_i / "h1_02.db3").read_bytes() == out_i.read_bytes()
+    assert (t9_f / "h1_02.db3").read_bytes() == out_f.read_bytes()
+    assert out_i.exists() and out_f.exists()  # originals kept
+    assert "ready for the next recording" in result.output
