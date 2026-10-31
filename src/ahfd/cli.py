@@ -4054,6 +4054,95 @@ def seed_phases(
     )
 
 
+def _bag_first_color_ts_and_duration(path: Path) -> tuple[float, float]:
+    """First colour frame's global-time stamp (s) and the clip duration (s).
+
+    Opens the .db3 colour stream only (no IMU -> no empty-frameset hang on the
+    D435i) in non-real-time playback, so it reads the first frame and the
+    recorded duration without replaying the whole clip.
+    """
+    import pyrealsense2 as rs
+
+    cfg = rs.config()
+    cfg.enable_device_from_file(str(path), repeat_playback=False)
+    cfg.enable_stream(rs.stream.color)
+    pipe = rs.pipeline()
+    prof = pipe.start(cfg)
+    try:
+        playback = prof.get_device().as_playback()
+        playback.set_real_time(False)
+        duration = playback.get_duration().total_seconds()
+        t0 = None
+        for _ in range(10):
+            ok, frames = pipe.try_wait_for_frames(5000)
+            if not ok:
+                break
+            color = frames.get_color_frame()
+            if color:
+                t0 = color.get_timestamp() / 1000.0  # ms -> s, global-time domain
+                break
+    finally:
+        pipe.stop()
+    if t0 is None:
+        raise RuntimeError("no colour frame found in " + str(path))
+    return t0, duration
+
+
+@app.command(name="transfer-labels")
+def transfer_labels(
+    label: Path = typer.Argument(..., help="Label JSON to transfer FROM (phases or postures)."),
+    from_bag: Path = typer.Option(..., help="The .db3 whose timeline `label` is in (source camera)."),
+    to_bag: Path = typer.Option(..., help="The .db3 to put the labels onto (target camera)."),
+    out: Path = typer.Option(..., help="Output label JSON for the target camera."),
+) -> None:
+    """Move an offline label file to the other camera's clip of the same event.
+
+    Both recordings stamp frames in global time (one host clock), so this shifts
+    every segment by the constant offset between the two clips' first colour
+    frames -- exact to one frame, no cross-correlation. Use it so a clip you can
+    only label on the camera that sees the event (e.g. the floor for a fall)
+    still yields the other camera's ground truth without re-labelling. Phase or
+    posture files both work (the label field is detected from the file).
+    """
+    import json as _json
+
+    from ahfd.annotate import dump_posture_json
+    from ahfd.annotate.transfer import shift_segments
+
+    if not label.exists():
+        raise typer.BadParameter("label not found: " + str(label))
+    data = _json.loads(label.read_text(encoding="utf-8"))
+    segs = data.get("segments", [])
+    if not segs:
+        raise typer.BadParameter("no segments in " + str(label))
+    key = "phase" if "phase" in segs[0] else "posture"
+
+    t0_from, _ = _bag_first_color_ts_and_duration(from_bag)
+    t0_to, dur_to = _bag_first_color_ts_and_duration(to_bag)
+    delta = t0_from - t0_to
+
+    shifted, dropped, clipped = shift_segments(segs, delta, dur_to, key=key)
+    out.parent.mkdir(parents=True, exist_ok=True)
+    out.write_text(
+        dump_posture_json(out.stem, dur_to, shifted, label_key=key), encoding="utf-8"
+    )
+
+    typer.echo(
+        "%s/%s started %.3f s %s %s/%s; shifting segments %+.3f s"
+        % (
+            to_bag.parent.name, to_bag.name, abs(delta),
+            "later than" if delta < 0 else "earlier than",
+            from_bag.parent.name, from_bag.name, delta,
+        )
+    )
+    typer.echo("wrote %d of %d %s segment(s) -> %s" % (len(shifted), len(segs), key, out))
+    for lab, a, b in dropped:
+        typer.echo("  DROPPED (outside target clip): %s %.2f-%.2fs" % (lab, a, b))
+    for lab, a, b, na, nb in clipped:
+        typer.echo("  clipped to clip end: %s %.2f-%.2f -> %.2f-%.2f" % (lab, a, b, na, nb))
+    typer.echo("verify by eye before trusting it (export-color both and compare).")
+
+
 @app.command()
 def compare_posture(
     calibration: Path = typer.Option(..., help="Calibration YAML (for the metric features)."),
