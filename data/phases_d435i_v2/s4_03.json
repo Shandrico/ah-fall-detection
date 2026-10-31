@@ -1,0 +1,16 @@
+{
+  "clip_id": "s4_03_phaselabel",
+  "duration_s": 79.4,
+  "segments": [
+    { "start_s": 1, "end_s": 8, "phase": "RECLINED" },
+    { "start_s": 8, "end_s": 13, "phase": "TORSO_RISING" },
+    { "start_s": 13, "end_s": 22, "phase": "UPRIGHT_IN_BED" },
+    { "start_s": 22, "end_s": 32, "phase": "SHIFTING_TO_EDGE" },
+    { "start_s": 32, "end_s": 46, "phase": "EDGE_SITTING" },
+    { "start_s": 50, "end_s": 51, "phase": "EDGE_SITTING" },
+    { "start_s": 51, "end_s": 54, "phase": "ATTEMPTING_STAND" },
+    { "start_s": 54, "end_s": 68, "phase": "OUT_OF_BED" },
+    { "start_s": 69, "end_s": 70, "phase": "EDGE_SITTING" },
+    { "start_s": 73, "end_s": 79.37, "phase": "UPRIGHT_IN_BED" }
+  ]
+}

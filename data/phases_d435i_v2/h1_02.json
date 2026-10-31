@@ -1,0 +1,10 @@
+{
+  "clip_id": "h1_02_phaselabel",
+  "duration_s": 63.6,
+  "segments": [
+    { "start_s": 1, "end_s": 8, "phase": "RECLINED" },
+    { "start_s": 8, "end_s": 10, "phase": "TORSO_RISING" },
+    { "start_s": 10, "end_s": 44, "phase": "UPRIGHT_IN_BED" },
+    { "start_s": 46, "end_s": 63.57, "phase": "RECLINED" }
+  ]
+}

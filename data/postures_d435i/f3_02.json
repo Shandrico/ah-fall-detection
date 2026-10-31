@@ -1,0 +1,8 @@
+{
+  "clip_id": "f3_02_label",
+  "duration_s": 45.2,
+  "segments": [
+    { "start_s": 0, "end_s": 4, "posture": "upright" },
+    { "start_s": 5, "end_s": 42.17, "posture": "on_ground" }
+  ]
+}

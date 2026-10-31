@@ -1,0 +1,7 @@
+{
+  "clip_id": "f3_02_phaselabel",
+  "duration_s": 45.2,
+  "segments": [
+    { "start_s": 0, "end_s": 45.17, "phase": "OUT_OF_BED" }
+  ]
+}

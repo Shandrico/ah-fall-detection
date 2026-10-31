@@ -1,0 +1,12 @@
+{
+  "clip_id": "h2_03_phaselabel",
+  "duration_s": 60.4,
+  "segments": [
+    { "start_s": 1, "end_s": 15, "phase": "RECLINED" },
+    { "start_s": 15, "end_s": 17, "phase": "TORSO_RISING" },
+    { "start_s": 17, "end_s": 21, "phase": "SHIFTING_TO_EDGE" },
+    { "start_s": 21, "end_s": 23, "phase": "ATTEMPTING_STAND" },
+    { "start_s": 23, "end_s": 36, "phase": "OUT_OF_BED" },
+    { "start_s": 42, "end_s": 60.37, "phase": "RECLINED" }
+  ]
+}

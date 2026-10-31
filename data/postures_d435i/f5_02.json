@@ -1,0 +1,9 @@
+{
+  "clip_id": "f5_02_label",
+  "duration_s": 12.77,
+  "segments": [
+    { "start_s": 1, "end_s": 2, "posture": "upright" },
+    { "start_s": 3, "end_s": 8, "posture": "on_ground" },
+    { "start_s": 10, "end_s": 12.73, "posture": "upright" }
+  ]
+}

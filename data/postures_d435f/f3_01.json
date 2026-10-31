@@ -1,0 +1,10 @@
+{
+  "clip_id": "f3_01_label",
+  "duration_s": 56.2,
+  "segments": [
+    { "start_s": 6, "end_s": 28, "posture": "on_ground" },
+    { "start_s": 31, "end_s": 33, "posture": "upright" },
+    { "start_s": 39, "end_s": 40, "posture": "upright" },
+    { "start_s": 42, "end_s": 54.17, "posture": "on_ground" }
+  ]
+}

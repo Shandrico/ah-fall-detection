@@ -1,0 +1,8 @@
+{
+  "clip_id": "f1_01_label",
+  "duration_s": 47.87,
+  "segments": [
+    { "start_s": 0, "end_s": 37, "posture": "in_bed" },
+    { "start_s": 40, "end_s": 47.83, "posture": "on_ground" }
+  ]
+}
