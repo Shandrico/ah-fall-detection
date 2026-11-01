@@ -83,6 +83,8 @@ dashboard:
   # on_ground), shown next to the rule state as "| model: ..." for live comparison.
   # Display only; alerts use the rules. Git-ignored file -- set to "" if models/ is missing.
   posture_model: "models/posture_v3_tree.joblib"
+  # Review videos behind the page's "Review videos" link (raw RGB: stays on the T9).
+  review_dir: "/media/anormalm/T9/AHFD_DATA/review/review_20261101"
   # The camera picker. Each entry carries its own calibration, so switching
   # cameras switches calibration too. A connected RealSense is also auto-added,
   # but list it here explicitly so it gets calib/d435i.yaml (the auto entry has

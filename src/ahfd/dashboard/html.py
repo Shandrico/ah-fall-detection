@@ -35,13 +35,15 @@ DASHBOARD_HTML = r"""<!doctype html>
   select, button, input { background:var(--panel); color:var(--ink); border:1px solid var(--line);
                    border-radius:7px; padding:6px 10px; font-size:13px; cursor:pointer; }
   button:hover { border-color:var(--accent); }
+  :focus-visible { outline:3px solid #8ab8ff; outline-offset:2px; }
+  .navlink { color:#8ab8ff; font-size:13px; padding:6px 4px; }
   input { cursor:text; }
   select:disabled, button:disabled, input:disabled { opacity:.45; cursor:not-allowed; }
   .bar { display:flex; gap:8px; align-items:center; flex-wrap:wrap; font-size:13px;
          padding:10px 18px; border-bottom:1px solid var(--line); background:var(--panel2); }
   .bar label, .bar .hint { color:var(--muted); font-size:12px; }
   .bar .hint { margin-left:auto; text-align:right; }
-  .pill { padding:3px 10px; border-radius:999px; font-size:11px; background:#22304a;
+  .pill { padding:3px 10px; border-radius:999px; font-size:12px; background:#22304a;
           text-transform:uppercase; letter-spacing:.6px; }
   .pill.running { background:var(--ok); color:#04210b; }
   .pill.switching, .pill.starting { background:var(--warn); color:#000; }
@@ -50,7 +52,7 @@ DASHBOARD_HTML = r"""<!doctype html>
   .metrics { display:grid; grid-template-columns:repeat(auto-fit,minmax(140px,1fr)); gap:10px; padding:14px 14px 0; }
   @media (max-width:1100px){ .metrics{ grid-template-columns:repeat(3,1fr);} }
   .metric { background:var(--panel); border:1px solid var(--line); border-radius:10px; padding:10px 12px; }
-  .metric .k { font-size:10.5px; text-transform:uppercase; letter-spacing:.7px; color:var(--muted); }
+  .metric .k { font-size:12px; text-transform:uppercase; letter-spacing:.7px; color:var(--muted); }
   .metric .v { font-size:26px; font-weight:700; margin-top:3px; line-height:1; }
   .metric.crit .v { color:var(--crit); }
   .metric.warn .v { color:var(--warn); }
@@ -64,7 +66,7 @@ DASHBOARD_HTML = r"""<!doctype html>
   .feed:fullscreen { display:flex; flex-direction:column; justify-content:center; }
   .feed:fullscreen img { max-height:90vh; object-fit:contain; }
   .feed-title { padding:9px 12px; font-size:12px; background:var(--panel2); }
-  .depth-legend { padding:9px 12px; font-size:11px; color:var(--muted); background:var(--panel2); }
+  .depth-legend { padding:9px 12px; font-size:12px; color:var(--muted); background:var(--panel2); }
   .depth-ramp { height:5px; margin-bottom:6px; background:linear-gradient(90deg,#30123b,#466be3,#28bceb,#a4fc3c,#f9ba38,#e5470b,#7a0403); }
   @media (max-width:850px){ .feeds.with-depth { grid-template-columns:1fr; } }
   .player { display:flex; gap:8px; align-items:center; margin-top:8px; padding:8px 10px;
@@ -83,8 +85,8 @@ DASHBOARD_HTML = r"""<!doctype html>
               display:flex; justify-content:space-between; }
   .chip { display:flex; justify-content:space-between; align-items:center; padding:7px 10px; border-radius:8px;
           background:var(--panel2); margin-bottom:6px; font-size:14px; }
-  .chip .sub { color:var(--muted); font-size:11px; margin-top:3px; }
-  .badge { font-size:11px; padding:2px 9px; border-radius:999px; background:#22304a; white-space:nowrap; }
+  .chip .sub { color:var(--muted); font-size:12px; margin-top:3px; }
+  .badge { font-size:12px; padding:2px 9px; border-radius:999px; background:#22304a; white-space:nowrap; }
   .s-ON_GROUND,.s-FALLING { background:var(--crit); color:#fff; }
   .s-IN_BED { background:#1f6feb; color:#fff; }
   .s-SITTING { background:var(--warn); color:#000; }
@@ -99,21 +101,21 @@ DASHBOARD_HTML = r"""<!doctype html>
   .ev.sev4 { border-left-color:var(--crit); } .ev.sev3 { border-left-color:var(--warn); }
   .ev.sev2 { border-left-color:var(--accent); } .ev.sev1 { border-left-color:var(--muted); }
   .ev .t { font-weight:700; font-size:14px; display:flex; justify-content:space-between; }
-  .ev .t .badge { font-size:10.5px; }
+  .ev .t .badge { font-size:12px; }
   .ev .m { color:var(--muted); font-size:12px; margin-top:4px; }
-  .ev .evi { color:var(--muted); font-size:11.5px; margin-top:3px; font-family:ui-monospace,monospace; }
+  .ev .evi { color:var(--muted); font-size:12px; margin-top:3px; font-family:ui-monospace,monospace; }
   .ev button { margin-top:7px; padding:4px 12px; font-size:12px; }
   .ev.ack { opacity:.45; }
   .empty { color:var(--muted); font-size:13px; padding:10px; text-align:center; }
-  .note { color:var(--muted); font-size:11.5px; line-height:1.5; padding:8px 10px;
+  .note { color:var(--muted); font-size:12px; line-height:1.5; padding:8px 10px;
           border:1px dashed var(--line); border-radius:8px; margin-bottom:8px; }
   .note code { color:var(--ink); background:var(--panel2); border-radius:4px;
-               padding:1px 4px; font-size:11px; }
+               padding:1px 4px; font-size:12px; }
   .queue { max-height:32vh; overflow:auto; } .log { max-height:40vh; overflow:auto; }
   .bed-card { display:grid; grid-template-columns:1fr auto; gap:8px 12px; align-items:center;
               padding:9px 10px; border-radius:8px; background:var(--panel2); margin-bottom:7px; }
   .bed-card .name { font-weight:650; font-size:13px; }
-  .bed-card .desc { color:var(--muted); font-size:11px; grid-column:1 / -1; }
+  .bed-card .desc { color:var(--muted); font-size:12px; grid-column:1 / -1; }
   .mode-low { border-color:var(--ok); }
   .mode-medium { border-color:var(--warn); }
   .mode-high { border-color:var(--crit); }
@@ -129,7 +131,8 @@ DASHBOARD_HTML = r"""<!doctype html>
       <option value="2">suspected+</option>
       <option value="3" selected>alerts only</option>
     </select>
-    <button id="sound">&#128263; Sound: off</button>
+    <a id="review-link" class="navlink" href="/review" target="_blank" rel="noopener" hidden>Review videos</a>
+    <button id="sound">Sound: off</button>
   </div>
 </header>
 
@@ -151,6 +154,7 @@ DASHBOARD_HTML = r"""<!doctype html>
   <div class="metric"><div class="k">FPS</div><div class="v" id="m-fps">-</div></div>
   <div class="metric"><div class="k">People in view</div><div class="v" id="m-people">0</div></div>
   <div class="metric crit"><div class="k">Open alerts</div><div class="v" id="m-open">0</div></div>
+  <div class="metric warn"><div class="k">Possible falls</div><div class="v" id="m-possible">0</div></div>
   <div class="metric crit"><div class="k">Confirmed falls</div><div class="v" id="m-falls">0</div></div>
   <div class="metric warn"><div class="k">Bed exits</div><div class="v" id="m-bed">0</div></div>
   <div class="metric warn"><div class="k">Early warnings</div><div class="v" id="m-warning">0</div></div>
@@ -384,6 +388,7 @@ async function refresh(){
   document.getElementById('m-fps').textContent = s.fps;
   document.getElementById('m-people').textContent = s.people;
   document.getElementById('m-open').textContent = s.open_count;
+  document.getElementById('m-possible').textContent = s.counts.possible_fall;
   document.getElementById('m-falls').textContent = s.counts.fall_confirmed + s.counts.person_down;
   document.getElementById('m-bed').textContent = s.counts.bed_exit;
   document.getElementById('m-warning').textContent = s.counts.bed_exit_warning;
@@ -481,19 +486,20 @@ async function refresh(){
   document.getElementById('tracks').innerHTML = note + tr;
 
   const floor = parseInt(document.getElementById('sev').value,10);
-  const shown = s.events.filter(e=>(e.severity||0)>=floor);
+  const shown = s.events.filter(e=>e.alerting||(e.severity||0)>=floor);
   document.getElementById('events').innerHTML = shown.length
     ? shown.map(e=>card(e,true)).join('')
     : '<div class="empty">no events at this severity</div>';
 }
 
 document.getElementById('sound').addEventListener('click', function(){
-  soundOn=!soundOn; this.textContent=(soundOn?'\u{1F514} Sound: on':'\u{1F508} Sound: off'); if(soundOn) beep();
+  soundOn=!soundOn; this.textContent=(soundOn?'Sound: on':'Sound: off'); if(soundOn) beep();
 });
 document.getElementById('full').addEventListener('click', ()=>{
   const f=document.querySelector('.feed'); if(f.requestFullscreen) f.requestFullscreen();
 });
 document.getElementById('sev').addEventListener('change', refresh);
+fetch('/api/review').then(r=>{ if(r.ok) document.getElementById('review-link').hidden = false; }).catch(()=>{});
 
 document.getElementById('src').addEventListener('change', e=>switchTo({source:e.target.value}));
 document.getElementById('bk').addEventListener('change',  e=>switchTo({backend:e.target.value}));

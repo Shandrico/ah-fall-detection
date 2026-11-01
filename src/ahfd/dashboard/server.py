@@ -31,7 +31,11 @@ import json
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
+from urllib.parse import unquote
+
 from ahfd.dashboard.html import DASHBOARD_HTML
+from ahfd.dashboard.review import REVIEW_HTML, find_video, list_videos
+from ahfd.debug.review_server import send_video
 from ahfd.dashboard.state import DashboardState
 
 _BOUNDARY = "ahfdframe"
@@ -42,7 +46,7 @@ def _clean(value):
     return value.strip() if isinstance(value, str) and value.strip() else None
 
 
-def make_handler(state: DashboardState, controller=None):
+def make_handler(state: DashboardState, controller=None, review_dir=None):
     class Handler(BaseHTTPRequestHandler):
         # Quieten the default per-request stderr logging.
         def log_message(self, *args) -> None:  # noqa: A003
@@ -113,6 +117,17 @@ def make_handler(state: DashboardState, controller=None):
                 self._stream()
             elif path == "/depth.mjpg":
                 self._stream(depth=True)
+            elif review_dir and path == "/review":
+                self._send(200, "text/html; charset=utf-8", REVIEW_HTML.encode())
+            elif review_dir and path == "/api/review":
+                self._json(200, {"folder": str(review_dir), "videos": list_videos(review_dir)})
+            elif review_dir and path.startswith("/review/video/"):
+                group, _, name = path[len("/review/video/"):].partition("/")
+                video = find_video(review_dir, unquote(group), unquote(name))
+                if video is None:
+                    self._send(404, "text/plain", b"not found")
+                else:
+                    send_video(self, video)
             else:
                 self._send(404, "text/plain", b"not found")
 
@@ -259,7 +274,8 @@ class DashboardServer(ThreadingHTTPServer):
         host: str = "127.0.0.1",
         port: int = 8000,
         controller=None,
+        review_dir=None,
     ):
-        super().__init__((host, port), make_handler(state, controller))
+        super().__init__((host, port), make_handler(state, controller, review_dir))
         self.state = state
         self.controller = controller

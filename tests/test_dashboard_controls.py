@@ -1344,11 +1344,13 @@ class TestDashboardCommand:
         monkeypatch.setattr(PipelineRunner, "stop", lambda self, timeout=5.0: None)
         _stub_serving(monkeypatch)
         made: list = []
+        review_dirs = self.review_dirs = []
         real_init = DashboardServer.__init__
 
-        def spy(self, state, host="127.0.0.1", port=8000, controller=None):
+        def spy(self, state, host="127.0.0.1", port=8000, controller=None, review_dir=None):
             made.append(controller)
-            real_init(self, state, host, port, controller)
+            review_dirs.append(review_dir)
+            real_init(self, state, host, port, controller, review_dir)
 
         monkeypatch.setattr(DashboardServer, "__init__", spy)
 
@@ -1388,6 +1390,13 @@ class TestDashboardCommand:
         assert ctl.options()["allow_rgb"] is True
         assert ctl.show_rgb is True
         assert "WARNING: RGB view is ON" in out
+
+    def test_review_videos_need_rgb_authorisation(self, tmp_path, monkeypatch):
+        body = 'dashboard:\n  host: "127.0.0.1"\n  port: 0\n  review_dir: "/videos"\n'
+        self._launch(monkeypatch, tmp_path, body)
+        assert self.review_dirs == [None]
+        self._launch(monkeypatch, tmp_path, body, extra_args=["--allow-rgb"])
+        assert self.review_dirs == ["/videos"]
 
     def test_plain_launch_leaves_rgb_locked(self, tmp_path, monkeypatch):
         ctl, out = self._launch(monkeypatch, tmp_path, "")

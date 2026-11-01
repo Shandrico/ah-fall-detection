@@ -4644,7 +4644,12 @@ def dashboard(
         log=typer.echo,
     )
     server = DashboardServer(
-        state, host=bind_host, port=bind_port, controller=controller
+        state,
+        host=bind_host,
+        port=bind_port,
+        controller=controller,
+        # Review videos are raw RGB: no RGB authorisation, no videos.
+        review_dir=cfg.dashboard.review_dir if rgb_allowed else None,
     )
 
     typer.echo(

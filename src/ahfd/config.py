@@ -240,6 +240,9 @@ class DashboardConfig(BaseModel):
     # Trained posture model (.joblib) shown NEXT TO the rule state, for live
     # comparison only -- alerts never read it. Empty = off.
     posture_model: str = ""
+    # Folder of review video folders (<folder>/<group>/*.mp4) for the page's "Review
+    # videos" link. They hold raw RGB, so it is ignored unless RGB is authorised.
+    review_dir: str = ""
 
     # Cameras offered in the page's picker. A connected RealSense is appended
     # automatically; nothing else is probed, because scanning webcam indices is

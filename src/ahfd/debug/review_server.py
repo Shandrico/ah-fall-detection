@@ -48,6 +48,45 @@ document.onkeydown=e=>{if(!v.src)return;const f=1/30;
 </script>""" % items).encode()
 
 
+def send_video(handler: BaseHTTPRequestHandler, path: Path) -> None:
+    """Answer a GET with this .mp4, honouring Range so the browser can seek."""
+    size = path.stat().st_size
+    start, end = 0, size - 1
+    match = re.match(r"bytes=(\d*)-(\d*)$", handler.headers.get("Range", ""))
+    if match and (match.group(1) or match.group(2)):
+        if match.group(1):
+            start = int(match.group(1))
+            end = int(match.group(2)) if match.group(2) else size - 1
+        else:  # suffix range: the last N bytes
+            start = max(0, size - int(match.group(2)))
+        end = min(end, size - 1)
+        if start > end:
+            handler.send_response(416)
+            handler.send_header("Content-Range", "bytes */%d" % size)
+            handler.end_headers()
+            return
+        handler.send_response(206)
+        handler.send_header("Content-Range", "bytes %d-%d/%d" % (start, end, size))
+    else:
+        handler.send_response(200)
+    handler.send_header("Content-Type", "video/mp4")
+    handler.send_header("Accept-Ranges", "bytes")
+    handler.send_header("Content-Length", str(end - start + 1))
+    handler.end_headers()
+    try:
+        with path.open("rb") as fh:
+            fh.seek(start)
+            left = end - start + 1
+            while left > 0:
+                chunk = fh.read(min(_CHUNK, left))
+                if not chunk:
+                    break
+                handler.wfile.write(chunk)
+                left -= len(chunk)
+    except (BrokenPipeError, ConnectionResetError):
+        pass  # the browser seeks by dropping the old request
+
+
 def make_handler(root: Path):
     root = root.resolve()
 
@@ -77,41 +116,7 @@ def make_handler(root: Path):
                 self.send_error(404)
                 return
             path = root / name
-            size = path.stat().st_size
-            start, end = 0, size - 1
-            match = re.match(r"bytes=(\d*)-(\d*)$", self.headers.get("Range", ""))
-            if match and (match.group(1) or match.group(2)):
-                if match.group(1):
-                    start = int(match.group(1))
-                    end = int(match.group(2)) if match.group(2) else size - 1
-                else:  # suffix range: the last N bytes
-                    start = max(0, size - int(match.group(2)))
-                end = min(end, size - 1)
-                if start > end:
-                    self.send_response(416)
-                    self.send_header("Content-Range", "bytes */%d" % size)
-                    self.end_headers()
-                    return
-                self.send_response(206)
-                self.send_header("Content-Range", "bytes %d-%d/%d" % (start, end, size))
-            else:
-                self.send_response(200)
-            self.send_header("Content-Type", "video/mp4")
-            self.send_header("Accept-Ranges", "bytes")
-            self.send_header("Content-Length", str(end - start + 1))
-            self.end_headers()
-            try:
-                with path.open("rb") as fh:
-                    fh.seek(start)
-                    left = end - start + 1
-                    while left > 0:
-                        chunk = fh.read(min(_CHUNK, left))
-                        if not chunk:
-                            break
-                        self.wfile.write(chunk)
-                        left -= len(chunk)
-            except (BrokenPipeError, ConnectionResetError):
-                pass  # the browser seeks by dropping the old request
+            send_video(self, path)
 
     return Handler
 
