@@ -79,6 +79,12 @@ ANKLE_KEYPOINT_HEIGHT_M = 0.08
 # lying in a bed. Measured: a prone body spreads ~1.6 m at any range, an
 # upright one 5 m at 4 m range and over 7 m at 6 m.
 UPRIGHT_SPREAD_M = 4.0
+# How much of the body must be over a bed for it to count as holding them up:
+# with an ankle over it, or (more, as ankles are the better cue) with a hip.
+# Measured: 0.00 lying on the floor (0.31 at most with a foot in the box), 1.00
+# in bed from the side, 0.53 in bed from a camera looking along the bed.
+SUPPORT_MIN_FRACTION = 0.35
+SUPPORT_HIP_FRACTION = 0.45
 HeightSource = Literal["depth", "monocular"]
 
 
@@ -287,28 +293,46 @@ class FeatureExtractor:
         the two -- an upright body spreads several metres, a body lying in bed
         spreads about its own length -- so an upright person is never treated
         as supported.
+
+        The rest of the body has to agree. One ankle over the bed is not enough:
+        a student lying on the floor beside the bed, hips well outside the box
+        and torso at 0.12 m, read as in bed because a foot crossed it. Hips over
+        the bed count even when the ankles do not, as when a camera looking
+        along the bed sees the feet past its end.
         """
         if floor_spread > UPRIGHT_SPREAD_M:
             return None
 
+        confident = np.flatnonzero(valid)
+        if confident.size == 0:
+            return None
         candidates = [i for i in ANKLES if valid[i]]
         if not candidates:
-            confident = np.flatnonzero(valid)
-            if confident.size == 0:
-                return None
             candidates = [int(confident[np.argmax(person.keypoints[confident, 1])])]
 
         for zone in self.zones.zones:
             if zone.kind not in ("bed", "chair") or zone.top_m is None:
                 continue
-            for i in candidates:
+
+            def over_zone(i: int) -> bool:
                 xy = self.ground.pixel_to_plane(
                     float(person.keypoints[i, 0]),
                     float(person.keypoints[i, 1]),
                     zone.top_m,
                 )
-                if xy is not None and zone.contains(xy):
+                return xy is not None and zone.contains(xy)
+
+            ankle_over = any(over_zone(i) for i in candidates)
+            if zone.kind == "chair":  # a seated body hardly overlaps a chair
+                if ankle_over:
                     return zone
+                continue
+            fraction = sum(over_zone(int(i)) for i in confident) / confident.size
+            hip_over = any(over_zone(i) for i in HIPS if valid[i])
+            if (ankle_over and fraction >= SUPPORT_MIN_FRACTION) or (
+                hip_over and fraction >= SUPPORT_HIP_FRACTION
+            ):
+                return zone
         return None
 
     def _floor_spread(self, person: PersonPose, valid: np.ndarray) -> float:

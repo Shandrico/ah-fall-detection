@@ -2846,9 +2846,10 @@ def replay(
     events_seen = 0
     n = 0
     live_ids: set[int] = set()
+    retained = _RetainedIds()
     try:
         for pose in read_tracks(tracks):
-            live_ids = {p.track_id for p in pose.people if p.track_id is not None}
+            live_ids = retained.update(pose)
             extractor.retain_only(live_ids)
             machine.retain_only(live_ids)
             for person in pose.people:
@@ -2940,13 +2941,37 @@ def sweep(
         value += step
 
 
+class _RetainedIds:
+    """Track ids as the live tracker keeps them: alive until missed > max_miss_s.
+
+    Stored tracks only list the people detected in each frame, so retaining
+    by "in this frame" dropped a person's detector state on every one-frame
+    dropout -- harsher than the live pipelines (SimpleTracker max_miss_s=1.0),
+    and a person lying on the floor restarted their down clock each time.
+    """
+
+    def __init__(self, max_miss_s: float = 1.0):
+        self.max_miss_s = max_miss_s
+        self._last: dict[int, float] = {}
+
+    def update(self, pose) -> set[int]:
+        for p in pose.people:
+            if p.track_id is not None:
+                self._last[p.track_id] = pose.t
+        self._last = {
+            i: t for i, t in self._last.items() if pose.t - t <= self.max_miss_s
+        }
+        return set(self._last)
+
+
 def _replay_events(clip, extractor, machine, read_tracks):
     """Replay one track file to an in-memory list of PredictedEvents."""
     from ahfd.eval import PredictedEvent
 
     events = []
+    retained = _RetainedIds()
     for pose in read_tracks(clip):
-        live = {p.track_id for p in pose.people if p.track_id is not None}
+        live = retained.update(pose)
         extractor.retain_only(live)
         machine.retain_only(live)
         for person in pose.people:

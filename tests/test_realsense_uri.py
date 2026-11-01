@@ -621,3 +621,15 @@ def test_record_dual_copies_both_takes_after_recording(tmp_path, monkeypatch):
     assert (t9_f / "h1_02.db3").read_bytes() == out_f.read_bytes()
     assert out_i.exists() and out_f.exists()  # originals kept
     assert "ready for the next recording" in result.output
+
+
+def test_replay_retains_ids_through_short_dropouts():
+    from types import SimpleNamespace as NS
+
+    from ahfd.cli import _RetainedIds
+
+    r = _RetainedIds(max_miss_s=1.0)
+    person = NS(track_id=1)
+    assert r.update(NS(t=0.0, people=[person])) == {1}
+    assert r.update(NS(t=0.5, people=[])) == {1}  # one missed frame: kept
+    assert r.update(NS(t=1.6, people=[])) == set()  # gone > 1 s: dropped

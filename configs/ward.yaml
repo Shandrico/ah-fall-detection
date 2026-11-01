@@ -57,7 +57,7 @@ detect:
   rest_deadline_s: 2.5     # after a trigger, the body must reach the floor within this
 
   # --- confirmation: the alarm-fatigue control ----------------------------
-  suspect_s: 1.5           # on-screen "suspected" flag this long after landing
+  suspect_s: 0.3           # alert this long after landing from an impact
   confirm_s: 8.0           # PAGE A NURSE only after staying down this long
   confirm_motion_max: 0.15 # ...and moving less than this (m/s) — still, not fidgeting
   recover_h: 0.70          # got back above this before confirm -> NEAR_MISS, no alarm

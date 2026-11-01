@@ -1,0 +1,9 @@
+{
+  "clip_id": "f5_01",
+  "duration_s": 13.52,
+  "segments": [
+    { "start_s": 0.7, "end_s": 1.7, "posture": "upright" },
+    { "start_s": 2.7, "end_s": 3.7, "posture": "on_ground" },
+    { "start_s": 5.7, "end_s": 12.1, "posture": "upright" }
+  ]
+}

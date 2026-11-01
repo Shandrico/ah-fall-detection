@@ -281,7 +281,8 @@ class TestZoneIntegration:
         bed = Zone(
             name="bed_2",
             kind="bed",
-            polygon=rectangle((0.0, 6.0), length=2.4, width=1.4, angle_deg=0.0),
+            # Long axis along the body (feet at y=6, head towards y=7.7).
+            polygon=rectangle((0.0, 6.8), length=2.4, width=1.4, angle_deg=90.0),
             top_m=0.6,
         )
         # Lying on the bed surface rather than the floor.
@@ -303,10 +304,7 @@ class TestZoneIntegration:
         assert f.bed_top_m == 0.6
         assert f.associated_bed == "bed_2"
         assert f.bed_edge_distance_m is not None
-        # This synthetic bed's long axis is deliberately perpendicular to the
-        # synthetic body's, so the torso anchor sits just beyond its boundary;
-        # the cue must preserve that signed crossing rather than clamp it.
-        assert f.bed_edge_distance_m < 0.0
+        assert f.bed_edge_distance_m > 0.0
 
     def test_chair_support_never_becomes_a_bed_policy_association(self):
         chair = Zone(
@@ -399,3 +397,51 @@ class TestDegradedInput:
         f = ex.extract(standing(0.0, 5.0), 1.0)
         assert f is not None
         assert f.v_z == 0.0  # fresh history, no spurious velocity
+
+
+def _lying(zone_y: float, z: float, track_id: int = 1) -> PersonPose:
+    pts = [project(WARD, np.array([lateral, zone_y + (height - 0.08), z])) for height, lateral in BODY]
+    return PersonPose(
+        keypoints=np.array(pts, dtype=np.float32),
+        scores=np.ones(NUM_KEYPOINTS, dtype=np.float32),
+        score=1.0,
+        track_id=track_id,
+    )
+
+
+class TestBedSupportNeedsTheBody:
+    def test_edge_distance_keeps_its_sign_past_the_boundary(self):
+        """Legs over the bed, torso anchor just beyond it: signed, not clamped."""
+        short = Zone(
+            name="bed",
+            kind="bed",
+            polygon=rectangle((0.0, 6.4), length=1.1, width=1.4, angle_deg=90.0),
+            top_m=0.6,
+        )
+        f = extractor(ZoneMap([short])).extract(_lying(6.0, 0.60), 0.0)
+        assert f is not None and f.supported_by_bed == "bed"
+        assert f.bed_edge_distance_m is not None and f.bed_edge_distance_m < 0.0
+
+    BED = Zone(
+        name="bed",
+        kind="bed",
+        polygon=rectangle((0.0, 7.0), length=2.4, width=1.4, angle_deg=90.0),
+        top_m=0.6,
+    )
+
+    def test_one_foot_over_the_bed_is_not_being_in_it(self):
+        """On the floor in front of the bed, feet reaching under its edge."""
+        feet_at_near_edge = 5.8 - 1.0  # most of the body stays off the bed
+        f = extractor(ZoneMap([self.BED])).extract(_lying(feet_at_near_edge, 0.60), 0.0)
+        assert f is not None and f.supported_by_bed is None
+
+    def test_hips_over_the_bed_count_with_the_feet_past_its_end(self):
+        """A camera looking along the bed: the feet project past the box."""
+        bed = Zone(
+            name="bed",
+            kind="bed",
+            polygon=rectangle((0.0, 7.6), length=2.0, width=1.4, angle_deg=90.0),
+            top_m=0.6,
+        )
+        f = extractor(ZoneMap([bed])).extract(_lying(6.3, 0.60), 0.0)
+        assert f is not None and f.supported_by_bed == "bed"

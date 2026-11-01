@@ -1,0 +1,7 @@
+{
+  "clip_id": "neg_f6_02",
+  "duration_s": 31.56,
+  "segments": [
+    { "start_s": 0.73, "end_s": 30.56, "posture": "on_ground" }
+  ]
+}

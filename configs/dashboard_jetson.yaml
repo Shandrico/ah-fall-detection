@@ -79,6 +79,10 @@ dashboard:
   # quality 75 (~50 KB/frame) instead of full 1080p at 92 (~250 KB/frame).
   jpeg_quality: 75
   stream_max_width: 960
+  # Trained posture tree (pilot 01-08, 27 Oct students, 29 Oct fall student 01; knows
+  # on_ground), shown next to the rule state as "| model: ..." for live comparison.
+  # Display only; alerts use the rules. Git-ignored file -- set to "" if models/ is missing.
+  posture_model: "models/posture_v3_tree.joblib"
   # The camera picker. Each entry carries its own calibration, so switching
   # cameras switches calibration too. A connected RealSense is also auto-added,
   # but list it here explicitly so it gets calib/d435i.yaml (the auto entry has

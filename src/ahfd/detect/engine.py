@@ -41,6 +41,9 @@ class DetectionEngine:
     def state_of(self, track_id: int):
         return self.fall.state_of(track_id)
 
+    def possible_fall_of(self, track_id: int, now: float) -> bool:
+        return self.fall.possible_fall_of(track_id, now)
+
     def bed_phase_of(self, track_id: int):
         return self.bed.phase_of(track_id) if self.bed is not None else "UNKNOWN"
 

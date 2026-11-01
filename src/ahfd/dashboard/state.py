@@ -37,7 +37,8 @@ from ahfd.dashboard.bed_modes import DEFAULT_BED_MODE, VALID_BED_MODES, BedMode
 
 # Which event types are a standing alert a nurse must clear, versus
 # informational. Drives the triage queue and the "open alerts" count.
-ALERTING_TYPES = frozenset({"FALL_CONFIRMED", "PERSON_DOWN"})
+FALL_ALERTS = frozenset({"FALL_SUSPECTED", "FALL_CONFIRMED", "PERSON_DOWN"})
+ALERTING_TYPES = FALL_ALERTS
 STALE_FRAME_S = 3.0
 
 
@@ -473,6 +474,24 @@ class DashboardState:
                     else None
                 ),
             }
+
+    def mark_recovered(self, track_id: int, clock: str, gen: int = 0) -> bool:
+        """Flag this person's open fall alerts: they are up again.
+
+        Only a flag, for whoever is deciding to acknowledge. The alert stays
+        open, because a tracking glitch can read a fallen patient as up for a
+        moment and that must never silently clear a fall. True if this person
+        had a fall alert still outstanding or already acknowledged.
+        """
+        with self._lock:
+            if gen != self._gen:
+                return False
+            found = False
+            for event in self._events:
+                if event.get("track_id") == track_id and event.get("type") in FALL_ALERTS:
+                    event["recovered_clock"] = clock
+                    found = True
+            return found
 
     def acknowledge(self, event_id: str) -> None:
         with self._lock:

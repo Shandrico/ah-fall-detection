@@ -370,9 +370,11 @@ class TestNothingFiresWhenItShouldNot:
         """
         m = FallStateMachine()
         frames = hold(0.0, 12.0, h_torso=0.20, floor_spread=SPREAD_DOWN, motion=0.02)
-        events = types_of(run(m, frames))
-        assert "FALL_CONFIRMED" not in events
-        assert "FALL_SUSPECTED" not in events
+        events = run(m, frames)
+        assert "FALL_CONFIRMED" not in types_of(events)
+        # It does alert: somebody is on the floor. It just claims no impact.
+        suspected = [e for e in events if e.type == "FALL_SUSPECTED"]
+        assert len(suspected) == 1 and suspected[0].evidence["no_impact_detected"]
 
     def test_person_down_but_moving_is_not_confirmed(self):
         """Someone doing floor exercises, or actively getting up."""
@@ -398,8 +400,8 @@ class TestInterruptedObservations:
             for f in hold(2.0, 20.0, h_torso=0.20, floor_spread=SPREAD_DOWN)
         ]
         assert run(m, bad) == []
-        assert run(m, hold(22.0, 20.0, h_torso=0.20,
-                           floor_spread=SPREAD_DOWN)) == []
+        assert types_of(run(m, hold(22.0, 20.0, h_torso=0.20,
+                                    floor_spread=SPREAD_DOWN))) == ["FALL_SUSPECTED"]
         event = m.update(feats(42.0, h_torso=0.20, floor_spread=SPREAD_DOWN))
         assert event is not None and event.type == "PERSON_DOWN"
         assert event.t_trigger == 22.0
@@ -410,15 +412,16 @@ class TestInterruptedObservations:
         m = FallStateMachine()
         run(m, fall_sequence(down_s=1.0))
         assert m._tracks[1].trigger_t is not None
-        m.update(Features(**{**feats(3.4).__dict__, **interruption}))
+        # Longer than down_grace_s: brief dropouts are held (TestDownFlicker).
+        run(m, [Features(**{**f.__dict__, **interruption}) for f in hold(3.4, 2.0)])
         assert m._tracks[1].trigger_t is None
         assert m._tracks[1].height_log == []
         assert not m._tracks[1].suspected
-        assert run(m, hold(4.0, 20.0, h_torso=0.20,
-                           floor_spread=SPREAD_DOWN)) == []
-        event = m.update(feats(24.0, h_torso=0.20, floor_spread=SPREAD_DOWN))
+        assert types_of(run(m, hold(6.0, 20.0, h_torso=0.20,
+                                    floor_spread=SPREAD_DOWN))) == ["FALL_SUSPECTED"]
+        event = m.update(feats(26.0, h_torso=0.20, floor_spread=SPREAD_DOWN))
         assert event is not None and event.type == "PERSON_DOWN"
-        assert event.t_trigger == 4.0
+        assert event.t_trigger == 6.0
 
     @pytest.mark.parametrize("interruption", INTERRUPTIONS)
     def test_bed_exit_wait_restarts_after_unusable_frames(self, interruption):
@@ -802,3 +805,159 @@ def test_a_fall_caught_while_the_torso_is_still_high_is_not_dropped():
     frames += hold(t, 12.0, h_torso=0.40, floor_spread=SPREAD_DOWN, motion=0.02)
     kinds = types_of(run(m, frames))
     assert "FALL_SUSPECTED" in kinds and "FALL_CONFIRMED" in kinds
+
+
+class TestDownFlicker:
+    """A person lying still on the floor whose "down" reading flickers.
+
+    From the 29 Oct student slump (D435f): torso 0.11 m above the floor, but
+    floor_spread dipping to 0.84-0.95 m for a second at a time -- just under
+    down_spread -- which restarted the clock, so PERSON_DOWN never came.
+    """
+
+    def _flickering_rest(self, start: float, seconds: float, *, every_s: float = 4.0, dip: dict):
+        frames = []
+        n = int(seconds * FPS)
+        for i in range(n):
+            t = start + i * DT
+            in_dip = (t - start) % every_s < 0.6
+            kwargs = dict(h_torso=0.20, floor_spread=SPREAD_DOWN, motion=0.02)
+            if in_dip:
+                kwargs.update(dip)
+            frames.append(feats(t, **kwargs))
+        return frames
+
+    def test_a_low_torso_with_a_short_spread_is_down(self):
+        m = FallStateMachine()
+        # Joined already lying (no drop), so this is the slow-slump path.
+        frames = hold(0.0, 25.0, h_torso=0.11, floor_spread=0.85, motion=0.02)
+        assert "PERSON_DOWN" in types_of(run(m, frames))
+
+    def test_a_short_spread_with_a_raised_torso_is_not_down(self):
+        # Kneeling / sitting on the floor reads >= 0.58 m: keep the old band.
+        m = FallStateMachine()
+        frames = hold(0.0, 2.0) + hold(2.0, 30.0, h_torso=0.60, floor_spread=0.85, motion=0.02)
+        assert "PERSON_DOWN" not in types_of(run(m, frames))
+
+    def test_brief_non_down_frames_do_not_restart_the_slow_slump_clock(self):
+        m = FallStateMachine()
+        dip = dict(h_torso=0.45, floor_spread=0.7)  # neither path calls this down
+        frames = self._flickering_rest(0.0, 25.0, dip=dip)
+        assert "PERSON_DOWN" in types_of(run(m, frames))
+
+    def test_brief_low_confidence_frames_do_not_cancel_a_fall(self):
+        m = FallStateMachine()
+        frames = fall_sequence(down_s=1.0)
+        t = frames[-1].t + DT
+        frames += self._flickering_rest(t, 12.0, dip=dict(mean_conf=0.1))
+        assert "FALL_CONFIRMED" in types_of(run(m, frames))
+
+    def test_getting_up_still_ends_the_rest(self):
+        # Sustained recovery (beyond the grace) cancels: a near miss, no page.
+        m = FallStateMachine()
+        frames = fall_sequence(down_s=3.0)
+        t = frames[-1].t + DT
+        frames += hold(t, 10.0)  # standing again
+        events = types_of(run(m, frames))
+        assert "FALL_CONFIRMED" not in events
+        assert "NEAR_MISS" in events
+
+    def test_a_long_dropout_still_interrupts(self):
+        m = FallStateMachine()
+        frames = fall_sequence(down_s=3.0)
+        t = frames[-1].t + DT
+        frames += hold(t, 3.0, h_torso=0.20, floor_spread=SPREAD_DOWN, mean_conf=0.1)
+        t = frames[-1].t + DT
+        frames += hold(t, 6.0, h_torso=0.20, floor_spread=SPREAD_DOWN, motion=0.02)
+        assert "FALL_CONFIRMED" not in types_of(run(m, frames))
+
+
+class TestDownHandover:
+    """A person lying on the floor who comes back under a new track id."""
+
+    def test_a_new_id_at_the_same_spot_inherits_the_rest(self):
+        m = FallStateMachine()
+        run(m, hold(0.0, 12.0, h_torso=0.20, floor_spread=SPREAD_DOWN, motion=0.02))
+        m.retain_only(set())  # id 1 lost for 1.5 s
+        frames = hold(13.5, 10.0, track_id=2, h_torso=0.20, floor_spread=SPREAD_DOWN, motion=0.02)
+        down = [e for e in run(m, frames) if e.type == "PERSON_DOWN"]
+        assert down and down[0].t_trigger == 0.0
+
+    def test_no_handover_far_away(self):
+        m = FallStateMachine()
+        run(m, hold(0.0, 12.0, h_torso=0.20, floor_spread=SPREAD_DOWN, motion=0.02))
+        m.retain_only(set())
+        frames = hold(13.5, 10.0, track_id=2, h_torso=0.20, floor_spread=SPREAD_DOWN,
+                      motion=0.02, contact=(2.0, 5.0))
+        assert "PERSON_DOWN" not in types_of(run(m, frames))
+
+    def test_no_handover_after_a_long_gap(self):
+        m = FallStateMachine()
+        run(m, hold(0.0, 12.0, h_torso=0.20, floor_spread=SPREAD_DOWN, motion=0.02))
+        m.retain_only(set())
+        frames = hold(17.0, 10.0, track_id=2, h_torso=0.20, floor_spread=SPREAD_DOWN, motion=0.02)
+        assert "PERSON_DOWN" not in types_of(run(m, frames))
+
+    def test_no_handover_to_someone_standing(self):
+        m = FallStateMachine()
+        run(m, hold(0.0, 12.0, h_torso=0.20, floor_spread=SPREAD_DOWN, motion=0.02))
+        m.retain_only(set())
+        run(m, hold(13.5, 2.0, track_id=2))  # a standing person at that spot
+        assert m.state_of(2) == "UPRIGHT"
+        assert m._tracks[2].down_since is None
+
+
+class TestFloorAlert:
+    """On the floor is never acceptable: alert at once, and getting up doesn't undo it."""
+
+    def test_floor_without_impact_alerts_within_floor_alert_s(self):
+        th = FallThresholds()
+        events = run(FallStateMachine(), hold(0.0, 3.0, h_torso=0.20, floor_spread=SPREAD_DOWN))
+        assert types_of(events) == ["FALL_SUSPECTED"]
+        assert events[0].t_alert == pytest.approx(th.floor_alert_s, abs=0.1)
+
+    def test_shorter_than_floor_alert_s_is_silent(self):
+        events = run(FallStateMachine(), hold(0.0, 1.0, h_torso=0.20, floor_spread=SPREAD_DOWN))
+        assert events == []
+
+    def test_getting_up_reports_recovery_and_the_next_time_down_alerts_again(self):
+        m = FallStateMachine()
+        first = run(m, hold(0.0, 3.0, h_torso=0.20, floor_spread=SPREAD_DOWN))
+        up = run(m, hold(3.0, 4.0, h_torso=1.1))
+        again = run(m, hold(7.0, 3.0, h_torso=0.20, floor_spread=SPREAD_DOWN))
+        assert types_of(first) == ["FALL_SUSPECTED"]
+        assert types_of(up) == ["NEAR_MISS"]
+        assert types_of(again) == ["FALL_SUSPECTED"]
+
+    def test_a_confirmed_fall_is_not_alerted_again_while_still_down(self):
+        events = run(FallStateMachine(), fall_sequence(down_s=30.0))
+        assert types_of(events).count("FALL_SUSPECTED") == 1
+
+
+class TestPossibleFallFlag:
+    """An on-screen flag only: it must never change states or events."""
+
+    def test_a_fast_torso_drop_raises_the_flag_for_a_moment(self):
+        m = FallStateMachine()
+        run(m, fall_sequence(down_s=6.0))
+        assert m._tracks[1].possible_until > -math.inf
+
+    def test_standing_still_never_raises_it(self):
+        m = FallStateMachine()
+        run(m, hold(0.0, 5.0, h_torso=1.1))
+        assert not m.possible_fall_of(1, 5.0)
+
+    def test_it_clears_after_the_hold(self):
+        m = FallStateMachine()
+        run(m, fall_sequence(down_s=6.0))
+        until = m._tracks[1].possible_until
+        assert m.possible_fall_of(1, until)
+        assert not m.possible_fall_of(1, until + 0.1)
+        assert not m.possible_fall_of(99, until)
+
+    def test_a_drop_onto_a_bed_is_not_flagged(self):
+        m = FallStateMachine()
+        run(m, hold(0.0, 2.0, h_torso=1.1, zones=()))
+        for f in hold(2.0, 1.0, h_torso=0.55, supported_by_bed="bed_2"):
+            m.update(f)
+        assert m._tracks[1].possible_until == -math.inf

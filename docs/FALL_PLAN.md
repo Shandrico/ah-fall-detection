@@ -105,3 +105,20 @@ shifts the labels to the other camera's clock.
 | Slow slumps (f3) caught by PERSON_DOWN | report | all students |
 
 Say "staged falls by N healthy student volunteers on crash mats", never patient falls.
+
+## Alert policy and the 29 Oct mounts (31 Oct)
+
+- **Alerts:** a fall-risk patient on the floor is never acceptable, so `FALL_SUSPECTED` now alerts: 0.3 s after
+  landing from an impact, or after `floor_alert_s` (1.5 s) reading down off a bed with no impact. `FALL_CONFIRMED`
+  and `PERSON_DOWN` escalate it. Getting up does not cancel it: `NEAR_MISS` marks the open alert "person is up again"
+  and a person acknowledges it. A quick recovered fall and a kneel look the same in pose (0.45 m drop in 1 s to ~0.7 m
+  for ~3 s), so a kneel alerts too. Raising `floor_alert_s` past ~3 s quiets the kneel and loses those falls.
+- **Detection, not prediction:** nothing here predicts a fall. The earliest signals before landing are bed-exit
+  warnings (someone starting to leave the bed, a risk rather than a fall) and, for fast falls only, the on-screen `FALLING` state.
+- **Bed support:** one ankle over a bed no longer counts; enough of the body must be over it, or the hips. Chairs keep the old rule.
+- **The cameras swapped on 29 Oct:** D435i from the side, D435f along the beds (the reverse of the pilot and 27 Oct).
+  Compare a lying torso's image tilt to check. Train and compare by viewpoint, not camera name (`phase_v3_side`, `phase_v3_along`).
+- **The depth floor fit reads low** (about 4 deg against the pilot's IMU), so colour tilt and `depth_ground` stay separate.
+  The 29 Oct values are estimates (see the headers of `calib/*_20261029.yaml`): tape and a phone inclinometer would beat them.
+- **The bed moved during the session:** `f1_01` (13:09) needs its own boxes (`calib/*_20261029_f1_01.yaml`). From `neg_f7_01` (13:22) on,
+  the view matches the staff clips the boxes were drawn on. `f1_02` has not been checked, because it is locked.

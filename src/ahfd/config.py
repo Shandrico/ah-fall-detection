@@ -67,6 +67,11 @@ class DetectConfig(BaseModel):
 
     down_spread: tuple[float, float] = (0.9, 3.0)
     down_h_torso: float = 0.90
+    down_low_torso_h: float = 0.30  # torso this low: down despite a short spread
+    down_low_spread_min: float = 0.60
+    down_grace_s: float = 1.5  # brief non-down frames don't end a floor rest
+    down_handover_s: float = 3.0  # a new id appearing down where a down track
+    down_handover_m: float = 0.8  # was lost this recently/close inherits its rest
 
     # A seated body has a near-vertical torso even when its floor_spread reads
     # like a fallen one's. torso_tilt (an image angle, so calibration-free)
@@ -90,7 +95,12 @@ class DetectConfig(BaseModel):
     min_track_age_s: float = 1.0
     rest_deadline_s: float = 2.5
 
-    suspect_s: float = 1.5
+    suspect_s: float = 0.3  # landed after an impact: alert almost at once
+    floor_alert_s: float = 1.5  # on the floor without an impact: see FallThresholds
+    possible_drop_m: float = 0.15  # on-screen "possible fall" only: see FallThresholds
+    possible_drop_s: float = 0.5
+    possible_from_h: float = 0.70
+    possible_hold_s: float = 2.0
     confirm_s: float = 8.0
     confirm_motion_max: float = 0.15
     recover_h: float = 0.70
@@ -225,6 +235,9 @@ class DashboardConfig(BaseModel):
     # full frame. A 1080p frame at quality 90 is ~250 KB, ~20 Mbit/s at 10 fps,
     # more than a remote viewer over SSH/VPN usually gets; 960 px is ~1/5 of it.
     stream_max_width: int = Field(default=0, ge=0)
+    # Trained posture model (.joblib) shown NEXT TO the rule state, for live
+    # comparison only -- alerts never read it. Empty = off.
+    posture_model: str = ""
 
     # Cameras offered in the page's picker. A connected RealSense is appended
     # automatically; nothing else is probed, because scanning webcam indices is

@@ -1,0 +1,10 @@
+{
+  "clip_id": "neg_f7_02",
+  "duration_s": 24.53,
+  "segments": [
+    { "start_s": 0.7, "end_s": 1.7, "posture": "upright" },
+    { "start_s": 6.7, "end_s": 10.7, "posture": "upright" },
+    { "start_s": 12.7, "end_s": 18.7, "posture": "on_ground" },
+    { "start_s": 21.7, "end_s": 23.5, "posture": "upright" }
+  ]
+}

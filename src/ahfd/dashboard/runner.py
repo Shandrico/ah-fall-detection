@@ -17,11 +17,13 @@ import math
 import threading
 import time
 import uuid
+from pathlib import Path
 
 import cv2
 import numpy as np
 
 from ahfd.dashboard.state import DashboardState
+from ahfd.ml.clip_review import GETTING_UP_PHASES
 
 
 class PipelineRunner:
@@ -60,6 +62,32 @@ class PipelineRunner:
         self._sink = None
         self._track_bed_modes: dict[int, tuple[str, str, int]] = {}
         self._bed_incident_ids: dict[tuple[str, int], str] = {}
+        self._posture_model = None
+
+    def _load_posture_model(self) -> None:
+        """Load the display-only trained posture model, if configured.
+
+        A missing or broken model only switches the comparison off (and says
+        why on the page); it must never stop detection.
+        """
+        path = self.cfg.dashboard.posture_model
+        if not path:
+            return
+        from ahfd.ml.live_posture import LivePostureModel
+
+        try:
+            self._posture_model = LivePostureModel(
+                path, min_keypoint_score=self.cfg.pose.min_keypoint_score
+            )
+        except Exception as exc:  # noqa: BLE001 - shown on the page instead
+            self._posture_model = None
+            self.state.update_runtime(
+                self.gen, posture_model_error=f"{path}: {exc}"[:200]
+            )
+            return
+        self.state.update_runtime(
+            self.gen, posture_model=Path(path).name, posture_model_error=None
+        )
 
     @property
     def alive(self) -> bool:
@@ -199,6 +227,7 @@ class PipelineRunner:
                         ],
                         gen=gen,
                     )
+                self._load_posture_model()
 
             estimator = build_estimator(cfg.pose)
             tracker = SimpleTracker(min_keypoint_score=cfg.pose.min_keypoint_score, max_miss_s=1.0)
@@ -450,6 +479,8 @@ class PipelineRunner:
             if machine is not None and extractor is not None:
                 extractor.retain_only(tracker.live_ids)
                 machine.retain_only(tracker.live_ids)
+                if self._posture_model is not None:
+                    self._posture_model.retain_only(tracker.live_ids)
                 observed_ids: set[int] = set()
                 for person in pose.people:
                     if person.track_id is None:
@@ -461,6 +492,10 @@ class PipelineRunner:
                             info["height_m"] = round(features.h_torso, 2)
                         if features.zones:
                             info["zone"] = features.zones[0]
+                        if self._posture_model is not None:
+                            info["model_posture"] = self._posture_model.predict(
+                                person.track_id, features, person, extractor.ground
+                            )
                         associated_bed = (
                             features.associated_bed or features.supported_by_bed
                         )
@@ -534,12 +569,21 @@ class PipelineRunner:
                             # ``ahfd run``. Previously it only painted the browser.
                             if self._sink is not None:
                                 self._sink.emit(event)
+                            # A person getting up updates their open fall alert
+                            # rather than raising a second one. With no fall
+                            # alert yet it is the only alert for that fall.
+                            already_alerted = (
+                                event.type == "NEAR_MISS"
+                                and self.state.mark_recovered(
+                                    event.track_id, time.strftime("%H:%M:%S"), gen=self.gen
+                                )
+                            )
                             self.state.publish_event(
                                 {
                                     "event_id": event_id,
                                     "type": event.type,
                                     "severity": event.severity,
-                                    "alerting": is_dashboard_alert(event),
+                                    "alerting": is_dashboard_alert(event) and not already_alerted,
                                     "reopen_on_escalation": escalated_incident,
                                     "monitoring_mode": mode,
                                     "track_id": event.track_id,
@@ -550,12 +594,14 @@ class PipelineRunner:
                                 },
                                 gen=self.gen,
                             )
-                            if event.type in ("FALL_CONFIRMED", "PERSON_DOWN"):
+                            if event.type in ("FALL_SUSPECTED", "FALL_CONFIRMED", "PERSON_DOWN"):
                                 alert = event.describe()
 
                     # Read states after update so the dashboard is not one frame
                     # behind. Bed phase/support/availability remain separate.
                     info["state"] = machine.state_of(person.track_id)
+                    if machine.possible_fall_of(person.track_id, pose.t):
+                        info["possible_fall"] = True
                     if hasattr(machine, "bed_snapshot_of"):
                         bed = machine.bed_snapshot_of(person.track_id, pose.t)
                         if bed is not None:
@@ -611,7 +657,18 @@ class PipelineRunner:
                             "state": "TRACKED",
                         }
 
-            states = {tid: info["state"] for tid, info in track_info.items()}
+            states = {
+                tid: info["state"]
+                + (f" | model: {info['model_posture']}" if "model_posture" in info else "")
+                + (" | POSSIBLE FALL" if info.get("possible_fall") else "")
+                + (
+                    " | GETTING UP"
+                    if info.get("bed_phase") in GETTING_UP_PHASES
+                    and info["state"] not in ("ON_GROUND", "FALLING")
+                    else ""
+                )
+                for tid, info in track_info.items()
+            }
 
             dt = time.perf_counter() - t0
             inst = 1.0 / dt if dt > 0 else 0.0

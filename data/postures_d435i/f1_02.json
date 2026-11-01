@@ -2,7 +2,25 @@
   "clip_id": "f1_02_label",
   "duration_s": 41.2,
   "segments": [
-    { "start_s": 1, "end_s": 20, "posture": "in_bed" },
-    { "start_s": 23, "end_s": 41.17, "posture": "on_ground" }
+    {
+      "start_s": 1,
+      "end_s": 3,
+      "posture": "in_bed"
+    },
+    {
+      "start_s": 5,
+      "end_s": 9,
+      "posture": "sitting"
+    },
+    {
+      "start_s": 15,
+      "end_s": 20,
+      "posture": "sitting"
+    },
+    {
+      "start_s": 23,
+      "end_s": 41.17,
+      "posture": "on_ground"
+    }
   ]
 }

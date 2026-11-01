@@ -1,0 +1,11 @@
+{
+  "clip_id": "neg_f6_02",
+  "duration_s": 31.56,
+  "falls": [
+    {
+      "t_impact": 0.73,
+      "t_start": 0,
+      "notes": "deliberate lie-down: on the floor is not acceptable for a fall-risk patient, so an alert is expected"
+    }
+  ]
+}

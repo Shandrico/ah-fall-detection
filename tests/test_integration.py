@@ -203,7 +203,8 @@ class TestNoFalseAlarmsEndToEnd:
         bed = Zone(
             name="bed_2",
             kind="bed",
-            polygon=rectangle((0.0, 6.0), length=2.4, width=1.4, angle_deg=0.0),
+            # Long axis along the body (feet at y=6, head towards y=7.7).
+            polygon=rectangle((0.0, 6.8), length=2.4, width=1.4, angle_deg=90.0),
             top_m=0.55,
         )
         # A body on the bed surface rather than the floor.

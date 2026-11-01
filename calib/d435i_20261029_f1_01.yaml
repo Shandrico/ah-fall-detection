@@ -1,0 +1,46 @@
+camera_id: d435i_20261029
+verified_for_onsite: false
+ankle_height_baseline_m: null
+camera:
+  width: 1920
+  height: 1080
+  fx: 1366.562
+  fy: 1366.669
+  cx: 961.371
+  cy: 575.348
+  height_m: 2.6
+  pitch_deg: 25.0
+  roll_deg: 1.7
+zones:
+- name: nearest
+  kind: bed
+  top_m: 0.6
+  risk_level: medium
+  polygon:
+  - - -2.129
+    - 3.484
+  - - -1.724
+    - 4.533
+  - - 0.029
+    - 3.444
+  - - -0.405
+    - 2.406
+- name: middle
+  kind: bed
+  top_m: 0.6
+  risk_level: medium
+  polygon:
+  - - -0.518
+    - 4.49
+  - - -0.014
+    - 5.848
+  - - 1.384
+    - 4.838
+  - - 0.891
+    - 3.547
+notes: 'f1_01 only: bed position at 13:09 on 29 Oct; boxes = d435i_20261029 shifted
+  (128,-8) px.'
+depth_ground:
+  height_m: 2.64
+  pitch_deg: 18.3
+  roll_deg: 1.5

@@ -1,0 +1,8 @@
+{
+  "clip_id": "f3_01",
+  "duration_s": 55.52,
+  "falls": [
+    { "t_impact": 6.29, "t_start": 1.79, "notes": "derived from postures: upright -> on_ground" },
+    { "t_impact": 42.29, "t_start": 40.29, "notes": "derived from postures: upright -> on_ground" }
+  ]
+}

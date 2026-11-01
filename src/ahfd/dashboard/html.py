@@ -375,7 +375,7 @@ function card(e, withAck){
   return `<div class="ev sev${sev} ${e.acknowledged?'ack':''}">
     <div class="t"><span>${esc(e.type)}</span><span class="badge">track ${e.track_id}</span></div>
     <div class="m">${esc(e.clock||'')} &middot; ${esc(e.zone||'-')}</div>
-    <div class="evi">${esc(evi(e))}</div>${btn}</div>`;
+    <div class="evi">${esc(evi(e))}</div>${e.recovered_clock?`<div class="evi">person is up again at ${esc(e.recovered_clock)}; check on them, then acknowledge</div>`:''}${btn}</div>`;
 }
 
 async function refresh(){
@@ -463,7 +463,11 @@ async function refresh(){
     const bed = t.bed_phase
       ? `<div class="sub">${esc(t.bed_id || 'unassociated')} &middot; ${esc(t.bed_mode || 'unassigned')} &middot; ${esc(t.bed_phase)} &middot; ${esc(t.bed_support || 'UNKNOWN')} &middot; ${esc(t.observation || 'MONITORING_UNAVAILABLE')}${t.warning_candidate?' &middot; warning candidate':''}</div>`
       : '';
-    return `<div class="chip"><span>Track ${t.track_id}${extra}${bed}</span>
+    const risk = (t.possible_fall ? '<div class="sub" style="color:var(--warn)">POSSIBLE FALL (not an alarm)</div>' : '') +
+      (['TORSO_RISING','SHIFTING_TO_EDGE','EDGE_SITTING','ATTEMPTING_STAND'].includes(t.bed_phase) && !['ON_GROUND','FALLING'].includes(t.state) ? '<div class="sub" style="color:var(--warn)">GETTING UP: bed-exit risk</div>' : '');
+    const model = t.model_posture
+      ? `<div class="sub">trained model: ${esc(t.model_posture)} (display only)</div>` : '';
+    return `<div class="chip"><span>Track ${t.track_id}${extra}${bed}${model}${risk}</span>
       <span class="badge s-${esc(t.state)}">${esc(t.state)}</span></div>`;
   }).join('') : '<div class="empty">none</div>';
   // Without detection there is no posture, only a track id. Say why, or every

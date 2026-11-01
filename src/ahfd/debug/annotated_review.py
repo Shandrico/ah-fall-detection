@@ -160,6 +160,7 @@ _PHASE_COLOURS = {
 _POSTURE_COLOURS = {
     "in_bed": (180, 119, 31), "sitting": (44, 160, 44), "upright": (34, 189, 188), "on_ground": (40, 39, 214),
 }
+_BANNER_COLOURS = {"FALL ALERT": (40, 39, 214), "POSSIBLE FALL": (0, 165, 255), "GETTING UP": (0, 230, 230)}
 _ROWS = (  # (title, attribute, colours) top to bottom in the strip
     ("7-phase label", "label_phase", _PHASE_COLOURS),
     ("7-phase rules", "rule_phase", _PHASE_COLOURS),
@@ -167,6 +168,7 @@ _ROWS = (  # (title, attribute, colours) top to bottom in the strip
     ("4-state label", "label_posture", _POSTURE_COLOURS),
     ("4-state rules", "rule_posture", _POSTURE_COLOURS),
     ("4-state model", "model_posture", _POSTURE_COLOURS),
+    ("alerts", "banner", _BANNER_COLOURS),
 )
 
 
@@ -248,6 +250,7 @@ def export_labelled_review(
             for poly in beds:
                 cv2.polylines(canvas, [poly], True, (0, 255, 255), 3, cv2.LINE_AA)
             _draw_table(cv2, canvas, pred, frame.t - t_first, n)
+            _draw_banner(cv2, canvas, pred)
             canvas = _with_strip(cv2, np, canvas, strip, (frame.t - t_first) / duration)
 
             if encoder is None:
@@ -303,6 +306,17 @@ def _bed_outlines(np, calib):
         else:
             polys.append(np.round(np.array(pts)).astype(np.int32).reshape(-1, 1, 2))
     return polys
+
+
+def _draw_banner(cv2, canvas, pred) -> None:
+    """Top-right: what the system is showing staff at this moment."""
+    if pred is None or pred.banner is None:
+        return
+    text = pred.banner + (" (%s)" % pred.alert_type if pred.alert_type else "")
+    (w, h), _ = cv2.getTextSize(text, cv2.FONT_HERSHEY_SIMPLEX, 1.1, 3)
+    x1 = canvas.shape[1] - 16
+    cv2.rectangle(canvas, (x1 - w - 24, 16), (x1, 16 + h + 28), _BANNER_COLOURS[pred.banner], -1)
+    cv2.putText(canvas, text, (x1 - w - 12, 16 + h + 12), cv2.FONT_HERSHEY_SIMPLEX, 1.1, (0, 0, 0), 3, cv2.LINE_AA)
 
 
 def _draw_table(cv2, canvas, pred, t_s: float, index: int) -> None:

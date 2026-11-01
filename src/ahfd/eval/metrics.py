@@ -33,11 +33,10 @@ from dataclasses import dataclass, field
 
 from ahfd.eval.annotations import GroundTruth, PredictedEvent
 
-# What counts as an alerting event. BED_EXIT and NEAR_MISS are informational --
-# they are not claims that a fall happened, so they are excluded from fall
-# precision/recall. Scoring them as false positives would punish the system for
-# working as designed.
-ALERTING_TYPES = frozenset({"FALL_CONFIRMED", "PERSON_DOWN"})
+# What counts as an alerting event. FALL_SUSPECTED is the first alert for a fall;
+# FALL_CONFIRMED and PERSON_DOWN escalate it. BED_EXIT and NEAR_MISS are not claims
+# that somebody is on the floor now, so they stay out of fall precision/recall.
+ALERTING_TYPES = frozenset({"FALL_SUSPECTED", "FALL_CONFIRMED", "PERSON_DOWN"})
 
 DEFAULT_PRE_S = 2.0
 DEFAULT_POST_S = 30.0
@@ -111,8 +110,15 @@ def match_clip(
                 )
             )
 
+    # An escalation of a fall already matched is the same incident, not an extra
+    # alarm: one fall gives FALL_SUSPECTED and then FALL_CONFIRMED.
     for i, alert in enumerate(alerts):
-        if i not in claimed:
+        same_incident = any(
+            alert.type != m.event.type
+            and m.fall_impact - pre_s <= alert.t_alert <= m.fall_impact + post_s
+            for m in result.true_positives
+        )
+        if i not in claimed and not same_incident:
             result.false_positives.append(alert)
 
     return result

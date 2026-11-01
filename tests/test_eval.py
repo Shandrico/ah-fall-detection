@@ -103,6 +103,12 @@ class TestMatching:
         assert result.true_positives[0].event.t_alert == 10.5
         assert result.n_fp == 1
 
+    def test_an_escalation_of_a_matched_fall_is_not_a_false_alarm(self):
+        truth = GroundTruth("c1", duration_s=60.0, falls=(fall(10.0),))
+        result = match_clip(truth, [alert(10.5, type="FALL_SUSPECTED"), alert(18.0)])
+        assert result.n_tp == 1
+        assert result.n_fp == 0
+
     def test_informational_events_are_not_scored(self):
         """BED_EXIT and NEAR_MISS are not fall claims, so they are neither
         hits nor false positives."""

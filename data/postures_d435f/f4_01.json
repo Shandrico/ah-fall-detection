@@ -1,0 +1,8 @@
+{
+  "clip_id": "f4_01",
+  "duration_s": 46.55,
+  "segments": [
+    { "start_s": 0.7, "end_s": 10.7, "posture": "upright" },
+    { "start_s": 13.7, "end_s": 45.13, "posture": "on_ground" }
+  ]
+}

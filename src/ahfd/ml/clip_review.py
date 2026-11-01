@@ -25,6 +25,12 @@ RULE_POSTURE = {
 }
 
 
+# Bed phases that mean the patient is on the way out: the early, risk-level warning.
+GETTING_UP_PHASES = frozenset({"TORSO_RISING", "SHIFTING_TO_EDGE", "EDGE_SITTING", "ATTEMPTING_STAND"})
+FALL_ALERT_EVENTS = frozenset({"FALL_SUSPECTED", "PERSON_DOWN", "FALL_CONFIRMED", "NEAR_MISS"})
+FALL_ALERT_SHOW_S = 5.0  # how long the video shows an alert after it fires
+
+
 @dataclass
 class FramePrediction:
     """One frame of the clip's subject: what each source says."""
@@ -37,6 +43,9 @@ class FramePrediction:
     model_phase: str | None = None
     label_posture: str | None = None
     label_phase: str | None = None
+    # The most urgent thing the system is showing: FALL ALERT / POSSIBLE FALL / GETTING UP.
+    banner: str | None = None
+    alert_type: str | None = None
 
 
 @dataclass
@@ -131,7 +140,7 @@ def predict_clip(
 
     tracks, calibration = Path(tracks), Path(calibration)
     meta = SourceMeta(uri="tracks", width=1920, height=1080, fps=30.0)
-    extractor, machine, _sink, calib = _build_detection(cfg, str(calibration), meta)
+    extractor, machine, _sink, calib = _build_detection(cfg, str(calibration), meta, emit_bed_early_warning=True)
     temporal = CausalTemporalSummarizer(
         max_gap_s=cfg.bed_activity.cusum.max_gap_s, near_edge_m=cfg.bed_activity.near_edge_enter_m,
     )
@@ -143,6 +152,7 @@ def predict_clip(
     subject = subject_track(tracks, calib, 0.3)
     out = ClipPredictions(t0=math.nan, subject=subject)
     last_seen: dict[int, float] = {}
+    last_alert: tuple[str, float] | None = None
     for pose in _read(tracks):
         if math.isnan(out.t0):
             out.t0 = pose.t
@@ -162,7 +172,9 @@ def predict_clip(
             f = extractor.extract(person, pose.t)
             if f is None:
                 continue
-            machine.update_all(f)
+            for event in machine.update_all(f):
+                if event.type in FALL_ALERT_EVENTS:
+                    last_alert = (event.type, pose.t)
             snap = machine.bed_snapshot_of(person.track_id, pose.t)
             summary = temporal.update(f, valid=f.has_geometry(), context={
                 "edge_velocity_mps": snap.edge_velocity_mps if snap else None,
@@ -187,6 +199,12 @@ def predict_clip(
         pred.rule_posture = RULE_POSTURE.get(machine.state_of(person.track_id))
         if snap is not None and snap.phase not in (None, "UNKNOWN"):
             pred.rule_phase = snap.phase
+        if last_alert is not None and pose.t - last_alert[1] <= FALL_ALERT_SHOW_S:
+            pred.banner, pred.alert_type = "FALL ALERT", last_alert[0]
+        elif machine.possible_fall_of(person.track_id, pose.t):
+            pred.banner = "POSSIBLE FALL"
+        elif pred.rule_phase in GETTING_UP_PHASES and pred.rule_posture != "on_ground":
+            pred.banner = "GETTING UP"
         if f.has_geometry():
             row = P.features_row(f, person, extractor.ground, min_kp)
             if posture is not None:

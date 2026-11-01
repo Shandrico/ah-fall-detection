@@ -1,0 +1,11 @@
+{
+  "clip_id": "f5_01",
+  "duration_s": 13.52,
+  "falls": [
+    {
+      "t_impact": 2.7,
+      "t_start": 1.7,
+      "notes": "recovered fall: still a fall, an alert is expected (user, 31 Oct)"
+    }
+  ]
+}

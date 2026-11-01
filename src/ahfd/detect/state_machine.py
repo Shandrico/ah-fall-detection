@@ -34,6 +34,8 @@ before any fall data exists and lets any alert be explained in plain language.
 
 from __future__ import annotations
 
+import math
+
 from dataclasses import dataclass, field
 from typing import Literal
 
@@ -128,6 +130,38 @@ class FallThresholds:
     # existed.
     down_spread: tuple[float, float] = (0.9, 3.0)  # metres, ~a body length
     down_h_torso: float = 0.90
+    # A torso this close to the floor is down even when the body foreshortens
+    # (curled up, or lying along the line of sight) and floor_spread dips
+    # below down_spread: a student lying still on the floor (h_torso 0.11 m)
+    # read 0.84-0.95 m and flickered out of "down". Sitting on the floor or
+    # kneeling reads >= 0.58 m, lying in bed without zones ~0.64 m.
+    down_low_torso_h: float = 0.30
+    down_low_spread_min: float = 0.60
+    # Frames that briefly stop looking down (a spread dip, a low-confidence
+    # frame) do not end a floor rest; only this long without "down" does.
+    # Without it a single flicker restarted the confirm_s / slow_down_s clock,
+    # so a person lying still on the floor for 30 s never alerted.
+    down_grace_s: float = 1.5
+    # A person lying on the floor can drop out of pose for a second or two
+    # and come back under a NEW track id (29 Oct trip: 6 ids in 23 s lying
+    # still), each of which restarted the confirm clock. A new track that
+    # appears down, where a just-lost down track was, inherits its rest.
+    down_handover_s: float = 3.0
+    down_handover_m: float = 0.8
+    # Being on the floor is never acceptable for a fall-risk patient, however
+    # they got there or however quickly they get up, so reading "down" off a
+    # bed for this long alerts at once, impact or not. Pose cannot tell a quick
+    # recovered fall (29 Oct near miss: 0.45 m drop in 1 s to 0.7 m, ~3 s) from a
+    # kneel (the same numbers), so a kneel alerts too; raising this past ~3 s
+    # quiets the kneel and loses those falls.
+    floor_alert_s: float = 1.5
+    # On-screen "possible fall", never an alarm: the torso dropping this far this
+    # quickly from standing height. About 0.5-2 s before landing on the 29 Oct falls,
+    # but also ~20-30 false flags an hour during active movement, so it pages nobody.
+    possible_drop_m: float = 0.15
+    possible_drop_s: float = 0.5
+    possible_from_h: float = 0.70
+    possible_hold_s: float = 2.0
 
     # Seated bodies keep a near-vertical torso even when floor_spread reads like
     # a fallen one's; torso_tilt (image angle, calibration-free) tells them
@@ -150,7 +184,7 @@ class FallThresholds:
     rest_deadline_s: float = 2.5  # trigger must be followed by rest this soon
 
     # --- confirmation --------------------------------------------------
-    suspect_s: float = 1.5  # on-screen flag
+    suspect_s: float = 0.3  # landed after an impact: alert almost at once
     confirm_s: float = 8.0  # pages a nurse
     confirm_motion_max: float = 0.15  # m/s
     recover_h: float = 0.70  # back above this -> NEAR_MISS, no alarm
@@ -186,6 +220,7 @@ class _TrackState:
     peak_vz: float = 0.0
 
     down_since: float | None = None
+    last_down_t: float | None = None  # last frame that itself looked down
     suspected: bool = False
 
     sitting_since: float | None = None
@@ -200,6 +235,9 @@ class _TrackState:
     bed_move_emitted: bool = False  # one in-bed-movement alert per movement burst
 
     last_alert_t: float | None = None
+    possible_until: float = -math.inf  # the on-screen flag shows until this time
+    last_t: float | None = None  # last usable frame, for the down handover
+    last_xy: tuple[float, float] | None = None
     height_log: list[tuple[float, float]] = field(default_factory=list)
 
     def age(self, now: float) -> float:
@@ -227,8 +265,15 @@ class FallStateMachine:
         # activity to the independent BedExitStateMachine.
         self.enable_legacy_bed_alerts = enable_legacy_bed_alerts
         self._tracks: dict[int, _TrackState] = {}
+        # Down tracks that just vanished, kept briefly for _adopt_lost_rest.
+        self._lost_down: list[_TrackState] = []
 
     # ------------------------------------------------------------ helpers
+
+    def possible_fall_of(self, track_id: int, now: float) -> bool:
+        """Show the on-screen "possible fall" flag for this track? Never an alarm."""
+        ts = self._tracks.get(track_id)
+        return ts is not None and now <= ts.possible_until
 
     def state_of(self, track_id: int) -> State:
         ts = self._tracks.get(track_id)
@@ -288,11 +333,25 @@ class FallStateMachine:
         if self._clearly_seated(f):
             return False
         lo, hi = self.th.down_spread
+        if (
+            f.h_torso is not None
+            and f.h_torso <= self.th.down_low_torso_h
+            and self.th.down_low_spread_min <= f.floor_spread <= hi
+        ):
+            return True
         if not (lo <= f.floor_spread <= hi):
             return False
         if f.h_torso is not None and f.h_torso > self.th.down_h_torso:
             return False
         return True
+
+    def _held_down(self, ts: _TrackState, now: float) -> bool:
+        """A floor rest in progress whose last down frame is within the grace."""
+        return (
+            ts.down_since is not None
+            and ts.last_down_t is not None
+            and now - ts.last_down_t <= self.th.down_grace_s
+        )
 
     def _on_bed(self, f: Features) -> bool:
         """Is this body supported by a bed rather than the floor?
@@ -324,7 +383,10 @@ class FallStateMachine:
 
     def update(self, f: Features) -> Event | None:
         """Advance one track by one frame. Returns an event, or None."""
-        ts = self._tracks.setdefault(f.track_id, _TrackState())
+        ts = self._tracks.get(f.track_id)
+        if ts is None:
+            ts = self._adopt_lost_rest(f) or _TrackState()
+            self._tracks[f.track_id] = ts
         now = f.t
         if ts.first_seen is None:
             ts.first_seen = now
@@ -338,6 +400,8 @@ class FallStateMachine:
             or f.mean_conf < self.th.min_mean_conf
             or not f.has_geometry()
         ):
+            if self._held_down(ts, now):
+                return None  # a brief dropout while lying: keep the rest going
             self._interrupt_observation(ts)
             self._set_state(ts, "LOW_CONFIDENCE", now)
             return None
@@ -348,6 +412,7 @@ class FallStateMachine:
             return None
 
         assert f.h_torso is not None  # has_geometry() guarantees this
+        ts.last_t, ts.last_xy = now, f.contact_xy
         ts.height_log.append((now, f.h_torso))
         ts.height_log = [
             (t, h) for (t, h) in ts.height_log if now - t <= self.th.drop_window_s * 3
@@ -355,7 +420,18 @@ class FallStateMachine:
 
         zone = f.zones[0] if f.zones else None
         down = self._is_down(f)
+        if down:
+            ts.last_down_t = now
+        elif self._held_down(ts, now) and not self._clearly_seated(f):
+            down = True  # a flicker inside the grace, not a recovery
         on_bed = self._on_bed(f)
+        recent = [h for (t, h) in ts.height_log if now - t <= self.th.possible_drop_s]
+        if (
+            not on_bed
+            and recent[0] >= self.th.possible_from_h
+            and max(recent) - f.h_torso >= self.th.possible_drop_m
+        ):
+            ts.possible_until = now + self.th.possible_hold_s
 
         # --- a fall already in progress: confirm, or cancel --------------
         # Gated on an *active trigger*, not on the state alone. The slow-slump
@@ -509,6 +585,7 @@ class FallStateMachine:
             trigger_t = ts.trigger_t or ts.down_since
             ts.last_alert_t = now
             self._reset_fall(ts)
+            ts.suspected = True  # this rest has alerted; don't alert it again
             self._set_state(ts, "ON_GROUND", now)
             return Event(
                 type="FALL_CONFIRMED",
@@ -538,6 +615,7 @@ class FallStateMachine:
             ts.sitting_since = None
             ts.bed_exit_emitted = False
             ts.down_since = None
+            ts.suspected = False
             ts.bed_assoc_recent = True
             ts.bed_risk_recent = f.bed_risk
             ts.exit_alerted = False  # settled back in bed -> ready for the next exit
@@ -577,6 +655,7 @@ class FallStateMachine:
         # height under-reads); such a frame continues to the UPRIGHT test below.
         if self._clearly_seated(f) and not self._legs_straight(f):
             ts.down_since = None
+            ts.suspected = False
             return self._enter_sitting(ts, f, now, zone)
 
         # Down without ever triggering: slow slump, or joined late.
@@ -584,6 +663,21 @@ class FallStateMachine:
             if ts.down_since is None:
                 ts.down_since = now
             self._set_state(ts, "ON_GROUND", now)
+            if not ts.suspected and now - ts.down_since >= th.floor_alert_s:
+                ts.suspected = True
+                return Event(
+                    type="FALL_SUSPECTED",
+                    track_id=f.track_id,
+                    t_trigger=ts.down_since,
+                    t_alert=now,
+                    zone=zone,
+                    evidence={
+                        "down_s": round(now - ts.down_since, 1),
+                        "h_torso": round(f.h_torso, 2),
+                        "floor_spread": round(f.floor_spread, 2),
+                        "no_impact_detected": True,
+                    },
+                )
             if (
                 now - ts.down_since >= th.slow_down_s
                 and f.motion <= th.confirm_motion_max
@@ -606,7 +700,25 @@ class FallStateMachine:
                 )
             return None
 
+        got_up_at = ts.down_since if ts.suspected else None
         ts.down_since = None
+        ts.suspected = False  # up again: the next time down is a new alert
+        if got_up_at is not None:
+            # Tells whoever holds the open alert the person is up. It does not
+            # close it: someone should still check on them.
+            self._set_state(ts, "RECOVERED", now)
+            return Event(
+                type="NEAR_MISS",
+                track_id=f.track_id,
+                t_trigger=got_up_at,
+                t_alert=now,
+                zone=zone,
+                evidence={
+                    "recovered_after_s": round(now - got_up_at, 1),
+                    "h_torso": round(f.h_torso, 2),
+                    "no_impact_detected": True,
+                },
+            )
 
         # Sitting fallback: the height band alone, for frames where torso_tilt
         # is unavailable (e.g. shoulders or hips not confident).
@@ -712,6 +824,7 @@ class FallStateMachine:
         ts.trigger_min_h = None
         ts.peak_vz = 0.0
         ts.down_since = None
+        ts.last_down_t = None
         ts.suspected = False
         ts.vz_streak = 0
         # Forget the drop that fired this attempt. Otherwise the same old
@@ -733,4 +846,20 @@ class FallStateMachine:
     def retain_only(self, live_ids: set[int]) -> None:
         for tid in list(self._tracks):
             if tid not in live_ids:
-                del self._tracks[tid]
+                ts = self._tracks.pop(tid)
+                if ts.down_since is not None and ts.last_t is not None:
+                    self._lost_down.append(ts)
+
+    def _adopt_lost_rest(self, f: Features) -> _TrackState | None:
+        """The rest of a down track lost moments ago at this spot, if any."""
+        th = self.th
+        self._lost_down = [
+            ts for ts in self._lost_down if f.t - ts.last_t <= th.down_handover_s
+        ]
+        if f.contact_xy is None or not self._is_down(f):
+            return None
+        for ts in self._lost_down:
+            if ts.last_xy is not None and math.dist(ts.last_xy, f.contact_xy) <= th.down_handover_m:
+                self._lost_down.remove(ts)
+                return ts
+        return None

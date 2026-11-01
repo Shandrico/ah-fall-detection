@@ -1,0 +1,11 @@
+{
+  "clip_id": "f1_01",
+  "duration_s": 48.56,
+  "segments": [
+    { "start_s": 0, "end_s": 9.71, "posture": "in_bed" },
+    { "start_s": 11.71, "end_s": 20.71, "posture": "sitting" },
+    { "start_s": 26.71, "end_s": 35.71, "posture": "sitting" },
+    { "start_s": 37.71, "end_s": 38.71, "posture": "upright" },
+    { "start_s": 39.71, "end_s": 47.54, "posture": "on_ground" }
+  ]
+}

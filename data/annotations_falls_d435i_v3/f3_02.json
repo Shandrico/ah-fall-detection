@@ -1,0 +1,7 @@
+{
+  "clip_id": "f3_02_label",
+  "duration_s": 45.2,
+  "falls": [
+    { "t_impact": 5, "t_start": 4, "notes": "derived from postures: upright -> on_ground" }
+  ]
+}
