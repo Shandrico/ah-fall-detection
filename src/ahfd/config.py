@@ -101,6 +101,8 @@ class DetectConfig(BaseModel):
     possible_drop_s: float = 0.5
     possible_from_h: float = 0.70
     possible_hold_s: float = 2.0
+    possible_alert: bool = True  # raises POSSIBLE_FALL; False = on-screen flag only
+    possible_alert_gap_s: float = 10.0
     confirm_s: float = 8.0
     confirm_motion_max: float = 0.15
     recover_h: float = 0.70

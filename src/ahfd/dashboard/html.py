@@ -218,7 +218,7 @@ DASHBOARD_HTML = r"""<!doctype html>
 </div>
 
 <script>
-const RANK = {LOW:0, BED_EXIT:2, BED_EXIT_WARNING:3, NEAR_MISS:1, FALL_SUSPECTED:2, PERSON_DOWN:3, FALL_CONFIRMED:4};
+const RANK = {LOW:0, BED_EXIT:2, BED_EXIT_WARNING:3, NEAR_MISS:1, POSSIBLE_FALL:1, FALL_SUSPECTED:2, PERSON_DOWN:3, FALL_CONFIRMED:4};
 let soundOn = false, lastAlertCount = 0;
 let opts = null, lastSwitchSeq = -1;
 let lastBedsSignature = '';
@@ -463,7 +463,7 @@ async function refresh(){
     const bed = t.bed_phase
       ? `<div class="sub">${esc(t.bed_id || 'unassociated')} &middot; ${esc(t.bed_mode || 'unassigned')} &middot; ${esc(t.bed_phase)} &middot; ${esc(t.bed_support || 'UNKNOWN')} &middot; ${esc(t.observation || 'MONITORING_UNAVAILABLE')}${t.warning_candidate?' &middot; warning candidate':''}</div>`
       : '';
-    const risk = (t.possible_fall ? '<div class="sub" style="color:var(--warn)">POSSIBLE FALL (not an alarm)</div>' : '') +
+    const risk = (t.possible_fall ? '<div class="sub" style="color:var(--warn)">POSSIBLE FALL</div>' : '') +
       (['TORSO_RISING','SHIFTING_TO_EDGE','EDGE_SITTING','ATTEMPTING_STAND'].includes(t.bed_phase) && !['ON_GROUND','FALLING'].includes(t.state) ? '<div class="sub" style="color:var(--warn)">GETTING UP: bed-exit risk</div>' : '');
     const model = t.model_posture
       ? `<div class="sub">trained model: ${esc(t.model_posture)} (display only)</div>` : '';

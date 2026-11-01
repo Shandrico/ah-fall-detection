@@ -184,7 +184,8 @@ class TestSeatedPosture:
         frames += hold(2.4, 12.0, h_torso=0.75,
                        floor_spread=SPREAD_DOWN, torso_tilt=20.0)
 
-        assert run(m, frames) == []
+        # Pose cannot tell a fast sit from the start of a fall: it alerts as possible only.
+        assert types_of(run(m, frames)) == ["POSSIBLE_FALL"]
         assert m.state_of(1) == "SITTING"
         assert m._tracks[1].trigger_t is None
         assert m._tracks[1].last_alert_t is None
@@ -321,7 +322,8 @@ class TestNothingFiresWhenItShouldNot:
             )
             for f in frames
         ]
-        assert types_of(run(m, frames)) == []
+        # The drop onto the bed can only alert as possible: nothing says it is a fall.
+        assert types_of(run(m, frames)) == ["POSSIBLE_FALL"]
 
     def test_low_confidence_track_is_excluded(self):
         m = FallStateMachine()
@@ -927,7 +929,7 @@ class TestFloorAlert:
         again = run(m, hold(7.0, 3.0, h_torso=0.20, floor_spread=SPREAD_DOWN))
         assert types_of(first) == ["FALL_SUSPECTED"]
         assert types_of(up) == ["NEAR_MISS"]
-        assert types_of(again) == ["FALL_SUSPECTED"]
+        assert types_of(again) == ["POSSIBLE_FALL", "FALL_SUSPECTED"]
 
     def test_a_confirmed_fall_is_not_alerted_again_while_still_down(self):
         events = run(FallStateMachine(), fall_sequence(down_s=30.0))
@@ -935,7 +937,42 @@ class TestFloorAlert:
 
 
 class TestPossibleFallFlag:
-    """An on-screen flag only: it must never change states or events."""
+    """The flag and its POSSIBLE_FALL alert must never change states or other events."""
+
+    def test_a_fall_alerts_possible_first_then_the_real_alerts(self):
+        with_flag = types_of(run(FallStateMachine(), fall_sequence(down_s=30.0)))
+        assert with_flag[0] == "POSSIBLE_FALL"
+        assert with_flag.count("POSSIBLE_FALL") == 1
+        without = types_of(
+            run(FallStateMachine(FallThresholds(possible_alert=False)), fall_sequence(down_s=30.0))
+        )
+        assert [t for t in with_flag if t != "POSSIBLE_FALL"] == without
+        assert "FALL_SUSPECTED" in without and "FALL_CONFIRMED" in without
+
+    def test_a_false_possible_fall_does_not_hide_a_real_fall_soon_after(self):
+        m = FallStateMachine()
+        first = run(m, hold(0.0, 2.0, h_torso=1.1) + hold(2.0, 0.2, h_torso=0.85) + hold(2.2, 2.0, h_torso=1.1))
+        assert types_of(first) == ["POSSIBLE_FALL"]
+        assert m._tracks[1].last_alert_t is None  # the paging cooldown did not start
+        later = types_of(run(m, [
+            Features(**{**f.__dict__, "t": f.t + 4.2}) for f in fall_sequence(down_s=10.0)
+        ]))
+        assert "FALL_SUSPECTED" in later
+
+    def test_repeated_dips_alert_once_within_the_gap(self):
+        m = FallStateMachine()
+        frames = []
+        t = 0.0
+        for _ in range(3):
+            frames += hold(t, 1.5, h_torso=1.1) + hold(t + 1.5, 0.2, h_torso=0.85)
+            t += 3.0
+        assert types_of(run(m, frames)).count("POSSIBLE_FALL") == 1
+
+    def test_switched_off_the_flag_still_shows_without_an_alert(self):
+        m = FallStateMachine(FallThresholds(possible_alert=False))
+        events = run(m, fall_sequence(down_s=6.0))
+        assert "POSSIBLE_FALL" not in types_of(events)
+        assert m._tracks[1].possible_until > -math.inf
 
     def test_a_fast_torso_drop_raises_the_flag_for_a_moment(self):
         m = FallStateMachine()

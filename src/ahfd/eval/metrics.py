@@ -33,10 +33,10 @@ from dataclasses import dataclass, field
 
 from ahfd.eval.annotations import GroundTruth, PredictedEvent
 
-# What counts as an alerting event. FALL_SUSPECTED is the first alert for a fall;
-# FALL_CONFIRMED and PERSON_DOWN escalate it. BED_EXIT and NEAR_MISS are not claims
+# What counts as an alerting event. POSSIBLE_FALL or FALL_SUSPECTED is the first alert
+# for a fall; FALL_CONFIRMED and PERSON_DOWN escalate it. BED_EXIT and NEAR_MISS are not claims
 # that somebody is on the floor now, so they stay out of fall precision/recall.
-ALERTING_TYPES = frozenset({"FALL_SUSPECTED", "FALL_CONFIRMED", "PERSON_DOWN"})
+ALERTING_TYPES = frozenset({"POSSIBLE_FALL", "FALL_SUSPECTED", "FALL_CONFIRMED", "PERSON_DOWN"})
 
 DEFAULT_PRE_S = 2.0
 DEFAULT_POST_S = 30.0

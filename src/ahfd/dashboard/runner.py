@@ -594,7 +594,7 @@ class PipelineRunner:
                                 },
                                 gen=self.gen,
                             )
-                            if event.type in ("FALL_SUSPECTED", "FALL_CONFIRMED", "PERSON_DOWN"):
+                            if event.type in ("POSSIBLE_FALL", "FALL_SUSPECTED", "FALL_CONFIRMED", "PERSON_DOWN"):
                                 alert = event.describe()
 
                     # Read states after update so the dashboard is not one frame

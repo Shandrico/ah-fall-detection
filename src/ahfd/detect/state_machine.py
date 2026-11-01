@@ -155,13 +155,16 @@ class FallThresholds:
     # kneel (the same numbers), so a kneel alerts too; raising this past ~3 s
     # quiets the kneel and loses those falls.
     floor_alert_s: float = 1.5
-    # On-screen "possible fall", never an alarm: the torso dropping this far this
-    # quickly from standing height. About 0.5-2 s before landing on the 29 Oct falls,
-    # but also ~20-30 false flags an hour during active movement, so it pages nobody.
+    # "Possible fall": the torso dropping this far this quickly from standing height.
+    # About 0.5-2 s before landing on the 29 Oct falls, so it is the earliest alert we
+    # have, but also ~20-30 false flags an hour during active movement. It alerts
+    # (POSSIBLE_FALL) without starting the cooldown, so it can never hide a real fall alert.
     possible_drop_m: float = 0.15
     possible_drop_s: float = 0.5
     possible_from_h: float = 0.70
     possible_hold_s: float = 2.0
+    possible_alert: bool = True  # False: on-screen flag only, as before
+    possible_alert_gap_s: float = 10.0  # one bout of bending or sitting alerts once
 
     # Seated bodies keep a near-vertical torso even when floor_spread reads like
     # a fallen one's; torso_tilt (image angle, calibration-free) tells them
@@ -236,6 +239,8 @@ class _TrackState:
 
     last_alert_t: float | None = None
     possible_until: float = -math.inf  # the on-screen flag shows until this time
+    possible_alert_t: float = -math.inf  # last POSSIBLE_FALL, for its own gap only
+    possible_pending: Event | None = None  # waits if another event used this frame
     last_t: float | None = None  # last usable frame, for the down handover
     last_xy: tuple[float, float] | None = None
     height_log: list[tuple[float, float]] = field(default_factory=list)
@@ -271,7 +276,7 @@ class FallStateMachine:
     # ------------------------------------------------------------ helpers
 
     def possible_fall_of(self, track_id: int, now: float) -> bool:
-        """Show the on-screen "possible fall" flag for this track? Never an alarm."""
+        """Show the on-screen "possible fall" flag for this track?"""
         ts = self._tracks.get(track_id)
         return ts is not None and now <= ts.possible_until
 
@@ -382,7 +387,44 @@ class FallStateMachine:
     # ------------------------------------------------------------- update
 
     def update(self, f: Features) -> Event | None:
-        """Advance one track by one frame. Returns an event, or None."""
+        """Advance one track by one frame. Returns an event, or None.
+
+        One event per frame, so a POSSIBLE_FALL that shares a frame with another
+        event goes out on the next frame: the fall alert must never be lost to it.
+        """
+        event = self._update_track(f)
+        ts = self._tracks[f.track_id]
+        if event is None and ts.possible_pending is not None:
+            event, ts.possible_pending = ts.possible_pending, None
+        return event
+
+    def _possible_fall_alert(
+        self, ts: _TrackState, f: Features, now: float, drop_m: float
+    ) -> None:
+        """Queue the alert when a new possible-fall flag goes up."""
+        th = self.th
+        if (
+            not th.possible_alert
+            or now <= ts.possible_until  # same drop, still flagged
+            or now - ts.possible_alert_t < th.possible_alert_gap_s
+            or ts.age(now) < th.min_track_age_s  # a new id's first heights are unreliable
+            or ts.suspected  # this fall has already alerted
+        ):
+            return
+        ts.possible_alert_t = now
+        ts.possible_pending = Event(
+            type="POSSIBLE_FALL",
+            track_id=f.track_id,
+            t_trigger=now,
+            t_alert=now,
+            zone=f.zones[0] if f.zones else None,
+            evidence={
+                "drop_m": round(drop_m, 2),
+                "h_torso": round(f.h_torso, 2),
+            },
+        )
+
+    def _update_track(self, f: Features) -> Event | None:
         ts = self._tracks.get(f.track_id)
         if ts is None:
             ts = self._adopt_lost_rest(f) or _TrackState()
@@ -431,6 +473,7 @@ class FallStateMachine:
             and recent[0] >= self.th.possible_from_h
             and max(recent) - f.h_torso >= self.th.possible_drop_m
         ):
+            self._possible_fall_alert(ts, f, now, max(recent) - f.h_torso)
             ts.possible_until = now + self.th.possible_hold_s
 
         # --- a fall already in progress: confirm, or cancel --------------

@@ -137,7 +137,7 @@ class TestGoldenReplay:
         deliberately -- that edit is the moment to confirm nothing regressed."""
         events = _replay(golden_tracks)
         types = [e.type for e in events]
-        assert types == ["FALL_SUSPECTED", "FALL_CONFIRMED"]
+        assert types == ["POSSIBLE_FALL", "FALL_SUSPECTED", "FALL_CONFIRMED"]
 
         confirmed = next(e for e in events if e.type == "FALL_CONFIRMED")
         # Impact is at ~3.5 s; confirmation waits confirm_s (8 s) after landing.

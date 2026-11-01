@@ -37,7 +37,7 @@ from ahfd.dashboard.bed_modes import DEFAULT_BED_MODE, VALID_BED_MODES, BedMode
 
 # Which event types are a standing alert a nurse must clear, versus
 # informational. Drives the triage queue and the "open alerts" count.
-FALL_ALERTS = frozenset({"FALL_SUSPECTED", "FALL_CONFIRMED", "PERSON_DOWN"})
+FALL_ALERTS = frozenset({"POSSIBLE_FALL", "FALL_SUSPECTED", "FALL_CONFIRMED", "PERSON_DOWN"})
 ALERTING_TYPES = FALL_ALERTS
 STALE_FRAME_S = 3.0
 
@@ -421,6 +421,7 @@ class DashboardState:
                     "fall_confirmed": counts.get("FALL_CONFIRMED", 0),
                     "person_down": counts.get("PERSON_DOWN", 0),
                     "fall_suspected": counts.get("FALL_SUSPECTED", 0),
+                    "possible_fall": counts.get("POSSIBLE_FALL", 0),
                     "bed_exit": counts.get("BED_EXIT", 0),
                     "bed_exit_warning": counts.get("BED_EXIT_WARNING", 0),
                     "near_miss": counts.get("NEAR_MISS", 0),

@@ -113,8 +113,12 @@ Say "staged falls by N healthy student volunteers on crash mats", never patient 
   and `PERSON_DOWN` escalate it. Getting up does not cancel it: `NEAR_MISS` marks the open alert "person is up again"
   and a person acknowledges it. A quick recovered fall and a kneel look the same in pose (0.45 m drop in 1 s to ~0.7 m
   for ~3 s), so a kneel alerts too. Raising `floor_alert_s` past ~3 s quiets the kneel and loses those falls.
-- **Detection, not prediction:** nothing here predicts a fall. The earliest signals before landing are bed-exit
-  warnings (someone starting to leave the bed, a risk rather than a fall) and, for fast falls only, the on-screen `FALLING` state.
+- **Possible fall alerts (1 Nov, the user's decision):** `POSSIBLE_FALL` alerts when the torso drops 0.15 m in 0.5 s from standing
+  height, once per 10 s (`possible_alert_gap_s`; `possible_alert: false` goes back to on-screen only). It starts no cooldown and
+  changes no other event, so it cannot hide a fall alert. Development clips: 5 of 6 fall events, median 0.6 s before the labelled
+  landing (labels are good to about 1 s), and 16-19 false alerts an hour on the 27 Oct students, plus 3 on the kneel clip.
+- **Detection, not prediction:** nothing here predicts a fall. `POSSIBLE_FALL` means the body has started going down. The only earlier
+  signal is the bed-exit warning (someone starting to leave the bed, a risk rather than a fall).
 - **Bed support:** one ankle over a bed no longer counts; enough of the body must be over it, or the hips. Chairs keep the old rule.
 - **The cameras swapped on 29 Oct:** D435i from the side, D435f along the beds (the reverse of the pilot and 27 Oct).
   Compare a lying torso's image tilt to check. Train and compare by viewpoint, not camera name (`phase_v3_side`, `phase_v3_along`).

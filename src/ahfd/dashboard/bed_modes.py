@@ -68,6 +68,7 @@ def is_dashboard_alert(event: Event) -> bool:
     """Whether an admitted event belongs in the acknowledgement queue."""
 
     return event.type in {
+        "POSSIBLE_FALL",
         "FALL_SUSPECTED",
         "NEAR_MISS",
         "FALL_CONFIRMED",

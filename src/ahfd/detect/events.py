@@ -6,6 +6,7 @@ from dataclasses import dataclass, field
 from typing import Any, Literal
 
 EventType = Literal[
+    "POSSIBLE_FALL",  # torso dropping fast: earliest alert, also fires on bending and sitting
     "FALL_SUSPECTED",  # alerts at once: landed after an impact, or on the floor
     "FALL_CONFIRMED",  # pages a nurse, after the person stays down
     "PERSON_DOWN",  # slow slump, or a fall we joined late
@@ -19,6 +20,7 @@ SEVERITY: dict[str, int] = {
     "BED_EXIT": 1,
     "BED_EXIT_WARNING": 1,
     "NEAR_MISS": 2,
+    "POSSIBLE_FALL": 2,
     "FALL_SUSPECTED": 3,
     "PERSON_DOWN": 3,
     "FALL_CONFIRMED": 4,
