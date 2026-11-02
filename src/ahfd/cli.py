@@ -4593,6 +4593,11 @@ def dashboard(
         help="Start skeleton-only but let the page switch to RGB (virtual "
         "nursing). Same sign-off as --rgb; the difference is the default.",
     ),
+    consent: bool = typer.Option(
+        False,
+        "--i-understand-raw-capture",
+        help="Only for dashboard.alert_clips.mode: rgb. Confirms this is consented staged data.",
+    ),
 ) -> None:
     """Serve the nurse dashboard: live view, per-person state, alert log.
 
@@ -4624,6 +4629,15 @@ def dashboard(
     bind_port = port or cfg.dashboard.port
     show_rgb = rgb or cfg.dashboard.show_rgb
     rgb_allowed = show_rgb or allow_rgb or cfg.dashboard.allow_rgb
+    # From the command line only: a YAML file can never consent to raw capture.
+    cfg.dashboard.alert_clips.cli_consent = consent
+    if cfg.dashboard.alert_clips.enabled:
+        from ahfd.debug.alert_clips import check_clip_settings
+
+        check_clip_settings(
+            cfg.dashboard.alert_clips.mode, cfg.dashboard.alert_clips.dir,
+            config_flag=cfg.privacy.allow_raw_capture, cli_flag=consent,
+        )
 
     if show_rgb:
         typer.echo(
@@ -4632,6 +4646,7 @@ def dashboard(
         )
 
     state = DashboardState()
+    state.load_history(cfg.alert.jsonl_path)
     controller = DashboardController(
         cfg,
         calib_path,
@@ -4670,6 +4685,7 @@ def dashboard(
         )
     )
     typer.echo("serving: http://" + bind_host + ":" + str(bind_port) + "  (Ctrl+C to stop)")
+    typer.echo("ward page: http://" + bind_host + ":" + str(bind_port) + "/ward")
     typer.echo("         camera and pose model can be changed from the page")
 
     controller.start()

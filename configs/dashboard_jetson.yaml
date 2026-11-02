@@ -85,6 +85,10 @@ dashboard:
   posture_model: "models/posture_v3_tree.joblib"
   # Review videos behind the page's "Review videos" link (raw RGB: stays on the T9).
   review_dir: "/media/anormalm/T9/AHFD_DATA/review/review_20261101"
+  # Saves a short video around each alert: 10 s before to 15 s after. Stick figures only,
+  # with no camera image. Watch them with: ahfd serve-review data/alert_clips
+  alert_clips:
+    enabled: true
   # The camera picker. Each entry carries its own calibration, so switching
   # cameras switches calibration too. A connected RealSense is also auto-added,
   # but list it here explicitly so it gets calib/d435i.yaml (the auto entry has

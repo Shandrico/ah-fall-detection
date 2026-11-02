@@ -11,6 +11,7 @@ format is append-only, one self-contained JSON object per line, and stable.
 from __future__ import annotations
 
 import json
+import time
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Protocol
@@ -79,6 +80,7 @@ class JsonlSink:
     def emit(self, event: Event) -> None:
         record = {
             "run_id": self.run_id,
+            "wall_time": round(time.time(), 1),
             "type": event.type,
             "severity": event.severity,
             "track_id": event.track_id,

@@ -28,6 +28,7 @@ models/
 data/tracks/
 data/tracks_depth/
 data/events/
+data/alert_clips/
 # classify-view frame cache (rendered colour frames -- convenience, not source)
 data/classify_cache/
 # derived per-frame feature CSVs, regenerable via `ahfd export-features`

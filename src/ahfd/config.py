@@ -219,6 +219,20 @@ class SourceOption(BaseModel):
     calibration: str | None = None
 
 
+class AlertClipConfig(BaseModel):
+    """Short videos saved around each alert. See ahfd.debug.alert_clips."""
+
+    enabled: bool = False
+    mode: str = "skeleton"  # stick figures. "rgb" needs all three raw-capture switches
+    dir: str = "data/alert_clips"
+    pre_s: float = 10.0  # kept from before the alert
+    post_s: float = 15.0  # kept after the latest alert of the incident
+    max_s: float = 60.0
+    min_free_gb: float = 2.0  # stop saving rather than fill the disk
+    # Set by `ahfd dashboard --i-understand-raw-capture`, never from YAML.
+    cli_consent: bool = False
+
+
 class DashboardConfig(BaseModel):
     host: str = "127.0.0.1"  # localhost only by default -- not exposed to the network
     port: int = 8000
@@ -243,6 +257,7 @@ class DashboardConfig(BaseModel):
     # Folder of review video folders (<folder>/<group>/*.mp4) for the page's "Review
     # videos" link. They hold raw RGB, so it is ignored unless RGB is authorised.
     review_dir: str = ""
+    alert_clips: AlertClipConfig = Field(default_factory=AlertClipConfig)
 
     # Cameras offered in the page's picker. A connected RealSense is appended
     # automatically; nothing else is probed, because scanning webcam indices is

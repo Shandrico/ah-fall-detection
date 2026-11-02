@@ -27,16 +27,19 @@ counters survive rollover, and outstanding alerts remain until acknowledged.
 
 from __future__ import annotations
 
+import json
 import threading
 import time
 from collections import deque
 from functools import cache
+from pathlib import Path
 from typing import Any
 
 from ahfd.dashboard.bed_modes import DEFAULT_BED_MODE, VALID_BED_MODES, BedMode
 
 # Which event types are a standing alert a nurse must clear, versus
 # informational. Drives the triage queue and the "open alerts" count.
+HISTORY_S = 24 * 3600.0
 FALL_ALERTS = frozenset({"POSSIBLE_FALL", "FALL_SUSPECTED", "FALL_CONFIRMED", "PERSON_DOWN"})
 ALERTING_TYPES = FALL_ALERTS
 STALE_FRAME_S = 3.0
@@ -75,6 +78,7 @@ class DashboardState:
         # the session's view policy before starting any pipeline.
         self._rgb_enabled: bool | None = None
         self._counts: dict[str, int] = {}  # cumulative per event type
+        self._history: deque[tuple[float, str]] = deque()  # (wall time, type)
         self._fps = 0.0
         self._last_frame_wall: float | None = None
         self._started = time.time()
@@ -139,6 +143,7 @@ class DashboardState:
                 return
             self._events.append(event)
             self._counts[event["type"]] = self._counts.get(event["type"], 0) + 1
+            self._history.append((time.time(), event["type"]))
             alerting = bool(
                 event.get("alerting", event.get("type") in ALERTING_TYPES)
             )
@@ -426,6 +431,7 @@ class DashboardState:
                     "bed_exit_warning": counts.get("BED_EXIT_WARNING", 0),
                     "near_miss": counts.get("NEAR_MISS", 0),
                 },
+                "counts_24h": self._counts_24h(now),
                 "open_alerts": open_alerts,
                 "open_count": len(open_alerts),
                 "seconds_since_alert": (
@@ -475,6 +481,31 @@ class DashboardState:
                     else None
                 ),
             }
+
+    def _counts_24h(self, now: float) -> dict[str, int]:
+        while self._history and now - self._history[0][0] > HISTORY_S:
+            self._history.popleft()
+        counts: dict[str, int] = {}
+        for _, event_type in self._history:
+            counts[event_type] = counts.get(event_type, 0) + 1
+        return counts
+
+    def load_history(self, jsonl_path: str | Path | None) -> None:
+        """Pick up the last 24 hours from the event log, so a restart keeps the totals."""
+        if not jsonl_path or not Path(jsonl_path).is_file():
+            return
+        now = time.time()
+        loaded = []
+        for line in Path(jsonl_path).read_text(encoding="utf-8", errors="replace").splitlines():
+            try:
+                record = json.loads(line)
+                wall, event_type = float(record["wall_time"]), str(record["type"])
+            except (ValueError, KeyError, TypeError):
+                continue  # older lines have no wall_time; a torn last line is no reason to fail
+            if now - wall <= HISTORY_S:
+                loaded.append((wall, event_type))
+        with self._lock:
+            self._history = deque(sorted([*loaded, *self._history]))
 
     def mark_recovered(self, track_id: int, clock: str, gen: int = 0) -> bool:
         """Flag this person's open fall alerts: they are up again.

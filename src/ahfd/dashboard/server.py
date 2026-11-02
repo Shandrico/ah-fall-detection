@@ -37,6 +37,7 @@ from ahfd.dashboard.html import DASHBOARD_HTML
 from ahfd.dashboard.review import REVIEW_HTML, find_video, list_videos
 from ahfd.debug.review_server import send_video
 from ahfd.dashboard.state import DashboardState
+from ahfd.dashboard.ward_html import WARD_HTML
 
 _BOUNDARY = "ahfdframe"
 
@@ -105,6 +106,8 @@ def make_handler(state: DashboardState, controller=None, review_dir=None):
             path = self.path.split("?", 1)[0]
             if path in ("/", "/index.html", "/dashboard"):
                 self._send(200, "text/html; charset=utf-8", DASHBOARD_HTML.encode())
+            elif path == "/ward":
+                self._send(200, "text/html; charset=utf-8", WARD_HTML.encode())
             elif path == "/api/state":
                 body = json.dumps(state.snapshot()).encode()
                 self._send(200, "application/json", body)

@@ -63,6 +63,28 @@ class PipelineRunner:
         self._track_bed_modes: dict[int, tuple[str, str, int]] = {}
         self._bed_incident_ids: dict[tuple[str, int], str] = {}
         self._posture_model = None
+        self._clips = None
+
+    def _start_alert_clips(self) -> None:
+        """Start saving clips around alerts, if configured. Fails closed: no clips."""
+        clips = self.cfg.dashboard.alert_clips
+        if not clips.enabled:
+            return
+        from ahfd.debug.alert_clips import AlertClipRecorder, check_clip_settings
+        from ahfd.privacy import PrivacyViolation
+
+        try:
+            check_clip_settings(
+                clips.mode, clips.dir,
+                config_flag=self.cfg.privacy.allow_raw_capture, cli_flag=clips.cli_consent,
+            )
+        except (PrivacyViolation, ValueError) as exc:
+            print("alert clips off: " + str(exc))
+            return
+        self._clips = AlertClipRecorder(
+            clips.dir, mode=clips.mode, pre_s=clips.pre_s, post_s=clips.post_s,
+            max_s=clips.max_s, min_free_gb=clips.min_free_gb, source=str(self.source_uri),
+        )
 
     def _load_posture_model(self) -> None:
         """Load the display-only trained posture model, if configured.
@@ -144,6 +166,7 @@ class PipelineRunner:
 
         src = None
         try:
+            self._start_alert_clips()
             src = open_source(
                 self.source_uri, width=cfg.capture.width, height=cfg.capture.height
             )
@@ -280,6 +303,9 @@ class PipelineRunner:
             if self._sink is not None:
                 self._sink.close()
                 self._sink = None
+            if self._clips is not None:
+                self._clips.close()
+                self._clips = None
 
     def _loop(self, src, estimator, tracker, smoother, extractor, machine) -> int:
         """Run until the source ends or a stop is asked. Returns frames processed.
@@ -578,8 +604,7 @@ class PipelineRunner:
                                     event.track_id, time.strftime("%H:%M:%S"), gen=self.gen
                                 )
                             )
-                            self.state.publish_event(
-                                {
+                            alert_record = {
                                     "event_id": event_id,
                                     "type": event.type,
                                     "severity": event.severity,
@@ -590,10 +615,17 @@ class PipelineRunner:
                                     "t_alert": round(event.t_alert, 1),
                                     "clock": time.strftime("%H:%M:%S"),
                                     "zone": event.zone,
+                                    # Off a bed there is no zone: name the bed they were at.
+                                    "near_bed": self._track_bed_modes.get(event.track_id, (None,))[0],
                                     "evidence": event.evidence,
-                                },
-                                gen=self.gen,
-                            )
+                            }
+                            self.state.publish_event(alert_record, gen=self.gen)
+                            if self._clips is not None and is_dashboard_alert(event):
+                                try:
+                                    self._clips.on_alert(alert_record)
+                                except Exception as exc:
+                                    print("alert clips off: " + repr(exc))
+                                    self._clips = None
                             if event.type in ("POSSIBLE_FALL", "FALL_SUSPECTED", "FALL_CONFIRMED", "PERSON_DOWN"):
                                 alert = event.describe()
 
@@ -705,5 +737,38 @@ class PipelineRunner:
                     buf.tobytes(), list(track_info.values()), fps_ema or 0.0,
                     gen=self.gen, show_rgb=rendered_rgb,
                 )
+                if self._clips is not None:
+                    try:
+                        self._offer_clip_frame(pose, states, fps_ema, buf, rendered_rgb)
+                    except Exception as exc:
+                        # Evidence clips must never stop the monitoring itself.
+                        print("alert clips off: " + repr(exc))
+                        self._clips = None
 
         return fps_ema if fps_ema is not None else 0.0
+
+    def _offer_clip_frame(self, pose, states, fps, shown_jpeg, shown_rgb) -> None:
+        """Hand the recorder this frame, with no camera pixels unless its mode allows them."""
+        import cv2
+
+        from ahfd.viz import render_skeleton
+
+        if shown_rgb and self._clips.mode == "rgb":
+            self._clips.add_frame(shown_jpeg.tobytes(), is_rgb=True)
+            return
+        if not shown_rgb:
+            self._clips.add_frame(shown_jpeg.tobytes())
+            return
+        # The page shows the camera, but this recorder may only keep stick figures.
+        canvas = render_skeleton(
+            pose, min_keypoint_score=self.cfg.pose.min_keypoint_score, states=states, fps=fps,
+        )
+        width = self._stream_max_width or 960
+        if canvas.shape[1] > width:
+            canvas = cv2.resize(
+                canvas, (width, round(canvas.shape[0] * width / canvas.shape[1])),
+                interpolation=cv2.INTER_AREA,
+            )
+        ok, buf = cv2.imencode(".jpg", canvas, [int(cv2.IMWRITE_JPEG_QUALITY), self._jpeg_quality])
+        if ok:
+            self._clips.add_frame(buf.tobytes())

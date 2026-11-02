@@ -70,6 +70,10 @@ dashboard:
   host: "127.0.0.1"
   port: 8000
   show_rgb: true            # dev/testing: see the person. A ward sets this false.
+  # Saves a short video around each alert: 10 s before to 15 s after. Stick figures only,
+  # with no camera image. Watch them with: ahfd serve-review data/alert_clips
+  alert_clips:
+    enabled: true
   jpeg_quality: 92
   # The camera picker. Each entry carries its own calibration, so switching
   # cameras switches calibration too. A connected RealSense is also auto-added,

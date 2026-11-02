@@ -131,6 +131,7 @@ DASHBOARD_HTML = r"""<!doctype html>
       <option value="2">suspected+</option>
       <option value="3" selected>alerts only</option>
     </select>
+    <a class="navlink" href="/ward">Ward view</a>
     <a id="review-link" class="navlink" href="/review" target="_blank" rel="noopener" hidden>Review videos</a>
     <button id="sound">Sound: off</button>
   </div>
