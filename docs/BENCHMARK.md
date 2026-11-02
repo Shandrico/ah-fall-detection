@@ -212,6 +212,16 @@ Scripts and outputs are in `~/.ahfd-work/`:
 | 7-phase, along (trained) | 0.662 | 0.536 | 0.538 | 0.564 | 0.664 ± 0.066 |
 | 7-phase, along (rules) | 0.411 | 0.284 | 0.283 | 0.330 | - |
 
+Leave one person out, averaged per person (5 training people, from the tables in section 2, sample SD):
+
+| Model | Accuracy, mean ± SD | Macro-F1, mean ± SD | Lowest person (accuracy) |
+|---|---|---|---|
+| Posture | 0.86 ± 0.23 | 0.86 ± 0.19 | fall student 01: 0.46 |
+| 7-phase, side | 0.65 ± 0.15 | 0.54 ± 0.17 | pilot volunteer: 0.42 |
+| 7-phase, along | 0.72 ± 0.13 | 0.61 ± 0.13 | fall student 01: 0.51 |
+
+No person is removed from these averages. Without fall student 01, posture is 0.96 ± 0.04 accuracy and 0.94 ± 0.06 macro-F1 across 4 people. That person's 0.46 happens because leaving them out removes every on-the-ground frame from training, so always state this exclusion and its reason when quoting 0.96.
+
 Posture per class, precision / recall:
 - in bed: 0.87 / 1.00;
 - sitting: 0.97 / 0.88;
