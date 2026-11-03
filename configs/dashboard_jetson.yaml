@@ -84,7 +84,7 @@ dashboard:
   # Display only; alerts use the rules. Git-ignored file -- set to "" if models/ is missing.
   posture_model: "models/posture_v3_tree.joblib"
   # 7-phase model for a camera not listed below (each listed camera names its own view).
-  phase_model: "models/phase_v3_side_logistic.joblib"
+  phase_model: "models/phase_v4_side_rf.joblib"
   # Review videos behind the page's "Review videos" link (raw RGB: stays on the T9).
   review_dir: "/media/anormalm/T9/AHFD_DATA/review/review_20261101"
   # Saves a short video around each alert: 10 s before to 15 s after. Stick figures only,
@@ -100,12 +100,12 @@ dashboard:
       uri: "rs://?depth=1&emitter=1&max_laser=1&max_range=6&model=d435i"
       calibration: "calib/d435i.yaml"
       # Since 29 Oct this camera looks from the side; swap the two models if the mounts swap.
-      phase_model: "models/phase_v3_side_logistic.joblib"
+      phase_model: "models/phase_v4_side_rf.joblib"
     - label: "RealSense D435f (RGB + depth features)"
       uri: "rs://?depth=1&emitter=1&max_laser=1&max_range=6&model=d435f"
       calibration: "calib/d435f.yaml"
       # Since 29 Oct this camera looks along the beds; swap the two models if the mounts swap.
-      phase_model: "models/phase_v3_along_logistic.joblib"
+      phase_model: "models/phase_v4_along_rf.joblib"
     # Bed-exit pilot test takes (block E, on the T9). Each carries its own
     # camera's calibration -- a path typed into the source box would get the
     # D435i file above, which is wrong for the D435f. Review these only after

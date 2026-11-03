@@ -556,6 +556,34 @@ Updated staff result (all 7 exits): **D435f 5/7 (71%), D435i 7/7 (100%)**, no fa
 - The two D435f misses remain. In `h2_01` the new track stood inside the 27 Oct bed outline, which was never redrawn for that mount. In `h3_01` no new track appeared close enough.
 - It was designed after reading the locked clips, so the improvement is not an independent result. A visitor appearing beside the bed just as the patient's pose drops out could take over the history; this is untested.
 
+### Full bed-exit metrics, with the handover (3 Nov)
+
+From `~/.ahfd-work/exit_metrics_20261103/` (`results.json`), committed code at `9e0c40e`. Event windows as in sections 3 and 7. Frame scores cover labelled frames of the person the review tool follows, and missing or UNKNOWN rule phases count as wrong.
+
+**Events (sustained exits, at least 3 s):**
+
+| Clips | Camera | Exits caught (sensitivity) | Precision | False exits (per h) | Timing, median (range) |
+|---|---|---|---|---|---|
+| Development | D435f | 9/12 (0.75) | 0.90 | 1 (2.3) | +3.9 s (+1.8 to +11.5) |
+| Development | D435i | 11/12 (0.92) | 1.00 | 0 (0.0) | +1.9 s (+0.1 to +9.3) |
+| **Staff, all 3 (locked, used)** | **D435f** | **5/7 (0.71)** | **1.00** | **0 (0.0)** | **+0.4 s (-0.3 to +3.4)** |
+| **Staff, all 3 (locked, used)** | **D435i** | **7/7 (1.00)** | **1.00** | **0 (0.0)** | **+0.2 s (-3.5 to +3.2)** |
+| Staff 2-3 only (no `h*_01`) | D435f | 4/4 | 1.00 | 0 | +0.4 s |
+| Staff 2-3 only (no `h*_01`) | D435i | 4/4 | 1.00 | 0 | -0.7 s |
+
+Without the handover, the staff D435i result is 6/7 (0.86). Every other row is the same with or without it. Brief stand-ups (1-2 s) are still caught 1 of 4 on the development clips; the staff clips have none.
+
+**Frames (7 phases), staff clips, all 3 staff:**
+
+| Camera | Rules: accuracy / macro-F1 / balanced accuracy | Phase model: accuracy / macro-F1 / balanced accuracy |
+|---|---|---|
+| D435f | 0.41 / 0.30 / 0.31 | 0.69 / 0.57 / 0.56 |
+| D435i | 0.43 / 0.33 / 0.34 | 0.66 / 0.51 / 0.53 |
+
+- The handover changes the rule frame scores by under 0.04 (largest on the D435i `h*_01` clips: accuracy 0.31 to 0.35).
+- Development-clip rule scores: D435f 0.57 / 0.35 / 0.35, D435i 0.42 / 0.28 / 0.30. The model is not scored there, because those clips are its training data.
+- These model numbers are grouped by camera and follow one person per frame, so they differ slightly from section 5 (grouped by view): side 0.70 / 0.56, along 0.66 / 0.54. Both show the model well ahead of the rules.
+
 ## 10. Alerts from the trained models instead of the rules (3 Nov)
 
 **Question:** the posture and 7-phase models label frames far better than the rules (section 5), so would alerts based on their probability be better?
@@ -579,3 +607,144 @@ Clips: fall student 02 and staff 2-3, the locked clips already used on 2 Nov, so
 - Including the 27 Oct `h*_01` clips, the exit model also gives 3 false exits on the D435f; the rules give none.
 - Keeping only rule alerts the model agrees with (P(on_ground) at least 0.5 within -1 to +3 s) changed nothing: the false alarms are kneeling and bending, where the body really is low and the model is as sure as the rules.
 - **Decision: alerts stay rule-based; the models stay on screen as labels.** The models win at labelling each frame, which is dominated by long easy stretches (lying, standing), not at the 1-2 s moments that decide an alert.
+
+## 11. Early warning lead time (High mode, 3 Nov)
+
+`BED_EXIT_WARNING`, which the dashboard admits only for beds set to High. **Lead** = how long before the event the first warning came, within the 60 s before leaving the bed. Two events are measured:
+- **leaving the bed:** the start of OUT_OF_BED;
+- **the stand attempt:** the start of the labelled ATTEMPTING_STAND before it.
+
+Sustained exits only. Script and output: `~/.ahfd-work/early_warning_lead_20261103.*`. Staff clips are the used locked clips, scored with the committed code.
+
+| Clips | View | Exits warned | Before leaving the bed, median (range) | Before the stand attempt, median (range) | Warnings with no exit within 60 s (per h) |
+|---|---|---|---|---|---|
+| Pilot (D435f) | side | 2/4 | 13.6 s (7.5-19.8) | 12.1 s (5.5-18.8) | 2 (14.4) |
+| Students 27 Oct (D435f) | side | 7/7 | 42.5 s (16.1-57.7) | 39.5 s (15.1-55.7) | 9 (34.9) |
+| Fall student 01 (D435i) | side | 1/1 | 26.5 s | 24.5 s | 0 |
+| **Staff 27 Oct, `h*_01` (D435f)** | side | **2/3** | **24.7 s (10.7-38.7)** | n/a (1 exit has a labelled stand) | 2 (37.7) |
+| **Staff 29 Oct, `h*_02/03` (D435i)** | side | **2/4** | **11.9 s (6.2-17.5)** | **10.4 s (4.2-16.5)** | 3 (27.7) |
+| All along-the-beds clips | along | **0/19** | - | - | 3 |
+
+- **Side view only.** From along the beds it warned before none of 19 exits.
+- On the staff clips, which none of the rules were tuned on, it warned before **4 of 7** exits from the side, typically **10-25 s** before leaving the bed.
+- The warning comes when the person sits up and moves toward the edge. That is why it also fires on sit-ups that do not become exits: 14-38 per hour of this active footage. Whether nurses count those as useful "go and check" prompts needs their input, as with the kneeling alerts in section 7.
+- The stand-attempt lead is only 1-3 s shorter than the bed-leaving lead, because the labelled stand attempt is short.
+
+## 12. Full re-run on the current code (3 Nov)
+
+All numbers in this section come from committed code `9e0c40e`, which includes the trunk-tipping gate (section 8) and the bed-exit ID handover (section 9).
+
+**Pilot clips 01-08 are not used for any evaluation** (decision of 3 Nov; their depth heights are faulty). They are still in the training data.
+
+Scripts in `~/.ahfd-work/`:
+- `bench_dev_20261103.*`: development events;
+- `locked_posthoc_20261103/`: the locked clips re-run, a post-hoc check because they were used on 2 Nov;
+- `bench_full_cls_20261103.*`: classifiers;
+- `phase_*_20261103.*`: phase models;
+- `edge_nopilot_20261103.*`: edge warning;
+- `bench_runtime_20261103/`: speed.
+
+Times are on the recording clock. "−" means before the labelled impact or exit. Labels are good to about ±1 s, and the alert reaches the screen 0.3-1.3 s later (section 6).
+
+### 12a. Falls, fall by fall (current system = floor alerts + possible-fall alert with the tipping gate)
+
+| Clip set | Fall | D435f | D435i |
+|---|---|---|---|
+| Development | f1_01 (stand attempt at the edge) | −0.62 s | −0.44 s |
+| Development | f3_01, 1st fall | +2.00 s | +1.51 s |
+| Development | f3_01, 2nd fall | −0.77 s | −0.66 s |
+| Development | f4_01 (fall, quick recovery) | −1.42 s | −1.66 s |
+| Development | f5_01 | −0.50 s | −0.40 s |
+| Locked (post-hoc) | f1_02 | −0.46 s | −0.45 s |
+| Locked (post-hoc) | f3_02 | −0.40 s | +0.33 s |
+| Locked (post-hoc) | f4_02 | −1.03 s | +0.80 s |
+| Locked (post-hoc) | f5_02 | −0.50 s | 0.00 s |
+
+| Clip set | Camera | Falls caught | Before landing | Median (range) | Precision, strict / by review | False alarms per hour, strict / by review |
+|---|---|---|---|---|---|---|
+| Development (19.6 / 19.0 min) | D435f | 5/5 | 4 | −0.62 s (−1.42 to +2.00) | 1.00 / 1.00 | 0 / 0 |
+| Development | D435i | 5/5 | 4 | −0.44 s (−1.66 to +1.51) | 1.00 / 1.00 | 0 / 0 |
+| Locked, post-hoc (12.8 / 12.5 min) | D435f | 4/4 | 4 | −0.48 s (−1.03 to −0.40) | 0.50 / 0.80 | 18.7 / 4.7 |
+| Locked, post-hoc | D435i | 4/4 | 1 | +0.17 s (−0.45 to +0.80) | 0.50 / 0.80 | 19.1 / 4.8 |
+
+How the counts are made:
+- On development clips, kneel-clip alerts count as risky (useful), not false.
+- On the locked clips, "strict" counts every alert away from a fall as false.
+- "By review" uses the 2 Nov verdicts: the kneel and the staff bending in h3_02 and h3_03 were judged risky. That leaves one unreviewed alert per camera, in the 6-9 FPS clip `h3_01`.
+- The deliberate lie-down (`neg_f6`) raised a floor alert at +0.8 to +1.1 s in every run, as intended.
+
+### 12b. Bed exits (sustained, at least 3 s)
+
+| Clip set | Camera | Exits caught | Median delay (range) | Precision | False exits per hour |
+|---|---|---|---|---|---|
+| Development | D435f | 5/8 (0.62) | +3.9 s (+2.7 to +11.5) | 0.83 | 3.3 |
+| Development | D435i | 7/8 (0.88) | +2.0 s (+0.2 to +9.3) | 1.00 | 0 |
+| Staff, locked (post-hoc) | D435f | 5/7 (0.71) | +0.4 s (−0.3 to +3.4) | 1.00 | 0 |
+| Staff, locked (post-hoc) | D435i | **7/7 (1.00)** | +0.2 s (−3.5 to +3.2) | 1.00 | 0 |
+| Fall student 02, locked (post-hoc) | both | 2/2 | −0.2 to +0.2 s | 1.00 | 0 |
+
+**Bed-edge warning**, development clips without the pilot, scored leave-one-person-out:
+
+| View | Exits warned | Median lead before leaving the bed (minimum) | Frame ROC-AUC | Warning precision |
+|---|---|---|---|---|
+| side | 7/8 | 35.9 s (0.4 s) | 0.97 | 0.93 |
+| along | 8/8 | 18.6 s (11.3 s) | 0.93 | 0.76 |
+
+On the locked staff clips (section 7) it warned 5/8 (side) and 8/8 (along), with leads of 6-8 s.
+
+### 12c. Recognition on the 3 unseen staff, and the new 7-phase model
+
+| Model | Accuracy | Macro-F1 | Balanced accuracy | Cohen's kappa | 4-stage accuracy / macro-F1 | Time per prediction |
+|---|---|---|---|---|---|---|
+| Posture tree (4 classes) | 0.922 | 0.936 | 0.928 | 0.928 | - | 0.5 ms |
+| 7-phase, side: v3 logistic | 0.704 | 0.557 | 0.587 | 0.631 | 0.821 / 0.783 | 0.6 ms |
+| **7-phase, side: v4 random forest** | **0.811** | **0.621** | 0.617 | **0.755** | **0.857 / 0.809** | 4.5 ms |
+| 7-phase, along: v3 logistic | 0.662 | 0.536 | 0.538 | 0.564 | 0.761 / 0.692 | 0.6 ms |
+| **7-phase, along: v4 random forest** | **0.718** | **0.599** | 0.579 | **0.633** | **0.786 / 0.740** | 4.5 ms |
+| Rules, 7-phase (side / along) | 0.423 / 0.412 | 0.297 / 0.285 | 0.318 / 0.284 | 0.313 / 0.329 | - | - |
+
+- The 4 stages are: lying or sitting up / sitting upright in bed / at the edge (shifting, sitting, stand attempt) / out of bed. The same predictions are simply grouped.
+- **How v4 was chosen:**
+  - Leave one person out on the 5 training people only, with the staff not used. Mean macro-F1 was: side, logistic 0.54, gradient boosting 0.67, random forest 0.69; along, logistic 0.61, gradient boosting 0.66, random forest 0.65.
+  - The forest was then cut from 300 to 60 trees for speed (18.8 ms → 4.5 ms; gradient boosting spiked to 80-135 ms on the Jetson).
+  - The lighter variants were compared on the staff, so the staff number for v4 is slightly optimistic.
+- Smoothing the predictions over time (a 0.5-1 s causal average, or a causal hidden Markov model) did not help, so the errors are real confusions between neighbouring phases, not flicker.
+- **Learning curve** (v3, mean over subsets of the training people), macro-F1 with 1/2/3/4/5 people:
+  - side 0.42 / 0.47 / 0.52 / 0.54 / 0.56, levelling off;
+  - along 0.42 / 0.45 / 0.49 / 0.52 / 0.54, still rising.
+- The weakest phases with v4: SHIFTING_TO_EDGE (F1 0.23 on both views) and ATTEMPTING_STAND on the side view (0.03, only 201 frames).
+- `configs/dashboard_jetson.yaml` now shows the v4 models. Alerts never read them (section 10).
+
+### 12d. Speed and resources (live D435f, empty room, 90 s per run; pose model alone on 120 frames)
+
+| Setup | FPS | Camera-to-decision, median | Board power | Junction temperature |
+|---|---|---|---|---|
+| Depth on (default dashboard) | **5.3** | 240 ms | 10.3 W | 67 C |
+| Colour only (no depth) | **16.9** | 116 ms | 12.6 W | 68 C |
+| Recorded clip, person in view, depth | 15.3 | - (no camera wait) | 12.1 W | 68 C |
+| Pose model alone, CUDA | 29.1 | 34 ms per frame (p99 58 ms) | - | - |
+| Pose model alone, CPU | 6.2 | 162 ms per frame | - | - |
+
+- Time per frame with depth on (median):
+  - camera read 86 ms;
+  - depth alignment 86 ms;
+  - pose 77 ms;
+  - depth heights 8 ms;
+  - JPEG 8 ms;
+  - alert clip buffer 5 ms.
+- On the recorded clip, the processing time per frame was 60 / 72 / 77 ms with 0 / 1 / 2 people in view.
+- Process memory was about 1.2 GB, and the first frame arrived 3.5 s after start.
+- The trained models cost 0.5 ms (posture) and 4.5 ms (v4 phase) per prediction.
+- The FPS shown on the page now matches the real rate (5.36 shown against 5.32 measured).
+
+### 12e. Bed exit: can it go higher?
+
+- **Exit alerts (rules) are close to what these recordings allow.**
+  - On the staff clips: D435i 7/7, D435f 5/7, no false exits.
+  - The two D435f misses are a 27 Oct clip whose bed outline was never redrawn for that mount (`h2_01`) and a track that disappeared (`h3_01`). Both are recording or calibration problems, not the logic.
+  - Section 10 found that alerts driven by the models do worse than the rules.
+- **7-phase labelling had algorithm headroom, now taken.** The random forest adds about 6-11 points of accuracy and 0.06 of macro-F1 on unseen staff.
+- **What is left is mainly data.**
+  - The along view is still improving with every person added.
+  - The short phases (shifting to the edge, stand attempt) have only 200-320 frames each on the staff test.
+  - The next gains come from more bed-exit recordings, especially of those transitions, and from a side-on camera.
