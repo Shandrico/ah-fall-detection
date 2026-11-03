@@ -471,8 +471,8 @@ async function refresh(){
       : '';
     const risk = (t.possible_fall ? '<div class="sub" style="color:var(--warn)">POSSIBLE FALL</div>' : '') +
       (['TORSO_RISING','SHIFTING_TO_EDGE','EDGE_SITTING','ATTEMPTING_STAND'].includes(t.bed_phase) && !['ON_GROUND','FALLING'].includes(t.state) ? '<div class="sub" style="color:var(--warn)">GETTING UP: bed-exit risk</div>' : '');
-    const model = t.model_posture
-      ? `<div class="sub">trained model: ${esc(t.model_posture)} (display only)</div>` : '';
+    const model = (t.model_posture || t.model_phase)
+      ? `<div class="sub">trained model: ${esc([t.model_posture, t.model_phase].filter(Boolean).join(' / '))} (display only)</div>` : '';
     return `<div class="chip"><span>Track ${t.track_id}${extra}${bed}${model}${risk}</span>
       <span class="badge s-${esc(t.state)}">${esc(t.state)}</span></div>`;
   }).join('') : '<div class="empty">none</div>';

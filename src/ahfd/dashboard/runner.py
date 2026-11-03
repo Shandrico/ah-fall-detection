@@ -63,6 +63,8 @@ class PipelineRunner:
         self._track_bed_modes: dict[int, tuple[str, str, int]] = {}
         self._bed_incident_ids: dict[tuple[str, int], str] = {}
         self._posture_model = None
+        self._phase_model = None
+        self._last_frame_t0: float | None = None
         self._clips = None
 
     def _start_alert_clips(self) -> None:
@@ -110,6 +112,27 @@ class PipelineRunner:
         self.state.update_runtime(
             self.gen, posture_model=Path(path).name, posture_model_error=None
         )
+
+    def _load_phase_model(self) -> None:
+        """Load the display-only 7-phase model for this camera's view, if configured."""
+        dash = self.cfg.dashboard
+        path = next((o.phase_model for o in dash.sources if o.uri == self.source_uri and o.phase_model), None)
+        path = path or dash.phase_model
+        if not path:
+            return
+        from ahfd.ml.live_phase import LivePhaseModel
+
+        try:
+            self._phase_model = LivePhaseModel(
+                path, max_gap_s=self.cfg.bed_activity.cusum.max_gap_s,
+                near_edge_m=self.cfg.bed_activity.near_edge_enter_m,
+                min_keypoint_score=self.cfg.pose.min_keypoint_score,
+            )
+        except Exception as exc:  # noqa: BLE001 - shown on the page instead
+            self._phase_model = None
+            self.state.update_runtime(self.gen, phase_model_error=f"{path}: {exc}"[:200])
+            return
+        self.state.update_runtime(self.gen, phase_model=Path(path).name, phase_model_error=None)
 
     @property
     def alive(self) -> bool:
@@ -251,6 +274,7 @@ class PipelineRunner:
                         gen=gen,
                     )
                 self._load_posture_model()
+                self._load_phase_model()
 
             estimator = build_estimator(cfg.pose)
             tracker = SimpleTracker(min_keypoint_score=cfg.pose.min_keypoint_score, max_miss_s=1.0)
@@ -414,8 +438,12 @@ class PipelineRunner:
         )
 
     def _publish_depth_preview(self, frame, rendered_rgb: bool) -> None:
-        """At most 10 Hz, one small encode for all viewers; no second camera."""
-        if not rendered_rgb:
+        """At most 10 Hz, one small encode for all viewers; no second camera.
+
+        Skipped while nobody has the depth view open: it costs about 35 ms a
+        frame (measured 2 Nov), a sixth of the whole loop at the default setup.
+        """
+        if not rendered_rgb or not self.state.depth_wanted():
             return
         now = time.monotonic()
         if now - self._last_depth_preview < 0.1:
@@ -507,6 +535,8 @@ class PipelineRunner:
                 machine.retain_only(tracker.live_ids)
                 if self._posture_model is not None:
                     self._posture_model.retain_only(tracker.live_ids)
+                if self._phase_model is not None:
+                    self._phase_model.retain_only(tracker.live_ids)
                 observed_ids: set[int] = set()
                 for person in pose.people:
                     if person.track_id is None:
@@ -662,6 +692,21 @@ class PipelineRunner:
                                     "cusum_g": round(bed.cusum_g, 2),
                                 }
                             )
+                    if self._phase_model is not None and features is not None:
+                        snap = (
+                            machine.bed_snapshot_of(person.track_id, pose.t)
+                            if hasattr(machine, "bed_snapshot_of") else None
+                        )
+                        try:
+                            model_phase = self._phase_model.predict(
+                                person.track_id, features, person, extractor.ground, snap
+                            )
+                        except Exception as exc:  # noqa: BLE001 - display only, never stops detection
+                            self._phase_model = None
+                            self.state.update_runtime(self.gen, phase_model_error=repr(exc)[:200])
+                        else:
+                            if model_phase:
+                                info["model_phase"] = model_phase
                     if person.heights is not None:
                         values = [
                             float(value)
@@ -691,7 +736,12 @@ class PipelineRunner:
 
             states = {
                 tid: info["state"]
-                + (f" | model: {info['model_posture']}" if "model_posture" in info else "")
+                + (
+                    " | model: " + ", ".join(
+                        str(info[k]) for k in ("model_posture", "model_phase") if k in info
+                    )
+                    if "model_posture" in info or "model_phase" in info else ""
+                )
                 + (" | POSSIBLE FALL" if info.get("possible_fall") else "")
                 + (
                     " | GETTING UP"
@@ -702,9 +752,14 @@ class PipelineRunner:
                 for tid, info in track_info.items()
             }
 
-            dt = time.perf_counter() - t0
-            inst = 1.0 / dt if dt > 0 else 0.0
-            fps_ema = inst if fps_ema is None else 0.9 * fps_ema + 0.1 * inst
+            # Frames handled per second, start to start, so the camera read, depth
+            # alignment, drawing and encoding all count. The old figure timed only
+            # this block and read 12.7 fps when the real rate was 4.9 (2 Nov).
+            prev = self._last_frame_t0
+            self._last_frame_t0 = t0
+            if prev is not None and t0 > prev and t0 - prev < 5.0:
+                inst = 1.0 / (t0 - prev)
+                fps_ema = inst if fps_ema is None else 0.9 * fps_ema + 0.1 * inst
 
             # Tag the actual render, not a flag re-read after encoding. An off
             # request can arrive while rendering, and the store rejects that

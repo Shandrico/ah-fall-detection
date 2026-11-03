@@ -165,6 +165,16 @@ class FallThresholds:
     possible_hold_s: float = 2.0
     possible_alert: bool = True  # False: on-screen flag only, as before
     possible_alert_gap_s: float = 10.0  # one bout of bending or sitting alerts once
+    # The alert (not the on-screen flag) also needs the trunk tipping over: its image
+    # tilt turning faster than this within possible_rot_window_s of the drop. Sitting
+    # down drops the torso just as far but keeps it upright. On the development clips
+    # (3 Nov) this removed every possible-fall false alarm outside the pilot's faulty
+    # depth recordings and kept 7 of 10 falls alerted before landing. 0 turns it off.
+    possible_rot_deg_s: float = 80.0
+    possible_rot_window_s: float = 0.5
+    # Blind spot: a fall straight towards or away from the camera barely changes the
+    # image tilt, so it gets no possible-fall alert, only the floor alerts. A fast-v_z
+    # bypass was tried (3 Nov) and added false alarms on the pilot's noisy depth.
 
     # Seated bodies keep a near-vertical torso even when floor_spread reads like
     # a fallen one's; torso_tilt (image angle, calibration-free) tells them
@@ -244,6 +254,10 @@ class _TrackState:
     last_t: float | None = None  # last usable frame, for the down handover
     last_xy: tuple[float, float] | None = None
     height_log: list[tuple[float, float]] = field(default_factory=list)
+    tilt_log: list[tuple[float, float]] = field(default_factory=list)  # (t, torso_tilt deg)
+    rot_log: list[tuple[float, float]] = field(default_factory=list)  # (t, |tilt rate| deg/s)
+    possible_drop_t: float = -math.inf  # last frame the possible-fall drop test passed
+    possible_drop_m: float = 0.0
 
     def age(self, now: float) -> float:
         return 0.0 if self.first_seen is None else now - self.first_seen
@@ -398,30 +412,53 @@ class FallStateMachine:
             event, ts.possible_pending = ts.possible_pending, None
         return event
 
-    def _possible_fall_alert(
-        self, ts: _TrackState, f: Features, now: float, drop_m: float
-    ) -> None:
-        """Queue the alert when a new possible-fall flag goes up."""
+    def _update_rotation(self, ts: _TrackState, f: Features, now: float) -> None:
+        """Trunk rotation speed: least-squares slope of the image tilt over the last 0.3 s."""
+        win = self.th.possible_rot_window_s
+        if f.torso_tilt is not None:
+            ts.tilt_log.append((now, float(f.torso_tilt)))
+        ts.tilt_log = [(t, a) for (t, a) in ts.tilt_log if now - t <= 0.3]
+        if len(ts.tilt_log) >= 3:
+            tm = sum(t for t, _ in ts.tilt_log) / len(ts.tilt_log)
+            am = sum(a for _, a in ts.tilt_log) / len(ts.tilt_log)
+            den = sum((t - tm) ** 2 for t, _ in ts.tilt_log)
+            if den > 0:
+                rate = sum((t - tm) * (a - am) for t, a in ts.tilt_log) / den
+                ts.rot_log.append((now, abs(rate)))
+        ts.rot_log = [(t, r) for (t, r) in ts.rot_log if now - t <= win]
+
+    def _rotating(self, ts: _TrackState) -> float | None:
+        """Peak trunk rotation in the window, or None if it never passed the gate."""
+        if self.th.possible_rot_deg_s <= 0:
+            return 0.0
+        peak = max((r for _, r in ts.rot_log), default=0.0)
+        return peak if peak >= self.th.possible_rot_deg_s else None
+
+    def _possible_fall_alert(self, ts: _TrackState, f: Features, now: float) -> None:
+        """Queue the alert while a recent drop and fast trunk rotation coincide."""
         th = self.th
         if (
             not th.possible_alert
-            or now <= ts.possible_until  # same drop, still flagged
+            or now - ts.possible_drop_t > th.possible_rot_window_s  # no recent drop
             or now - ts.possible_alert_t < th.possible_alert_gap_s
             or ts.age(now) < th.min_track_age_s  # a new id's first heights are unreliable
             or ts.suspected  # this fall has already alerted
         ):
             return
+        peak = self._rotating(ts)
+        if peak is None:
+            return  # dropping but upright: sitting down, not tipping over
         ts.possible_alert_t = now
+        evidence = {"drop_m": round(ts.possible_drop_m, 2), "h_torso": round(f.h_torso, 2)}
+        if th.possible_rot_deg_s > 0:
+            evidence["trunk_rotation_deg_s"] = round(peak, 0)
         ts.possible_pending = Event(
             type="POSSIBLE_FALL",
             track_id=f.track_id,
-            t_trigger=now,
+            t_trigger=ts.possible_drop_t,
             t_alert=now,
             zone=f.zones[0] if f.zones else None,
-            evidence={
-                "drop_m": round(drop_m, 2),
-                "h_torso": round(f.h_torso, 2),
-            },
+            evidence=evidence,
         )
 
     def _update_track(self, f: Features) -> Event | None:
@@ -468,13 +505,19 @@ class FallStateMachine:
             down = True  # a flicker inside the grace, not a recovery
         on_bed = self._on_bed(f)
         recent = [h for (t, h) in ts.height_log if now - t <= self.th.possible_drop_s]
+        self._update_rotation(ts, f, now)
         if (
             not on_bed
             and recent[0] >= self.th.possible_from_h
             and max(recent) - f.h_torso >= self.th.possible_drop_m
         ):
-            self._possible_fall_alert(ts, f, now, max(recent) - f.h_torso)
+            if now > ts.possible_until:  # a new drop, not the same one still flagged
+                ts.possible_drop_m = 0.0
+            if ts.age(now) >= self.th.min_track_age_s:  # a new id's first heights are unreliable
+                ts.possible_drop_t = now
+                ts.possible_drop_m = max(ts.possible_drop_m, max(recent) - f.h_torso)
             ts.possible_until = now + self.th.possible_hold_s
+        self._possible_fall_alert(ts, f, now)
 
         # --- a fall already in progress: confirm, or cancel --------------
         # Gated on an *active trigger*, not on the state alone. The slow-slump

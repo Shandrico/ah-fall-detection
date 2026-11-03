@@ -473,3 +473,64 @@ A fall alert counted false by the strict windows could be marked:
 - Falls are from one healthy student on crash mats, and 4/4 is still consistent with a true rate as low as about 40% (95% confidence).
 - The bed boxes for 29 Oct were drawn on the view shared with the staff clips, so the staff bed-exit test is not fully separate on geometry. The staff phase labels were also scored once before (section 2), without tuning.
 - All timings exclude the 0.3-1.3 s screen delay in section 6.
+
+## 8. Fewer false alarms: possible-fall alert needs the trunk tipping (3 Nov)
+
+**Policy (reviewer, 2 Nov):** an alert on a genuinely risky movement (bending, kneeling, getting low near the floor) is useful, not a false positive. The target is 2-5 false alarms an hour, accepting later detection.
+
+**Change:** the POSSIBLE_FALL *alert* now also needs the trunk to tip over. The trunk's image tilt must turn at 80 deg/s or more within 0.5 s of the torso drop:
+- `possible_rot_deg_s` = 80;
+- `possible_rot_window_s` = 0.5;
+- 0 turns the gate off.
+
+Sitting down drops the torso as far as a fall does, but keeps it upright. The on-screen flag and the floor alerts are unchanged.
+
+**Tuned on development clips only.** The scripts are in `~/.ahfd-work/fp_tune_20261103/`.
+
+Counting:
+- The kneel / pick-up clip (`neg_f7_01`) counts as risky.
+- Every other alert away from a fall counts as false. That is conservative: pilot block D (takes 07/08) had some bending in its script, but it was never reviewed.
+
+Threshold sweep:
+- 15 drop-threshold settings, from 0.15 to 0.5 m over 0.5 or 0.8 s. Raising the drop threshold lost the early warning before it removed sit-downs.
+- The balance-based rule from `preimpact.py`, with and without agreement from the possible-fall alert.
+- A rotation gate at 40-130 deg/s.
+- A fast-v_z bypass, rejected because it added pilot false alarms.
+- A minimum number of frames before the floor alert, rejected because it delayed the slow-slump fall from +2.0 s to +3.7 s.
+
+### Development clips (pilot clips 01-08 excluded, about 19 min per camera)
+
+**Decision (3 Nov):** the pilot recordings `clip1_01`-`clip1_08` are no longer used for fall evaluation. Their depth heights are known to be wrong (handoff notes, "Depth"): a lying torso reads 0.2-1.1 m and jumps. Stray short-lived detections also appear beside the bed. The files are kept, not deleted. The dev set is now:
+- fall student 01 (`f*_01`, `neg_f6_01`, `neg_f7_01`);
+- the 27 Oct students s1-s4.
+
+| Camera | System | Falls caught | Before landing | Median timing | False alarms (per h) | Risky alerts (kneel clip) |
+|---|---|---|---|---|---|---|
+| D435f | before (possible-fall alert ungated) | 5/5 | 4 | -0.62 s | 5 (15.3) | 3 |
+| D435f | **after (gate at 80 deg/s)** | 5/5 | **4** | **-0.62 s** | **0 (0.0)** | 2 |
+| D435i | before | 5/5 | 4 | -0.44 s | 4 (13.0) | 3 |
+| D435i | **after** | 5/5 | **4** | **-0.44 s** | **0 (0.0)** | 1 |
+
+With the pilot clips included (27 min per camera), for reference only:
+- D435f: 21.5 per hour before, 8.6 after.
+- D435i: 47.2 per hour before, 15.7 after.
+
+All of the remaining false alarms come from those pilot clips.
+
+### Post-hoc check on the locked clips (already used on 2 Nov, so not an independent test)
+
+| Camera | | Falls caught | Before landing | Median timing | Risky (reviewed) | Other alert groups (per h, 12.6 min) |
+|---|---|---|---|---|---|---|
+| D435f | before | 4/4 | 4 | -0.58 s | 3 | 3 (14.2) |
+| D435f | after | 4/4 | **4** | -0.48 s | 3 | **1 (4.7)** |
+| D435i | before | 4/4 | 4 | -0.53 s | 3 | 3 (14.3) |
+| D435i | after | 4/4 | **1** | +0.17 s | 3 | **1 (4.8)** |
+
+- The floor alert in h3_02 at about 34 s belongs to the bending episode reviewed as risky. It now starts its own group because the possible-fall alert at 27 s is gone, so it is counted as risky here.
+- The one remaining alert on each camera is in staff clip `h3_01` from 27 Oct, which was recorded at 6-9 FPS. It has not been reviewed.
+
+**The cost the policy accepted:**
+- On the locked D435i clips, 3 of the 4 falls lost their before-landing alert. They are still caught at or just after landing (0 to +0.8 s).
+- On the D435f, nothing was lost.
+
+**Known blind spot:** a fall straight towards or away from the camera barely changes the image tilt. It gets no possible-fall alert, only the floor alert after landing; the golden synthetic fall is one of these.

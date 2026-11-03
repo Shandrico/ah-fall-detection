@@ -66,6 +66,7 @@ class DashboardState:
         self._seq = 0
         self._depth_jpeg: bytes | None = None
         self._depth_seq = 0
+        self._depth_viewers = 0  # open /depth.mjpg streams; the preview is only drawn for them
         self._depth_wall: float | None = None
         self._tracks: list[dict[str, Any]] = []
         self._people = 0
@@ -375,6 +376,15 @@ class DashboardState:
             if stale or self._status in ("error", "stopped"):
                 return _privacy_frame(), self._seq
             return self._jpeg, self._seq
+
+    def depth_viewer(self, delta: int) -> None:
+        """Count open depth-preview streams (+1 on connect, -1 on disconnect)."""
+        with self._lock:
+            self._depth_viewers = max(0, self._depth_viewers + delta)
+
+    def depth_wanted(self) -> bool:
+        with self._lock:
+            return self._depth_viewers > 0
 
     def latest_depth_frame(self) -> tuple[bytes, int]:
         with self._lock:

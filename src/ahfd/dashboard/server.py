@@ -240,6 +240,8 @@ def make_handler(state: DashboardState, controller=None, review_dir=None):
             self.end_headers()
 
             last_seq = -1
+            if depth:
+                state.depth_viewer(+1)
             try:
                 while True:
                     jpeg, seq = (
@@ -262,6 +264,9 @@ def make_handler(state: DashboardState, controller=None, review_dir=None):
                     self.wfile.write(b"\r\n")
             except (BrokenPipeError, ConnectionResetError, ConnectionAbortedError):
                 pass  # browser went away; let the handler thread finish
+            finally:
+                if depth:
+                    state.depth_viewer(-1)
 
     return Handler
 

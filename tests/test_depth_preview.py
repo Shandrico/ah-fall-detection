@@ -14,10 +14,12 @@ from ahfd.dashboard.runner import PipelineRunner
 from ahfd.viz.depth_render import render_depth
 
 
-def live_state():
+def live_state(viewer: bool = True):
     state = DashboardState()
     state.set_rgb(True)
     state.publish_status(0, "running")
+    if viewer:
+        state.depth_viewer(+1)  # the preview is only drawn while a depth view is open
     return state
 
 
@@ -220,3 +222,16 @@ def test_switch_warning_clears_once_the_new_source_runs():
     assert state.snapshot()["runtime"].get("warning")
     state.publish_status(gen, "running")
     assert "warning" not in state.snapshot()["runtime"]
+
+
+def test_depth_preview_is_skipped_while_nobody_watches_it():
+    state = live_state(viewer=False)
+    runner = PipelineRunner('rs://', Config(), None, state, True)
+    frame = SimpleNamespace(depth_raw=np.full((8, 8), 1000, np.uint16), depth_scale=0.001)
+    runner._publish_depth_preview(frame, True)
+    assert state._depth_jpeg is None
+    state.depth_viewer(+1)
+    runner._publish_depth_preview(frame, True)
+    assert state._depth_jpeg is not None
+    state.depth_viewer(-1)
+    assert not state.depth_wanted()

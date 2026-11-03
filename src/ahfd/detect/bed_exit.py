@@ -101,6 +101,13 @@ class BedExitThresholds:
     # slide to the floor) still counts once the body is clearly beyond the bed
     # edge -- unlike sitting on the edge, where the hips stay at the edge.
     exit_far_outside_m: float = 0.30
+    # The tracker often gives a patient a new ID as they leave the bed (pose drops out at the
+    # edge for a second or two). A new track that appears within handoff_s of a lost in-bed
+    # track, and within handoff_m of where that track last was, takes over its "was in this
+    # bed" evidence, so the exit is still reported. Found on the 2 Nov locked test (all three
+    # missed staff exits were ID changes); not yet tested on held-out data.
+    handoff_s: float = 4.0
+    handoff_m: float = 1.0
     rise_delta_m: float = 0.12
     phase_dwell_s: float = 0.30
     fast_transition_dwell_s: float = 0.10
@@ -198,6 +205,10 @@ class _BedTrack:
     warning_emitted: bool = False
     exit_emitted: bool = False
     support_seen: bool = False
+    last_xy: tuple[float, float] | None = None
+    first_xy: tuple[float, float] | None = None
+    created_t: float | None = None
+    inherited_from: int | None = None
     in_bed_since: float | None = None  # continuous supported-and-not-standing start
     support_lost_since: float | None = None
     reasons: tuple[str, ...] = ()
@@ -225,6 +236,8 @@ class BedExitStateMachine:
     def __init__(self, thresholds: BedExitThresholds | None = None) -> None:
         self.th = thresholds or BedExitThresholds()
         self._tracks: dict[int, _BedTrack] = {}
+        # In-bed tracks that ended without an exit, kept briefly for a handover.
+        self._orphans: list[dict] = []
 
     def _track(self, track_id: int, now: float) -> _BedTrack:
         ts = self._tracks.get(track_id)
@@ -235,6 +248,7 @@ class BedExitStateMachine:
                 observation_since=now,
                 last_update_t=now,
                 cusum=CusumOnset(self.th.cusum),
+                created_t=now,
             )
             self._tracks[track_id] = ts
         return ts
@@ -456,6 +470,34 @@ class BedExitStateMachine:
         # Bed-support arming needs *continuous observed* support; a gap restarts it.
         ts.in_bed_since = None
 
+    def _take_over(self, ts: _BedTrack, xy: tuple[float, float], now: float) -> None:
+        """Give a new track the bed history of a nearby in-bed track that just ended.
+
+        The tracker keeps an ID alive for a moment after it was last seen, so the
+        new ID often appears *before* the old one is dropped: match on when the new
+        track first appeared and where, not on the frame of the handover.
+        """
+        self._orphans = [o for o in self._orphans if 0.0 <= now - o["lost_t"] <= self.th.handoff_s + 2.0]
+        best = None
+        for o in self._orphans:
+            if not (o["lost_t"] - 1.5 <= ts.created_t <= o["lost_t"] + self.th.handoff_s):
+                continue
+            d = math.hypot(xy[0] - o["xy"][0], xy[1] - o["xy"][1])
+            if d <= self.th.handoff_m and (best is None or d < best[0]):
+                best = (d, o)
+        if best is None:
+            return
+        o = best[1]
+        self._orphans.remove(o)
+        ts.support_seen = True
+        ts.inherited_from = o["track_id"]
+        ts.bed_id = o["bed_id"]
+        if o["bed_risk"] is not None:
+            ts.bed_risk = o["bed_risk"]
+        if o["phase"] not in ("UNKNOWN", "OUT_OF_BED"):
+            ts.phase = o["phase"]
+            ts.phase_since = now
+
     def _evidence(self, ts: _BedTrack, now: float, trigger: str) -> dict:
         snap = self.snapshot_of(ts.track_id, now)
         evidence = {
@@ -482,6 +524,8 @@ class BedExitStateMachine:
                 evidence[key] = round(value, 3)
         if ts.onset_t is not None:
             evidence["onset_to_alert_s"] = round(now - ts.onset_t, 3)
+        if ts.inherited_from is not None:
+            evidence["took_over_track"] = ts.inherited_from
         return evidence
 
     def update(self, f: Features) -> Event | None:
@@ -519,6 +563,19 @@ class BedExitStateMachine:
         ):
             self._break_continuity(ts)
         ts.last_valid_t = now
+
+        xy = getattr(f, "contact_xy", None)
+        if xy is not None:
+            xy = (float(xy[0]), float(xy[1]))
+            if ts.first_xy is None:
+                ts.first_xy = xy
+            ts.last_xy = xy
+        if (
+            self._orphans and ts.first_xy is not None and not ts.support_seen
+            and ts.inherited_from is None and ts.created_t is not None
+            and now - ts.created_t <= self.th.handoff_s
+        ):
+            self._take_over(ts, ts.first_xy, now)
 
         associated = getattr(f, "associated_bed", None) or getattr(
             f, "supported_by_bed", None
@@ -799,13 +856,19 @@ class BedExitStateMachine:
         """Reset one reassociated track, or every track after a source seek."""
         if track_id is None:
             self._tracks.clear()
+            self._orphans.clear()
         else:
             self._tracks.pop(track_id, None)
 
     def retain_only(self, live_ids: set[int]) -> None:
         for track_id in list(self._tracks):
             if track_id not in live_ids:
-                del self._tracks[track_id]
+                ts = self._tracks.pop(track_id)
+                if ts.support_seen and not ts.exit_emitted and ts.bed_id and ts.last_xy is not None:
+                    self._orphans.append(dict(
+                        track_id=track_id, bed_id=ts.bed_id, bed_risk=ts.bed_risk, xy=ts.last_xy,
+                        lost_t=ts.last_update_t, phase=ts.phase,
+                    ))
 
 
 @dataclass

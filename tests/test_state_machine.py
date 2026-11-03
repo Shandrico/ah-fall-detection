@@ -184,8 +184,9 @@ class TestSeatedPosture:
         frames += hold(2.4, 12.0, h_torso=0.75,
                        floor_spread=SPREAD_DOWN, torso_tilt=20.0)
 
-        # Pose cannot tell a fast sit from the start of a fall: it alerts as possible only.
-        assert types_of(run(m, frames)) == ["POSSIBLE_FALL"]
+        # The torso drops as fast as a fall's but stays upright (tilt 20 deg throughout),
+        # so not even the possible-fall alert goes out.
+        assert types_of(run(m, frames)) == []
         assert m.state_of(1) == "SITTING"
         assert m._tracks[1].trigger_t is None
         assert m._tracks[1].last_alert_t is None
@@ -231,7 +232,7 @@ def fall_sequence(
     frames = hold(0.0, settle_s, zones=zones)
     t = settle_s
 
-    # 0.4 s of falling: torso from 1.15 m to about 0.2 m.
+    # 0.4 s of falling: torso from 1.15 m to about 0.2 m, trunk tipping ~200 deg/s.
     for i in range(int(0.4 * FPS)):
         frac = (i + 1) / (0.4 * FPS)
         frames.append(
@@ -242,6 +243,7 @@ def fall_sequence(
                 floor_spread=SPREAD_UPRIGHT if frac < 0.6 else SPREAD_DOWN,
                 motion=0.9,
                 zones=zones,
+                torso_tilt=5.0 + 80.0 * frac,  # the trunk tips over as it drops
             )
         )
     t += 0.4
@@ -929,7 +931,7 @@ class TestFloorAlert:
         again = run(m, hold(7.0, 3.0, h_torso=0.20, floor_spread=SPREAD_DOWN))
         assert types_of(first) == ["FALL_SUSPECTED"]
         assert types_of(up) == ["NEAR_MISS"]
-        assert types_of(again) == ["POSSIBLE_FALL", "FALL_SUSPECTED"]
+        assert types_of(again) == ["FALL_SUSPECTED"]  # no trunk rotation seen: no possible-fall alert
 
     def test_a_confirmed_fall_is_not_alerted_again_while_still_down(self):
         events = run(FallStateMachine(), fall_sequence(down_s=30.0))
@@ -950,7 +952,7 @@ class TestPossibleFallFlag:
         assert "FALL_SUSPECTED" in without and "FALL_CONFIRMED" in without
 
     def test_a_false_possible_fall_does_not_hide_a_real_fall_soon_after(self):
-        m = FallStateMachine()
+        m = FallStateMachine(FallThresholds(possible_rot_deg_s=0))  # gate off: any dip alerts
         first = run(m, hold(0.0, 2.0, h_torso=1.1) + hold(2.0, 0.2, h_torso=0.85) + hold(2.2, 2.0, h_torso=1.1))
         assert types_of(first) == ["POSSIBLE_FALL"]
         assert m._tracks[1].last_alert_t is None  # the paging cooldown did not start
@@ -960,7 +962,7 @@ class TestPossibleFallFlag:
         assert "FALL_SUSPECTED" in later
 
     def test_repeated_dips_alert_once_within_the_gap(self):
-        m = FallStateMachine()
+        m = FallStateMachine(FallThresholds(possible_rot_deg_s=0))
         frames = []
         t = 0.0
         for _ in range(3):
@@ -973,6 +975,28 @@ class TestPossibleFallFlag:
         events = run(m, fall_sequence(down_s=6.0))
         assert "POSSIBLE_FALL" not in types_of(events)
         assert m._tracks[1].possible_until > -math.inf
+
+    def test_upright_drop_shows_the_flag_but_does_not_alert(self):
+        """Sitting down: the torso drops but stays upright. Flag on screen, no alert."""
+        m = FallStateMachine()
+        frames = hold(0.0, 2.0, h_torso=1.1, torso_tilt=5.0) + hold(2.0, 0.3, h_torso=0.8, torso_tilt=8.0) \
+            + hold(2.3, 2.0, h_torso=1.1, torso_tilt=5.0)
+        assert "POSSIBLE_FALL" not in types_of(run(m, frames))
+        assert m._tracks[1].possible_until > -math.inf
+
+    def test_drop_with_the_trunk_tipping_alerts_with_the_rotation_as_evidence(self):
+        m = FallStateMachine()
+        events = run(m, fall_sequence(down_s=3.0))
+        possible = [e for e in events if e.type == "POSSIBLE_FALL"]
+        assert len(possible) == 1
+        assert possible[0].evidence["trunk_rotation_deg_s"] >= FallThresholds().possible_rot_deg_s
+
+    def test_rotation_without_a_drop_does_not_alert(self):
+        """Turning or leaning in place: fast tilt change, no loss of height."""
+        m = FallStateMachine()
+        frames = hold(0.0, 2.0, h_torso=1.1, torso_tilt=5.0)
+        frames += [feats(2.0 + i * DT, h_torso=1.1, torso_tilt=5.0 + 60.0 * i / 6) for i in range(6)]
+        assert "POSSIBLE_FALL" not in types_of(run(m, frames))
 
     def test_a_fast_torso_drop_raises_the_flag_for_a_moment(self):
         m = FallStateMachine()

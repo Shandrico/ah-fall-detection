@@ -103,6 +103,8 @@ class DetectConfig(BaseModel):
     possible_hold_s: float = 2.0
     possible_alert: bool = True  # raises POSSIBLE_FALL; False = on-screen flag only
     possible_alert_gap_s: float = 10.0
+    possible_rot_deg_s: float = 80.0  # alert needs the trunk tipping: see FallThresholds
+    possible_rot_window_s: float = 0.5
     confirm_s: float = 8.0
     confirm_motion_max: float = 0.15
     recover_h: float = 0.70
@@ -217,6 +219,9 @@ class SourceOption(BaseModel):
     # is uncalibrated: the dashboard runs pose-only on it (postures read TRACKED)
     # rather than refusing to show it.
     calibration: str | None = None
+    # Trained 7-phase model for this camera's view (side / along the beds), shown
+    # next to the rule phase. Display only. None falls back to dashboard.phase_model.
+    phase_model: str | None = None
 
 
 class AlertClipConfig(BaseModel):
@@ -254,6 +259,9 @@ class DashboardConfig(BaseModel):
     # Trained posture model (.joblib) shown NEXT TO the rule state, for live
     # comparison only -- alerts never read it. Empty = off.
     posture_model: str = ""
+    # Trained 7-phase bed-activity model shown next to the rule phase (display only).
+    # Per camera in `sources`; this is the fallback. Empty = off.
+    phase_model: str = ""
     # Folder of review video folders (<folder>/<group>/*.mp4) for the page's "Review
     # videos" link. They hold raw RGB, so it is ignored unless RGB is authorised.
     review_dir: str = ""

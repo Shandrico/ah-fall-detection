@@ -667,3 +667,65 @@ def test_an_edge_distance_jump_restarts_the_velocity_window():
     t, _ = feed(machine, t, 1.0, bed_edge_distance_m=0.85)
     feed(machine, t, 0.2, bed_edge_distance_m=0.15)  # 0.7 m in one frame: a glitch
     assert machine.snapshot_of(1).edge_velocity_mps is None  # unknown, not -0.7 m/s
+
+
+# --- ID handover (a new track ID while leaving the bed) ----------------------------------
+
+_STANDING_OUTSIDE = dict(
+    h_shoulder=1.35, torso_tilt=5.0, knee_angle=170.0, leg_tilt=3.0,
+    associated_bed=None, supported_by_bed=None, bed_overlap=0.0, bed_support_fraction=0.0,
+    bed_edge_distance_m=None, motion=0.3,
+)
+
+
+def _lose(machine, track_id, gap_s, t):
+    """The tracker drops ``track_id``; nothing is seen for ``gap_s``."""
+    machine.retain_only(set())
+    return t + gap_s
+
+
+def test_new_id_near_the_bed_takes_over_and_the_exit_is_reported():
+    machine = BedExitStateMachine()
+    t = establish_recline(machine, track_id=1)
+    t = _lose(machine, 1, 2.5, t)
+    _t, events = feed(machine, t, 1.0, track_id=2, contact_xy=(0.4, 4.3), **_STANDING_OUTSIDE)
+    assert [e.type for e in events] == ["BED_EXIT"]
+    assert events[0].evidence["took_over_track"] == 1
+    assert events[0].zone == "ward-A-2026-10-08"
+
+
+def test_new_id_far_from_the_bed_does_not_take_over():
+    machine = BedExitStateMachine()
+    t = establish_recline(machine, track_id=1)
+    t = _lose(machine, 1, 1.0, t)
+    _t, events = feed(machine, t, 1.0, track_id=2, contact_xy=(3.0, 4.0), **_STANDING_OUTSIDE)
+    assert events == []
+
+
+def test_new_id_long_after_the_loss_does_not_take_over():
+    machine = BedExitStateMachine()
+    t = establish_recline(machine, track_id=1)
+    t = _lose(machine, 1, 6.0, t)
+    _t, events = feed(machine, t, 1.0, track_id=2, contact_xy=(0.2, 4.0), **_STANDING_OUTSIDE)
+    assert events == []
+
+
+def test_handover_happens_once_and_a_passer_by_without_history_stays_silent():
+    machine = BedExitStateMachine()
+    t = establish_recline(machine, track_id=1)
+    t = _lose(machine, 1, 1.0, t)
+    t2, first = feed(machine, t, 1.0, track_id=2, contact_xy=(0.3, 4.0), **_STANDING_OUTSIDE)
+    _t, second = feed(machine, t, 1.0, track_id=3, contact_xy=(0.3, 4.2), **_STANDING_OUTSIDE)
+    assert len(first) == 1 and second == []
+
+
+def test_new_id_that_appears_before_the_old_id_is_dropped_still_takes_over():
+    """The tracker keeps a lost ID alive about 1 s, so the two overlap."""
+    machine = BedExitStateMachine()
+    t = establish_recline(machine, track_id=1)
+    # The new track starts while track 1 is still live (not yet retained out).
+    t, early = feed(machine, t, 0.5, track_id=2, contact_xy=(0.4, 4.2), **_STANDING_OUTSIDE)
+    machine.retain_only({2})  # now track 1 is dropped
+    _t, later = feed(machine, t, 1.0, track_id=2, contact_xy=(0.9, 4.6), **_STANDING_OUTSIDE)
+    assert early == []
+    assert [e.type for e in later] == ["BED_EXIT"]

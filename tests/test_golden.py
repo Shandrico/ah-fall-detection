@@ -137,7 +137,10 @@ class TestGoldenReplay:
         deliberately -- that edit is the moment to confirm nothing regressed."""
         events = _replay(golden_tracks)
         types = [e.type for e in events]
-        assert types == ["POSSIBLE_FALL", "FALL_SUSPECTED", "FALL_CONFIRMED"]
+        # This fall goes straight away from the camera, so the trunk's image tilt hardly
+        # changes and the possible-fall alert (which needs the trunk tipping, 3 Nov) stays
+        # quiet: the known blind spot of that gate. The floor alerts still fire.
+        assert types == ["FALL_SUSPECTED", "FALL_CONFIRMED"]
 
         confirmed = next(e for e in events if e.type == "FALL_CONFIRMED")
         # Impact is at ~3.5 s; confirmation waits confirm_s (8 s) after landing.
