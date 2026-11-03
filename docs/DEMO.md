@@ -224,3 +224,28 @@ The demo's alerts also count in the ward page's "Last 24 hours" totals until tom
 - **Blankets** are untested.
 - Results so far are from staged falls by one healthy student and bed exits by a few volunteers,
   not patients.
+
+---
+
+## 7. Measuring false alarms per 24 hours (target: 5 or fewer)
+
+The recorded clips are too short and too busy to measure this (about 13 min per camera, mostly exits
+and falls). Measure it live instead:
+
+1. Calibrate (section 1) and start the dashboard (section 2.1). Set the beds' levels as they would be
+   used (High turns the early warning on). Note the start time.
+2. Leave it running for 24 h (or several nights) with normal activity: people resting, reading,
+   getting up to walk around, visitors. Keep the Jetson powered and the T9 not needed.
+3. Count the alerts:
+
+   ```bash
+   python scripts/alarm_audit.py --since "2026-11-04 08:00" --hours 24
+   ```
+
+   It groups alerts into alarms (same person, less than 10 s apart), prints them per type and per
+   24 h, and writes `data/alarm_review.csv`.
+4. Watch each alarm's clip (`ahfd serve-review data/alert_clips`, section 4) and type `real`, `risky`
+   or `false` in the csv's verdict column. Run the script again: it prints false alarms per 24 h.
+
+If the false alarms come mainly from one alert type, that type is what to tune next, on this new
+footage, keeping a later recording as the test.
