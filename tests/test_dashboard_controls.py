@@ -1347,10 +1347,10 @@ class TestDashboardCommand:
         review_dirs = self.review_dirs = []
         real_init = DashboardServer.__init__
 
-        def spy(self, state, host="127.0.0.1", port=8000, controller=None, review_dir=None):
+        def spy(self, state, host="127.0.0.1", port=8000, controller=None, review_dir=None, **kw):
             made.append(controller)
             review_dirs.append(review_dir)
-            real_init(self, state, host, port, controller, review_dir)
+            real_init(self, state, host, port, controller, review_dir, **kw)
 
         monkeypatch.setattr(DashboardServer, "__init__", spy)
 

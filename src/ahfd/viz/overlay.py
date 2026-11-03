@@ -64,31 +64,21 @@ def render_overlay(
     if metrics:
         draw_metrics(canvas, pose, metrics, min_keypoint_score)
 
+    sc = canvas.shape[0] / 1080.0  # text sized to the frame, legible after the 960 px stream
     if fps is not None:
         cv2.putText(
-            canvas,
-            format(fps, ".1f") + " fps",
-            (8, 20),
-            cv2.FONT_HERSHEY_SIMPLEX,
-            0.5,
-            (255, 255, 255),
-            1,
-            cv2.LINE_AA,
+            canvas, format(fps, ".1f") + " fps", (round(12 * sc), round(36 * sc)),
+            cv2.FONT_HERSHEY_SIMPLEX, 0.9 * sc, (255, 255, 255), max(1, round(2 * sc)), cv2.LINE_AA,
         )
 
     if alert:
         # A banner across the top on a confirmed fall -- the thing a nurse
         # glancing at the screen must not miss.
-        cv2.rectangle(canvas, (0, 0), (canvas.shape[1], 40), _ALERT_BGR, -1)
+        bar = round(70 * sc)
+        cv2.rectangle(canvas, (0, 0), (canvas.shape[1], bar), _ALERT_BGR, -1)
         cv2.putText(
-            canvas,
-            alert,
-            (10, 28),
-            cv2.FONT_HERSHEY_SIMPLEX,
-            0.8,
-            (255, 255, 255),
-            2,
-            cv2.LINE_AA,
+            canvas, alert, (round(16 * sc), round(50 * sc)),
+            cv2.FONT_HERSHEY_SIMPLEX, 1.4 * sc, (255, 255, 255), max(2, round(3 * sc)), cv2.LINE_AA,
         )
 
     return canvas

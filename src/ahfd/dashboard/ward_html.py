@@ -125,6 +125,11 @@ WARD_HTML = r"""<!doctype html>
   .row.done .what { font-weight:400; }
   .none { color:var(--soft); padding:6px 0; }
 
+  /* Review alerts: recent alert clips. */
+  #clips { max-height:24vh; overflow:auto; }
+  #clips .row { cursor:pointer; }
+  #clips .row:hover .what, #clips .row.on .what { text-decoration:underline; }
+  #player { width:100%; aspect-ratio:16/9; background:#050708; margin-top:8px; display:block; }
   .feed { position:relative; background:#050708; overflow:hidden; }
   .feed img { display:block; width:100%; aspect-ratio:16/9; max-height:74vh; object-fit:contain; }
   #log { max-height:30vh; overflow:auto; }
@@ -188,6 +193,11 @@ WARD_HTML = r"""<!doctype html>
     <section aria-label="Shift log">
       <div class="label">Shift log <small>newest first</small></div>
       <div id="log"><div class="none">Nothing yet</div></div>
+    </section>
+    <section aria-label="Review alerts" id="review-box" hidden>
+      <div class="label">Review alerts <small>last 24 hours, newest first</small></div>
+      <div id="clips"></div>
+      <video id="player" controls playsinline preload="none" hidden></video>
     </section>
     <section aria-label="Totals">
       <div class="label">Last 24 hours</div>
@@ -425,6 +435,31 @@ setTheme(stored('ahfd-ward-theme') === 'night' ? 'night' : 'day');
 refresh(); tick();
 setInterval(tick, 1000);
 setInterval(refresh, 1000);
+
+// Review alerts: the saved clip around each alert (10 s before to 15 s after).
+let clipKey = '', playing = '';
+async function loadClips(){
+  let r; try { r = await (await fetch('/api/alert_clips')).json(); } catch(e) { return; }
+  const clips = r.clips || [];
+  $('review-box').hidden = clips.length === 0;
+  const key = clips.map(c => c.name).join('|') + playing;
+  if (key === clipKey) return; clipKey = key;
+  $('clips').innerHTML = clips.map(c => {
+    const a = ALERTS[c.types[0]] || {tier:'check', title:c.types[0]};
+    const more = c.types.length > 1 ? ` <span class="place">then ${c.types.slice(1).map(t => (ALERTS[t]||{title:t}).title.toLowerCase()).join(', ')}</span>` : '';
+    return `<div class="row ${a.tier}${c.name===playing?' on':''}" data-name="${c.name}" data-seek="${c.seek_s}" role="button" tabindex="0">
+      <div class="time">${c.clock}</div><div class="mark"></div>
+      <div><div class="what">${a.title}${more}</div><div class="place">${place(c.bed)} &middot; ${Math.round(c.duration_s||0)} s &middot; ${c.picture}</div></div></div>`;
+  }).join('');
+  [...$('clips').children].forEach(row => {
+    const play = () => { const v = $('player'); playing = row.dataset.name; v.hidden = false;
+      v.src = '/alert_clip/' + encodeURIComponent(row.dataset.name);
+      v.onloadedmetadata = () => { v.currentTime = +row.dataset.seek; v.play(); }; clipKey = ''; loadClips(); };
+    row.addEventListener('click', play);
+    row.addEventListener('keydown', e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); play(); } });
+  });
+}
+loadClips(); setInterval(loadClips, 15000);
 </script>
 </body>
 </html>

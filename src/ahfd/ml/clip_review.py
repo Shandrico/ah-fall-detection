@@ -49,11 +49,36 @@ class FramePrediction:
     alert_type: str | None = None
 
 
+# Alert events as the system raises them, grouped for the review video.
+FALL_EVENTS = frozenset(FALL_ALERT_EVENTS | {"POSSIBLE_FALL"})
+REVIEWED_EVENTS = FALL_EVENTS | {"BED_EXIT", "BED_EXIT_WARNING"}
+
+
+@dataclass
+class AlertMark:
+    """One alert group (fall alerts <10 s apart are one group) or one missed labelled event, with a verdict.
+
+    ``verdict``: TRUE, FALSE ALARM, RISKY (a reviewer judged the movement worth a look), EXTRA (a
+    repeat near a real event), NO EXIT (an early warning not followed by an exit within 60 s), or
+    MISSED (a labelled fall/exit with no alert). The windows are those of docs/BENCHMARK.md.
+    """
+
+    kind: str  # "fall", "bed_exit", "warning" or "missed"
+    t: float  # seconds since the clip's first frame
+    types: list[str]
+    verdict: str
+    note: str = ""
+
+
 @dataclass
 class ClipPredictions:
     t0: float  # absolute time of the clip's first frame
     frames: dict[float, FramePrediction] = field(default_factory=dict)  # keyed by rounded absolute t
     subject: int | None = None
+    events: list[tuple[str, float, int]] = field(default_factory=list)  # (type, s since first frame, track)
+    impacts: list[float] = field(default_factory=list)  # labelled fall impacts, s since first frame
+    exits: list[float] = field(default_factory=list)  # labelled sustained exits (>= 3 s out of bed)
+    marks: list[AlertMark] = field(default_factory=list)
 
     def at(self, t_abs: float) -> FramePrediction | None:
         return self.frames.get(round(t_abs, 3))
@@ -69,6 +94,62 @@ class ClipPredictions:
             labelled = [(p, y) for p, y in pairs if y is not None]
             out[name] = (sum(p == y for p, y in labelled), len(labelled))
         return out
+
+
+def judge_alerts(events, impacts, exits, reviewed=None) -> list[AlertMark]:
+    """Verdict for every alert group and every missed labelled event (benchmark windows).
+
+    Fall alerts: groups of alerts less than 10 s apart; TRUE inside [impact - 3 s, impact + 30 s].
+    A false group a reviewer judged risky (``reviewed``: {seconds: verdict}, matched to the episode:
+    from 10 s before the group's first alert to 3 s after its last) shows as RISKY. Bed exit: TRUE inside [exit - 5, exit + 15]; inside [exit - 10, exit + 30]
+    otherwise EXTRA; else FALSE ALARM. Early warning: TRUE when an exit follows within 60 s.
+    """
+    reviewed = reviewed or {}
+    marks = []
+    falls = sorted((t, k) for k, t, _ in events if k in FALL_EVENTS)
+    groups: list[list[tuple[float, str]]] = []
+    for t, k in falls:
+        if groups and t - groups[-1][-1][0] <= 10.0:
+            groups[-1].append((t, k))
+        else:
+            groups.append([(t, k)])
+    for g in groups:
+        t, types = g[0][0], [k for _, k in g]
+        hit = [ti for ti in impacts if ti - 3.0 <= t <= ti + 30.0]
+        if hit:
+            marks.append(AlertMark("fall", t, types, "TRUE", "%+.1f s from the labelled impact" % (t - hit[0])))
+            continue
+        # The reviewer judged an alert *episode*; it may have started up to 10 s before this group
+        # (alerts less than 10 s apart are one episode), e.g. when a later version drops its first alert.
+        end = g[-1][0]
+        verdict = next((v for rt, v in reviewed.items() if t - 10.0 <= rt <= end + 3.0), None)
+        if verdict == "risky":
+            marks.append(AlertMark("fall", t, types, "RISKY", "reviewed: risky movement, useful"))
+        elif verdict == "real":
+            marks.append(AlertMark("fall", t, types, "TRUE", "reviewed: a real fall the labels missed"))
+        else:
+            marks.append(AlertMark("fall", t, types, "FALSE ALARM", "no labelled fall within -3 / +30 s"))
+    for t in sorted(t for k, t, _ in events if k == "BED_EXIT"):
+        hit = [e for e in exits if e - 5.0 <= t <= e + 15.0]
+        if hit:
+            marks.append(AlertMark("bed_exit", t, ["BED_EXIT"], "TRUE", "%+.1f s from the labelled exit" % (t - hit[0])))
+        elif any(e - 10.0 <= t <= e + 30.0 for e in exits):
+            marks.append(AlertMark("bed_exit", t, ["BED_EXIT"], "EXTRA", "near a labelled exit"))
+        else:
+            marks.append(AlertMark("bed_exit", t, ["BED_EXIT"], "FALSE ALARM", "no labelled exit near"))
+    for t in sorted(t for k, t, _ in events if k == "BED_EXIT_WARNING"):
+        nxt = [e for e in exits if t <= e <= t + 60.0]
+        if nxt:
+            marks.append(AlertMark("warning", t, ["BED_EXIT_WARNING"], "TRUE", "%.1f s before the labelled exit" % (nxt[0] - t)))
+        else:
+            marks.append(AlertMark("warning", t, ["BED_EXIT_WARNING"], "NO EXIT", "no exit within 60 s"))
+    for ti in impacts:
+        if not any(ti - 2.5 <= t <= ti + 30.0 for t, _ in falls):
+            marks.append(AlertMark("missed", ti, ["FALL"], "MISSED", "labelled fall, no fall alert"))
+    for e in exits:
+        if not any(e - 5.0 <= t <= e + 15.0 for k, t, _ in events if k == "BED_EXIT"):
+            marks.append(AlertMark("missed", e, ["BED_EXIT"], "MISSED", "labelled exit, no bed-exit alert"))
+    return sorted(marks, key=lambda m: m.t)
 
 
 def _load_model(path):
@@ -124,6 +205,9 @@ def predict_clip(
     phase_model: Path | None = None,
     labels: Path | None = None,
     label_t0: float | None = None,
+    posture_labels: Path | None = None,
+    falls: Path | None = None,
+    reviewed: dict[float, str] | None = None,
 ) -> ClipPredictions:
     """Run the rules and models over ``tracks``; attach ``labels`` if given.
 
@@ -131,6 +215,12 @@ def predict_clip(
     defaults to this clip's first frame. Labels made on the other camera of a
     take need that camera's first-frame time (the pilot put the D435f labels on
     the D435i clock this way).
+
+    ``posture_labels`` (4-state, on this clip's own clock) override postures
+    derived from the phase labels. ``falls`` is a fall annotation JSON
+    (``t_impact`` on this clip's own clock). With either, every alert gets a
+    verdict in ``marks`` (see ``judge_alerts``); ``reviewed`` adds a
+    reviewer's verdicts for false fall alerts.
     """
     import numpy as np
 
@@ -148,6 +238,7 @@ def predict_clip(
     posture = _load_model(posture_model)
     phase = _load_model(phase_model)
     segments = P._labelled_segments(Path(labels)) if labels is not None else []
+    posture_segments = P._labelled_segments(Path(posture_labels)) if posture_labels is not None else []
     min_kp = cfg.pose.min_keypoint_score
 
     subject = subject_track(tracks, calib, 0.3)
@@ -175,6 +266,8 @@ def predict_clip(
             if f is None:
                 continue
             for event in machine.update_all(f):
+                if event.type in REVIEWED_EVENTS:
+                    out.events.append((event.type, event.t_alert - out.t0, event.track_id))
                 if event.type in FALL_ALERT_EVENTS:
                     last_alert = (event.type, pose.t)
                 elif event.type == "BED_EXIT":
@@ -224,5 +317,21 @@ def predict_clip(
             pred.label_posture = P._posture_at(segments, pose.t - lt0, "posture") or (
                 P.PHASE_TO_POSTURE.get(pred.label_phase) if pred.label_phase else None
             )
+        if posture_segments:
+            pred.label_posture = P._posture_at(posture_segments, pose.t - out.t0) or pred.label_posture
         out.frames[round(pose.t, 3)] = pred
+    if labels is not None or falls is not None:
+        import json
+
+        lt0 = out.t0 if label_t0 is None else label_t0
+        if labels is not None:
+            segs = sorted(json.loads(Path(labels).read_text())["segments"], key=lambda x: x["start_s"])
+            in_bed = {"RECLINED", "TORSO_RISING", "UPRIGHT_IN_BED", "SHIFTING_TO_EDGE", "EDGE_SITTING", "ATTEMPTING_STAND"}
+            out.exits = [
+                b["start_s"] + lt0 - out.t0 for a, b in zip(segs, segs[1:])
+                if b.get("phase") == "OUT_OF_BED" and a.get("phase") in in_bed and b["end_s"] - b["start_s"] >= 3.0
+            ]
+        if falls is not None:
+            out.impacts = [float(x["t_impact"]) for x in json.loads(Path(falls).read_text()).get("falls", [])]
+        out.marks = judge_alerts(out.events, out.impacts, out.exits, reviewed)
     return out

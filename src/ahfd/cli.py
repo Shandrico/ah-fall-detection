@@ -4665,6 +4665,9 @@ def dashboard(
         controller=controller,
         # Review videos are raw RGB: no RGB authorisation, no videos.
         review_dir=cfg.dashboard.review_dir if rgb_allowed else None,
+        # The nurse page's "Review alerts": stick-figure clips always, camera-image clips only with RGB.
+        clips_dir=cfg.dashboard.alert_clips.dir if cfg.dashboard.alert_clips.enabled else None,
+        clips_allow_rgb=rgb_allowed,
     )
 
     typer.echo(
@@ -5061,6 +5064,10 @@ def review_clip(
     labels: Path = typer.Option(None, help="Phase/posture label JSON for this clip, if labelled."),
     labels_clock: Path = typer.Option(
         None, help="Tracks file whose first frame is label second 0 (labels made on the other camera)."),
+    posture_labels: Path = typer.Option(None, help="4-state posture labels on this clip's own clock (override)."),
+    falls: Path = typer.Option(None, help="Fall annotation JSON (t_impact, this clip's clock): adds verdicts."),
+    reviewed: Path = typer.Option(
+        None, help='JSON {"seconds": "risky"|"false"|"real"}: a reviewer\'s verdicts on false fall alerts.'),
     crf: int = typer.Option(23, min=15, max=35, help="H.264 quality: lower = sharper and larger."),
     consent: bool = typer.Option(
         False, "--i-understand-raw-capture", help="Required. Confirms this is consented staged data."),
@@ -5088,12 +5095,21 @@ def review_clip(
 
         label_t0 = _first_track_time(labels_clock)
     typer.echo("rendering  " + str(recording) + "  ->  " + str(out))
+    review_verdicts = None
+    if reviewed is not None:
+        import json as _json
+
+        review_verdicts = {float(k): str(v) for k, v in _json.loads(reviewed.read_text()).items()}
+    preds_out: list = []
     n, agreement = export_labelled_review(
         recording, tracks, out, cfg=cfg, calibration=calibration,
         posture_model=posture_model, phase_model=phase_model, labels=labels, label_t0=label_t0,
+        posture_labels=posture_labels, falls=falls, reviewed=review_verdicts, preds_out=preds_out,
         crf=crf, config_flag=cfg.privacy.allow_raw_capture, cli_flag=consent, progress=typer.echo,
     )
     typer.echo("wrote " + str(n) + " frames to " + str(out))
+    for m in preds_out[0].marks if preds_out else []:
+        typer.echo("alert %7.1f s  %-11s %-40s %s" % (m.t, m.verdict, "+".join(m.types), m.note))
     for name, (agree, total) in agreement.items():
         if total:
             typer.echo("  %-14s agrees with labels on %5.1f%% of %d frames" % (name, 100.0 * agree / total, total))

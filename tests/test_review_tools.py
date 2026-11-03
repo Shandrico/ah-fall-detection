@@ -150,16 +150,19 @@ def test_table_marks_agreement_with_the_label():
     from ahfd.debug.annotated_review import _draw_table
     from ahfd.ml.clip_review import FramePrediction
 
-    pred = FramePrediction(t=1.0, track_id=0, rule_phase="RECLINED", model_phase="TORSO_RISING",
-                           label_phase="RECLINED")
-    canvas = np.zeros((1080, 1920, 3), np.uint8)
-    _draw_table(cv2, canvas, pred, 1.0, 10)
-    rules_row, model_row = canvas[130:160, 300:660], canvas[164:194, 300:660]
     green = lambda a: ((a[..., 1] > 150) & (a[..., 2] < 120)).sum()
     red = lambda a: ((a[..., 2] > 150) & (a[..., 1] < 120)).sum()
-    assert green(rules_row) > red(rules_row)  # rules agree with the label
-    assert red(model_row) > green(model_row)  # model does not
+    wrong = FramePrediction(t=1.0, track_id=0, rule_phase="RECLINED", model_phase="TORSO_RISING",
+                            label_phase="RECLINED")
+    canvas = np.zeros((1080, 1920, 3), np.uint8)
+    _draw_table(cv2, canvas, wrong, 1.0, 10)
+    system_row = canvas[130:160, 300:660]  # the second row is the system (the trained model)
+    assert red(system_row) > green(system_row)  # the model disagrees with the label
     assert not canvas[400:, :].any()          # the table stays in its corner
+    right = FramePrediction(t=1.0, track_id=0, model_phase="RECLINED", label_phase="RECLINED")
+    canvas = np.zeros((1080, 1920, 3), np.uint8)
+    _draw_table(cv2, canvas, right, 1.0, 10)
+    assert green(canvas[130:160, 300:660]) > red(canvas[130:160, 300:660])
 
 
 def test_clip_predictions_follow_labels_and_their_clock(tmp_path):
@@ -191,3 +194,24 @@ def test_clip_predictions_follow_labels_and_their_clock(tmp_path):
     early = [f for f in shifted.frames.values() if f.t < 1.0]
     assert early and all(f.label_phase is None or f.label_phase == "RECLINED" for f in early)
     assert all(f.label_phase is None for f in shifted.frames.values() if 1.05 < f.t < 2.95)
+
+
+def test_alert_verdicts_follow_the_benchmark_windows():
+    from ahfd.ml.clip_review import judge_alerts
+
+    events = [
+        ("POSSIBLE_FALL", 9.6, 1), ("FALL_SUSPECTED", 10.2, 1),  # one group, 0.4 s before the impact
+        ("POSSIBLE_FALL", 60.0, 1),  # nothing near: false alarm
+        ("FALL_SUSPECTED", 120.0, 1),  # a reviewer judged this episode risky (reviewed 8 s earlier)
+        ("BED_EXIT", 31.0, 2), ("BED_EXIT", 90.0, 2),
+        ("BED_EXIT_WARNING", 20.0, 2), ("BED_EXIT_WARNING", 150.0, 2),
+    ]
+    marks = judge_alerts(events, impacts=[10.0, 200.0], exits=[30.0], reviewed={112.0: "risky"})
+    got = [(m.kind, round(m.t, 1), m.verdict) for m in marks]
+    assert ("fall", 9.6, "TRUE") in got
+    assert ("fall", 60.0, "FALSE ALARM") in got
+    assert ("fall", 120.0, "RISKY") in got
+    assert ("bed_exit", 31.0, "TRUE") in got and ("bed_exit", 90.0, "FALSE ALARM") in got
+    assert ("warning", 20.0, "TRUE") in got and ("warning", 150.0, "NO EXIT") in got
+    assert ("missed", 200.0, "MISSED") in got  # the second labelled fall had no alert
+    assert len([m for m in marks if m.kind == "fall"]) == 3

@@ -44,3 +44,34 @@ def test_every_alert_and_state_has_plain_words():
 
 def test_needs_nothing_from_outside():
     assert "http://" not in WARD_HTML and "https://" not in WARD_HTML
+
+
+def test_alert_clips_review_lists_recent_skeleton_clips_only(tmp_path):
+    import json
+    import time as _t
+    from datetime import datetime
+
+    from ahfd.dashboard.alert_review import find_alert_clip, list_alert_clips
+
+    def clip(stem, picture, age_h):
+        (tmp_path / (stem + ".mp4")).write_bytes(b"\x00" * 10)
+        started = datetime.fromtimestamp(_t.time() - age_h * 3600).isoformat(timespec="seconds")
+        (tmp_path / (stem + ".json")).write_text(json.dumps({
+            "video": stem + ".mp4", "picture": picture, "started": started, "duration_s": 25.0,
+            "seconds_before_first_alert": 10.0, "alerts": [{"type": "BED_EXIT", "clock": "01:27:45", "zone": "nearest"}]}))
+
+    clip("a_new", "stick figures only", 1)
+    clip("b_rgb", "camera image", 1)
+    clip("c_old", "stick figures only", 30)
+    names = [c["name"] for c in list_alert_clips(tmp_path, allow_rgb=False)]
+    assert names == ["a_new.mp4"]
+    assert {c["name"] for c in list_alert_clips(tmp_path, allow_rgb=True)} == {"a_new.mp4", "b_rgb.mp4"}
+    assert find_alert_clip(tmp_path, "b_rgb.mp4", allow_rgb=False) is None
+    assert find_alert_clip(tmp_path, "../c_old.mp4", allow_rgb=True) is None
+    assert list_alert_clips(tmp_path, allow_rgb=False)[0]["seek_s"] == 7.0
+
+
+def test_ward_page_has_review_alerts_section():
+    from ahfd.dashboard.ward_html import WARD_HTML
+
+    assert 'id="review-box"' in WARD_HTML and "/api/alert_clips" in WARD_HTML

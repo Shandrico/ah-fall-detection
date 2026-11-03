@@ -77,19 +77,47 @@ def draw_people(
             )
 
         if show_ids and person.track_id is not None:
-            label = "id " + str(person.track_id)
-            if states and person.track_id in states:
-                label += "  " + states[person.track_id]
-            cv2.putText(
-                canvas,
-                label,
-                (int(box[0]), max(12, int(box[1]) - 6)),
-                cv2.FONT_HERSHEY_SIMPLEX,
-                0.5,
-                color,
-                1,
-                cv2.LINE_AA,
-            )
+            _draw_label(canvas, person.track_id, states.get(person.track_id) if states else None,
+                        (int(box[0]), int(box[1])), color)
+
+
+# Flags that get their own coloured line on the label (BGR).
+_FLAG_COLOURS = {"POSSIBLE FALL": (0, 140, 255), "GETTING UP": (0, 215, 255)}
+
+
+def _draw_label(canvas, track_id, state, top_left, color) -> None:
+    """Readable label above a person: rule state large, model labels and flags below.
+
+    ``state`` is the runner's "RULE | model: a, b | FLAG" string. Text is sized to
+    the frame so it stays legible after the browser stream is shrunk to 960 px.
+    """
+    parts = [p.strip() for p in (state or "").split("|") if p.strip()]
+    rule = parts[0] if parts else ""
+    model = next((p for p in parts[1:] if p.startswith("model:")), None)
+    flags = [p for p in parts[1:] if p in _FLAG_COLOURS]
+    s = canvas.shape[0] / 1080.0
+    big, small = 1.05 * s, 0.8 * s
+    thick_big, thick_small = max(1, round(2.4 * s)), max(1, round(1.8 * s))
+    font = cv2.FONT_HERSHEY_SIMPLEX
+    lines = [(f"#{track_id}  {rule}".strip(), big, thick_big, (255, 255, 255))]
+    if model:
+        lines.append(("model: " + model[len("model:"):].strip().replace(", ", " / "), small, thick_small, (210, 210, 210)))
+    lines += [(f, small, thick_small, _FLAG_COLOURS[f]) for f in flags]
+    sizes = [cv2.getTextSize(t, font, sc, th)[0] for t, sc, th, _ in lines]
+    pad, gap = round(8 * s), round(8 * s)
+    w = max(tw for tw, _ in sizes) + 2 * pad
+    h = sum(th for _, th in sizes) + gap * (len(lines) - 1) + 2 * pad
+    x0 = max(0, min(top_left[0], canvas.shape[1] - w))
+    y0 = max(0, top_left[1] - h - round(6 * s))
+    roi = canvas[y0:y0 + h, x0:x0 + w]
+    if roi.size:
+        roi[:] = (roi * 0.35).astype(roi.dtype)  # dark see-through box
+    cv2.rectangle(canvas, (x0, y0), (x0 + w, y0 + h), color, max(1, round(2 * s)))
+    y = y0 + pad
+    for (text, sc, th, col), (_tw, tht) in zip(lines, sizes):
+        y += tht
+        cv2.putText(canvas, text, (x0 + pad, y), font, sc, col, th, cv2.LINE_AA)
+        y += gap
 
 
 def draw_metrics(
@@ -197,28 +225,29 @@ def _draw_hud(canvas: np.ndarray, pose: PoseFrame, fps: float | None) -> None:
     if fps is not None:
         lines.insert(0, format(fps, ".1f") + " fps")
 
+    sc = canvas.shape[0] / 1080.0
     for i, line in enumerate(lines):
         cv2.putText(
             canvas,
             line,
-            (8, 18 + i * 16),
+            (round(12 * sc), round(34 * sc) + i * round(32 * sc)),
             cv2.FONT_HERSHEY_SIMPLEX,
-            0.45,
-            (200, 200, 200),
-            1,
+            0.9 * sc,
+            (220, 220, 220),
+            max(1, round(2 * sc)),
             cv2.LINE_AA,
         )
 
     # A visible reminder of what this window is, for anyone who walks past it.
     label = "SKELETON ONLY -- NO VIDEO RETAINED"
-    (tw, _), _ = cv2.getTextSize(label, cv2.FONT_HERSHEY_SIMPLEX, 0.4, 1)
+    (tw, _), _ = cv2.getTextSize(label, cv2.FONT_HERSHEY_SIMPLEX, 0.75 * sc, max(1, round(2 * sc)))
     cv2.putText(
         canvas,
         label,
-        (max(8, canvas.shape[1] - tw - 8), canvas.shape[0] - 10),
+        (max(8, canvas.shape[1] - tw - round(12 * sc)), canvas.shape[0] - round(16 * sc)),
         cv2.FONT_HERSHEY_SIMPLEX,
-        0.4,
-        (90, 90, 90),
-        1,
+        0.75 * sc,
+        (130, 130, 130),
+        max(1, round(2 * sc)),
         cv2.LINE_AA,
     )
