@@ -160,7 +160,9 @@ _PHASE_COLOURS = {
 _POSTURE_COLOURS = {
     "in_bed": (180, 119, 31), "sitting": (44, 160, 44), "upright": (34, 189, 188), "on_ground": (40, 39, 214),
 }
-_BANNER_COLOURS = {"FALL ALERT": (40, 39, 214), "POSSIBLE FALL": (0, 165, 255), "GETTING UP": (0, 230, 230)}
+_BANNER_COLOURS = {
+    "FALL ALERT": (40, 39, 214), "BED EXIT": (180, 60, 200), "POSSIBLE FALL": (0, 165, 255), "GETTING UP": (0, 230, 230),
+}
 _ROWS = (  # (title, attribute, colours) top to bottom in the strip
     ("7-phase label", "label_phase", _PHASE_COLOURS),
     ("7-phase rules", "rule_phase", _PHASE_COLOURS),

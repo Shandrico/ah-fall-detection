@@ -7,7 +7,7 @@ Only development clips were used:
 - the 27 Oct students s1-s4;
 - the 29 Oct fall student 01 (`f*_01`, `neg_f6_01`, `neg_f7_01`).
 
-The staff clips, fall student 02 and pilot 09-10 were never read. They remain the locked tests.
+The staff clips, fall student 02 and pilot 09-10 were not read for sections 1 and 3. Fall student 02 and the staff events have since been used once, as the locked test in section 7.
 
 These are staged falls by one healthy student on crash mats, not patient falls. The phase and fall labels are in whole seconds, so every time below is good to about ±1 s.
 
@@ -369,3 +369,84 @@ Stored tracks were replayed with frames dropped to 5 FPS. This is a **simulation
 | False exits | 1 → 1 | 0 → 0 |
 
 On these dev clips, dropping to 5 FPS changed detection very little.
+
+## 7. Locked test (2 Nov, run once)
+
+Code frozen at commit `51c2673`. The rules were written down before any locked clip was scored (`~/.ahfd-work/locked_test_20261102/PREREGISTERED.md`) and use the same scoring windows as sections 1, 3 and 3b. Nothing is to be tuned on these results. **These clips are now used. Any further tuning needs new recordings to test on.**
+
+Clips:
+- fall student 02: 4 falls, plus a deliberate lie-down and a kneel clip, seen by both cameras (about 3 min per camera);
+- 3 staff members, about 10 min per camera, no falls. Their 7 sustained bed exits come from staff 2 and 3 only: staff 1's clips have no labelled exit.
+
+Replayed from stored tracks at the recorded frame rate, not live.
+
+### Falls
+
+**Precision** counts each caught fall as one true alert. **False alarms** cover the fall-student clips and the staff clips together (about 13 min per camera).
+
+| System | Camera | Falls caught | Detected before landing | Median timing | Precision | False alarms (per h) | Dev false alarms per h |
+|---|---|---|---|---|---|---|---|
+| **Current (floor + possible fall)** | D435f | **4/4** | **4** | **-0.58 s** | 0.40 | 6 (28.1) | 29.7 |
+| **Current (floor + possible fall)** | D435i | **4/4** | **4** | **-0.53 s** | 0.44 | 5 (23.9) | 60.0 |
+| Floor alert only | D435f | 4/4 | 1 | +0.06 s | 0.57 | 3 (14.0) | 13.7 |
+| Floor alert only | D435i | 4/4 | 0 | +0.27 s | 0.50 | 4 (19.1) | 9.6 |
+| Pre-impact rule only | D435f | 4/4 | 4 | -0.45 s | 0.50 | 4 (18.7) | **2.3** |
+| Pre-impact rule only | D435i | **1/4** | 1 | -0.45 s | 0.20 | 4 (19.1) | 24.0 |
+| Pre-impact model only | D435f | 4/4 | 4 | -0.70 s | 0.50 | 4 (18.7) | 9.1 |
+| Pre-impact model only | D435i | 4/4 | 2 | +0.08 s | 0.50 | 4 (19.1) | 21.6 |
+
+- **The current system held up:** every fall was caught on both cameras, all before the labelled landing, with false alarm rates no worse than on the development clips.
+- **The pre-impact rule's low false alarm rate did not hold.** The D435f went from 2.3 to 18.7 per hour, based on only 4 alarms. It also caught just 1 of 4 falls on the D435i.
+- The deliberate lie-down raised a floor alert at +0.81 s and +0.94 s, as intended. Each kneel clip raised 1 false alarm, included above.
+- Floor alert timing is earlier than on the development clips (+1.25 to +1.51 s). The D435i impact labels on these clips are in whole seconds and every label is good to about ±1 s, so do not read much into differences under 1 s.
+
+### Bed exit (sustained, at least 3 s)
+
+| People | Camera | Exits caught | Median timing | False exits |
+|---|---|---|---|---|
+| **staff 2 and 3** | D435f | 5/7 | +0.4 s | 0 |
+| **staff 2 and 3** | D435i | 6/7 | +0.15 s | 0 |
+| **staff 2 and 3, both cameras added** | | **11/14 (79%)** | **+0.4 s** | **0** |
+| Fall student 02 | both | 2/2 | 0 s | 0 |
+
+- Missed: `h2_01` on both cameras and `h3_01` on the D435f.
+- There were no brief stand-ups in these clips, so that weakness was not tested.
+
+### Bed-edge warning (not connected to the dashboard)
+
+| View | Exits warned | Median lead (minimum) | Warnings | At the edge, no exit followed | Not at the edge | Dev result (warned, lead, not at edge) |
+|---|---|---|---|---|---|---|
+| side | **5/8** | 6.2 s (1.5 s) | 14 | 2 | **5** | 11/12, 12.9 s, 2 |
+| along | 8/8 | 7.7 s (1.0 s) | 16 | 2 | 4 | 11/12, 17.5 s, 11 |
+
+Clearly weaker than on the development clips, and the earlier advice to use the side view only is not supported by this test.
+
+### Posture on a person with real on-the-ground frames (fall student 02, 4212 frames)
+
+| Method | Accuracy | Macro-F1 | On the ground: precision / recall |
+|---|---|---|---|
+| Trained tree | 0.950 | 0.915 | 1.00 / 0.95 |
+| Rules | 0.883 | 0.541 | 1.00 / 0.96 |
+
+83% of these frames are on the ground, so macro-F1 is the fairer number. This fills the gap in section 5, where the staff test has no on-the-ground frames.
+
+### Without the 27 Oct staff clips (`h*_01`), added after the test
+
+These clips recorded at only 6-9 FPS, with gaps of up to 4.2 s, because `record-dual` wrote straight to the T9 (found 28 Oct). The other staff clips run at about 15 FPS with no gap over 0.2 s. This exclusion was decided after the results were seen, so report it next to the full result above, never instead of it.
+
+| Measure | D435f | D435i |
+|---|---|---|
+| Fall detection rate | 4/4 | 4/4 |
+| Fall false-alarm groups | 3 in 9.6 min (about 19/h) | 3 in 9.5 min (about 19/h) |
+| Fall precision | 0.57 | 0.57 |
+| Bed exits caught (staff 2 and 3) | **4/4**, median +0.4 s | **4/4**, median -0.65 s |
+| False bed exits | 0 | 0 |
+| Bed-edge warning, side / along view | 2/5 warned / 5/5 warned | |
+
+All 3 missed exits in the full result were in the `h*_01` clips, and each happened at an ID change (traced in `~/.ahfd-work/locked_test_20261102/trace_missed_exits.py`). Without them only 4 exits remain, so 4/4 is a very small sample.
+
+### Limits
+
+- Falls are from one healthy student on crash mats, and 4/4 is still consistent with a true rate as low as about 40% (95% confidence).
+- The bed boxes for 29 Oct were drawn on the view shared with the staff clips, so the staff bed-exit test is not fully separate on geometry. The staff phase labels were also scored once before (section 2), without tuning.
+- All timings exclude the 0.3-1.3 s screen delay in section 6.
