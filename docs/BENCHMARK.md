@@ -534,3 +534,48 @@ All of the remaining false alarms come from those pilot clips.
 - On the D435f, nothing was lost.
 
 **Known blind spot:** a fall straight towards or away from the camera barely changes the image tilt. It gets no possible-fall alert, only the floor alert after landing; the golden synthetic fall is one of these.
+
+## 9. Bed exit: track ID handover (3 Nov)
+
+**Change:** the tracker often gives a patient a new ID as they leave the bed, because pose drops out at the edge for a second or two. The new ID had never been seen in the bed, so no exit was reported. Now a new track that first appears within 4 s of a lost in-bed track, and within 1 m of where that track was last seen, takes over its bed history (`BedExitThresholds.handoff_s`, `handoff_m`).
+
+This was found by tracing the 3 missed staff exits in section 7 (`~/.ahfd-work/locked_test_20261102/trace_missed_exits.py`): all three happened at an ID change. Scored with `~/.ahfd-work/handoff_eval_20261103.py`, sustained exits (at least 3 s):
+
+| Clips | Camera | Without handover | With handover | False exits (without / with) |
+|---|---|---|---|---|
+| Development (pilot, students, fall student 01) | D435f | 9/12 | 9/12 | 1 / 1 |
+| Development | D435i | 11/12 | 11/12 | 0 / 0 |
+| Staff 2 and 3 (locked, used) | D435f | 4/4 | 4/4 | 0 / 0 |
+| Staff 2 and 3 (locked, used) | D435i | 4/4 | 4/4 | 0 / 0 |
+| Staff 1-3, 27 Oct `h*_01` (6-9 FPS) | D435f | 1/3 | 1/3 | 0 / 0 |
+| Staff 1-3, 27 Oct `h*_01` (6-9 FPS) | D435i | 2/3 | **3/3** | 0 / 0 |
+
+Updated staff result (all 7 exits): **D435f 5/7 (71%), D435i 7/7 (100%)**, no false exits.
+
+- The handover recovered 1 of the 3 misses (`h2_01` on the D435i) and added no false exits.
+- The two D435f misses remain. In `h2_01` the new track stood inside the 27 Oct bed outline, which was never redrawn for that mount. In `h3_01` no new track appeared close enough.
+- It was designed after reading the locked clips, so the improvement is not an independent result. A visitor appearing beside the bed just as the patient's pose drops out could take over the history; this is untested.
+
+## 10. Alerts from the trained models instead of the rules (3 Nov)
+
+**Question:** the posture and 7-phase models label frames far better than the rules (section 5), so would alerts based on their probability be better?
+
+**Test:** the deployed models (never trained on these clips), turned into alerts by rules fixed before scoring (`~/.ahfd-work/model_alerts_20261103/RULES.md`):
+- **Fall:** the posture model's P(on_ground) averaged over 0.5 s at or above a threshold, once per 10 s.
+- **Bed exit:** at least 2 s in a bed phase, then P(OUT_OF_BED) averaged over 0.5 s at or above a threshold.
+- Thresholds 0.5 (the chosen default), 0.7 and 0.9.
+
+Clips: fall student 02 and staff 2-3, the locked clips already used on 2 Nov, so this is a post-hoc comparison. The rules are the committed code at `19d2a3a`, including the tipping gate (section 8) and the handover (section 9). Results: `~/.ahfd-work/model_alerts_20261103/results.txt`.
+
+| Alert | Camera | Rules | Model at 0.5 | Model at 0.7 | Model at 0.9 |
+|---|---|---|---|---|---|
+| Falls caught (before landing) | D435f | 4/4 (4) | 4/4 (4) | 4/4 (3) | 4/4 (3) |
+| Fall precision (false groups) | D435f | **0.57 (3)** | 0.44 (5) | 0.44 (5) | 0.44 (5) |
+| Falls caught (before landing) | D435i | 4/4 (1) | 4/4 (2) | 4/4 (1) | 4/4 (1) |
+| Fall precision (false groups) | D435i | **0.57 (3)** | 0.44 (5) | 0.50 (4) | 0.50 (4) |
+| Bed exits caught, false | D435f | **5/5, 0** | 4/5, 0 | 4/5, 0 | 4/5, 0 |
+| Bed exits caught, false | D435i | **5/5, 0** | 4/5, 1 | 4/5, 0 | 4/5, 0 |
+
+- Including the 27 Oct `h*_01` clips, the exit model also gives 3 false exits on the D435f; the rules give none.
+- Keeping only rule alerts the model agrees with (P(on_ground) at least 0.5 within -1 to +3 s) changed nothing: the false alarms are kneeling and bending, where the body really is low and the model is as sure as the rules.
+- **Decision: alerts stay rule-based; the models stay on screen as labels.** The models win at labelling each frame, which is dominated by long easy stretches (lying, standing), not at the 1-2 s moments that decide an alert.
