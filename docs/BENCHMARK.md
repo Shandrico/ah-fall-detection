@@ -748,3 +748,33 @@ On the locked staff clips (section 7) it warned 5/8 (side) and 8/8 (along), with
   - The along view is still improving with every person added.
   - The short phases (shifting to the edge, stand attempt) have only 200-320 frames each on the staff test.
   - The next gains come from more bed-exit recordings, especially of those transitions, and from a side-on camera.
+
+## 12. Early warning: warn on the start of standing up, not on every sit-up (3 Nov)
+
+**Problem:** the early warning in section 11 fired on 14-38 no-exit sit-ups an hour, with precision about 0.5. Stricter versions of the same sit-up trigger (longer hold, higher CUSUM threshold, stronger rise, must be at the edge) cut warned exits as fast as false warnings; precision stayed near 0.5 (`~/.ahfd-work/ew_tune_20261103/`).
+
+**Exploration (development clips only):** 19 trigger ideas on recorded per-frame engine state, both views (`~/.ahfd-work/ew_explore_20261103/`):
+- sitting at the edge for 1-8 s;
+- moving toward the edge for 2-5 s;
+- the stand-attempt phase for 0.3-2 s;
+- the torso rising at the edge, with or without the knee opening;
+- combinations.
+
+Sitting at the edge for a few seconds helped a little from the side (2 s: precision 0.62, 18 per hour) but failed along the beds. The stand-attempt phase alone almost never fired before an exit.
+
+**Chosen trigger (`early_warning_trigger: rise_at_edge`, now the default):** at the bed edge, the torso rises 0.10 m **and** the knee opens 20 deg within 1 s, which is the start of standing up. It fires once, then re-arms after 5 s back in bed away from the edge. The old trigger stays available as `early_warning_trigger: sit_up`.
+
+| Clips | View | Trigger | Exits warned | Before the stand attempt (median) | No-exit warnings (per h) | Precision |
+|---|---|---|---|---|---|---|
+| Development | side | sit-up (old) | 10/12 | 28.3 s | 10 (22.7) | 0.50 |
+| Development | side | **rise at edge** | 8/12 | 12.4 s | **6 (13.6)** | 0.60 |
+| Development | along | sit-up (old) | 0/12 | - | 0 | - |
+| Development | along | **rise at edge** | **12/12** | 21.5 s | 5 (11.6) | 0.80 |
+| Staff, all 3 (locked, used) | side | sit-up (old) | 4/7 | 16.5 s | 4 (24.8) | 0.50 |
+| Staff, all 3 (locked, used) | side | **rise at edge** | 4/7 | 5.2 s (7.1 s before leaving the bed) | **1 (6.2)** | **0.80** |
+| Staff, all 3 (locked, used) | along | sit-up (old) | 0/7 | - | 3 (18.7) | 0.00 |
+| Staff, all 3 (locked, used) | along | **rise at edge** | 4/7 | -1.3 s (0.2 s before leaving the bed) | 1 (6.2) | 0.80 |
+
+- **Trade:** about four times fewer false warnings on the staff clips, and the same number of exits warned from the side. The cost is lead time: about 5-9 s before standing from the side instead of about 15 s.
+- From along the beds it now catches exits, but only at the moment of standing, so it adds little over the bed-exit alert there. Use a side-on camera for the early warning.
+- **Not an independent result:** the trigger and thresholds were chosen on the development clips (19 candidates), and the staff clips were already used on 2 Nov. The built-in version reproduces the exploration exactly (development side 8/12, 13.6 per hour; staff side 4/7, 1 no-exit warning).

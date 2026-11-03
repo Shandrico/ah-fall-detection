@@ -179,6 +179,11 @@ class BedActivityConfig(BaseModel):
     return_recline_dwell_s: float = 0.75
     out_of_bed_dwell_s: float = 0.20
     early_warning_dwell_s: float = 0.60
+    early_warning_trigger: str = "rise_at_edge"  # or "sit_up" (earlier, but fires on every sit-up)
+    rise_at_edge_m: float = 0.10
+    rise_at_edge_knee_deg: float = 20.0
+    rise_window_s: float = 1.0
+    warning_rearm_s: float = 5.0
     emit_early_warning: bool = False
     emit_exit_event: bool = True
     cusum: CusumConfigModel = Field(default_factory=CusumConfigModel)

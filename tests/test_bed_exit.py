@@ -392,7 +392,7 @@ def test_early_warning_is_explainable_but_shadow_only_by_default():
 
 def test_early_warning_requires_explicit_opt_in_and_emits_once():
     machine = BedExitStateMachine(
-        BedExitThresholds(emit_early_warning=True, emit_exit_event=False)
+        BedExitThresholds(emit_early_warning=True, emit_exit_event=False, early_warning_trigger="sit_up")
     )
     t = establish_recline(machine)
     _t, events = feed(
@@ -412,7 +412,7 @@ def test_early_warning_requires_explicit_opt_in_and_emits_once():
 
 def test_static_near_edge_rise_does_not_become_operational_warning():
     machine = BedExitStateMachine(
-        BedExitThresholds(emit_early_warning=True, emit_exit_event=False)
+        BedExitThresholds(emit_early_warning=True, emit_exit_event=False, early_warning_trigger="sit_up")
     )
     t = establish_recline(machine)
     _t, events = feed(
@@ -430,7 +430,7 @@ def test_static_near_edge_rise_does_not_become_operational_warning():
 
 def test_depth_dropout_fallback_cannot_accumulate_as_cusum_movement():
     machine = BedExitStateMachine(
-        BedExitThresholds(emit_early_warning=True, emit_exit_event=False)
+        BedExitThresholds(emit_early_warning=True, emit_exit_event=False, early_warning_trigger="sit_up")
     )
     t = establish_recline(machine)
     _t, events = feed(
@@ -729,3 +729,49 @@ def test_new_id_that_appears_before_the_old_id_is_dropped_still_takes_over():
     _t, later = feed(machine, t, 1.0, track_id=2, contact_xy=(0.9, 4.6), **_STANDING_OUTSIDE)
     assert early == []
     assert [e.type for e in later] == ["BED_EXIT"]
+
+
+
+# --- early warning, "rise_at_edge" trigger (default since 3 Nov) ---------------------------
+
+_SITTING_AT_EDGE = dict(h_torso=0.75, h_shoulder=1.05, torso_tilt=10.0, knee_angle=95.0, leg_tilt=60.0,
+                        bed_edge_distance_m=0.10, bed_support_fraction=0.6, bed_overlap=0.6, motion=0.05)
+
+
+def _rising(i, n):
+    f = i / max(n - 1, 1)  # stand-up: torso 0.75 -> 0.95 m, knee 95 -> 150 deg over the window
+    return {"h_torso": 0.75 + 0.20 * f, "knee_angle": 95.0 + 55.0 * f}
+
+
+def _warn_machine():
+    return BedExitStateMachine(BedExitThresholds(emit_early_warning=True, emit_exit_event=False))
+
+
+def test_rise_at_edge_warns_once_when_standing_up_starts():
+    machine = _warn_machine()
+    t = establish_recline(machine)
+    t, sitting = feed(machine, t, 3.0, **_SITTING_AT_EDGE)
+    _t, rising = feed(machine, t, 0.8, values=_rising, **{k: v for k, v in _SITTING_AT_EDGE.items() if k not in ("h_torso", "knee_angle")})
+    assert sitting == []
+    assert [e.type for e in rising] == ["BED_EXIT_WARNING"]
+    assert rising[0].evidence["warning_via"] == "rise_at_edge"
+
+
+def test_rise_at_edge_ignores_still_sitting_and_rises_away_from_the_edge():
+    machine = _warn_machine()
+    t = establish_recline(machine)
+    t, still = feed(machine, t, 4.0, **_SITTING_AT_EDGE)
+    middle = {**_SITTING_AT_EDGE, "bed_edge_distance_m": 0.70, "bed_support_fraction": 0.9, "bed_overlap": 0.9}
+    _t, centre = feed(machine, t, 0.8, values=_rising, **{k: v for k, v in middle.items() if k not in ("h_torso", "knee_angle")})
+    assert still == [] and centre == []
+
+
+def test_rise_at_edge_rearms_after_settling_back_in_bed():
+    machine = _warn_machine()
+    t = establish_recline(machine)
+    base = {k: v for k, v in _SITTING_AT_EDGE.items() if k not in ("h_torso", "knee_angle")}
+    t, first = feed(machine, t, 0.8, values=_rising, **base)
+    t, again = feed(machine, t, 0.8, values=_rising, **base)
+    t, _ = feed(machine, t, 6.0)  # lie back down, away from the edge
+    _t, later = feed(machine, t, 0.8, values=_rising, **base)
+    assert len(first) == 1 and again == [] and len(later) == 1

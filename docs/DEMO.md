@@ -164,7 +164,8 @@ On the engineer page:
 | Step | Patient does | Expect on screen |
 |---|---|---|
 | 1 | Lie on the nearest bed for 10 s | Bed occupied; rules `IN_BED`, model `in_bed / RECLINED` |
-| 2 | Sit up, slide to the edge, sit there for a few seconds | `GETTING UP`, then `EDGE_SITTING` |
+| 2 | Sit up, slide to the edge, sit there for a few seconds | `GETTING UP`, then `EDGE_SITTING` (no warning yet: sitting is not enough) |
+| 2b | (High bed) Start to stand up from the edge | Early warning "Patient may be getting up", about 5-9 s before fully up |
 | 3 | Stand up, walk away from the bed, stay up 5 s | **BED EXIT** alert about 1-4 s after standing |
 | 4 | (Presenter) acknowledge it on the ward page | It moves to the shift log |
 | 5 | Kneel on the mat, as if picking something up | Floor alert. Say beforehand: any body near the floor alerts, by design |

@@ -114,6 +114,18 @@ class BedExitThresholds:
     return_recline_dwell_s: float = 0.75
     out_of_bed_dwell_s: float = 0.20
     early_warning_dwell_s: float = 0.60
+    # What raises the early warning (High mode):
+    #   "rise_at_edge" (default since 3 Nov): at the bed edge, the torso rises
+    #     rise_at_edge_m and the knee opens rise_at_edge_knee_deg within rise_window_s,
+    #     the start of standing up. Staff clips: 4/7 exits warned from the side, about
+    #     5-9 s ahead, 6 no-exit warnings an hour instead of 25.
+    #   "sit_up": the CUSUM rise from lying plus movement toward the edge. Warns
+    #     earlier (about 15 s from the side) but fires on every sit-up.
+    early_warning_trigger: str = "rise_at_edge"
+    rise_at_edge_m: float = 0.10
+    rise_at_edge_knee_deg: float = 20.0
+    rise_window_s: float = 1.0
+    warning_rearm_s: float = 5.0  # back in bed, away from the edge, this long re-arms
 
     emit_early_warning: bool = False
     emit_exit_event: bool = True
@@ -124,6 +136,8 @@ class BedExitThresholds:
             raise ValueError("support thresholds need 0 <= exit < enter <= 1")
         if self.near_edge_exit_m <= self.near_edge_enter_m:
             raise ValueError("near_edge_exit_m must exceed near_edge_enter_m")
+        if self.early_warning_trigger not in ("rise_at_edge", "sit_up"):
+            raise ValueError("early_warning_trigger must be 'rise_at_edge' or 'sit_up'")
         for name in (
             "phase_dwell_s",
             "fast_transition_dwell_s",
@@ -206,6 +220,9 @@ class _BedTrack:
     exit_emitted: bool = False
     support_seen: bool = False
     last_xy: tuple[float, float] | None = None
+    rise_hist: deque = field(default_factory=deque)  # (t, torso height, knee angle)
+    rise_armed: bool = True
+    calm_since: float | None = None
     first_xy: tuple[float, float] | None = None
     created_t: float | None = None
     inherited_from: int | None = None
@@ -470,6 +487,35 @@ class BedExitStateMachine:
         # Bed-support arming needs *continuous observed* support; a gap restarts it.
         ts.in_bed_since = None
 
+    def _rise_at_edge(self, ts: _BedTrack, f: Features, now: float, edge: float | None) -> bool:
+        """Start of standing up at the bed edge: torso rising and knee opening together."""
+        at_edge = ts.phase in ("SHIFTING_TO_EDGE", "EDGE_SITTING", "ATTEMPTING_STAND") or (
+            edge is not None and edge <= self.th.near_edge_exit_m
+        )
+        h = _finite(getattr(f, "h_torso", None))
+        knee = _finite(getattr(f, "knee_angle", None))
+        hist = ts.rise_hist
+        hist.append((now, h, knee))
+        while hist and now - hist[0][0] > self.th.rise_window_s:
+            hist.popleft()
+        if ts.phase in ("RECLINED", "UPRIGHT_IN_BED", "TORSO_RISING") and not at_edge:
+            ts.calm_since = now if ts.calm_since is None else ts.calm_since
+            if now - ts.calm_since >= self.th.warning_rearm_s:
+                ts.rise_armed = True
+                ts.warning_emitted = False
+        else:
+            ts.calm_since = None
+        if not (ts.rise_armed and at_edge and ts.support_seen and ts.bed_id and ts.phase != "OUT_OF_BED"):
+            return False
+        hs = [x[1] for x in hist if x[1] is not None]
+        ks = [x[2] for x in hist if x[2] is not None]
+        if h is None or knee is None or not hs or not ks:
+            return False
+        if h - min(hs) >= self.th.rise_at_edge_m and knee - min(ks) >= self.th.rise_at_edge_knee_deg:
+            ts.rise_armed = False
+            return True
+        return False
+
     def _take_over(self, ts: _BedTrack, xy: tuple[float, float], now: float) -> None:
         """Give a new track the bed history of a nearby in-bed track that just ended.
 
@@ -512,6 +558,8 @@ class BedExitStateMachine:
             "cusum_z": round(snap.cusum_z, 3),
             "height_source": ts.signal_source or "unknown",
         }
+        if trigger == "early_warning":
+            evidence["warning_via"] = self.th.early_warning_trigger
         for key, value in (
             ("shoulder_elevation_m", snap.shoulder_elevation_m),
             ("support_fraction", snap.support_fraction),
@@ -772,6 +820,8 @@ class BedExitStateMachine:
         risk_name = ts.bed_risk or "unknown"
         severity = _RISK_SEVERITY.get(risk_name, 2)
 
+        if self.th.early_warning_trigger == "rise_at_edge":
+            warning_ready = self._rise_at_edge(ts, f, now, edge)
         if (
             warning_ready
             and self.th.emit_early_warning
