@@ -445,6 +445,29 @@ These clips recorded at only 6-9 FPS, with gaps of up to 4.2 s, because `record-
 
 All 3 missed exits in the full result were in the `h*_01` clips, and each happened at an ID change (traced in `~/.ahfd-work/locked_test_20261102/trace_missed_exits.py`). Without them only 4 exits remain, so 4/4 is a very small sample.
 
+### Human review of every alert (Shandrico, 2 Nov)
+
+Every alert in the clips above (`h*_01` excluded) was watched on video and given a verdict on the review page (`~/.ahfd-work/locked_test_20261102/assess_server.py`; verdicts in `assessments.json`, reviewer 1).
+
+A fall alert counted false by the strict windows could be marked:
+- **false**: no risk;
+- **risky**: useful, because the person was bending, kneeling or near the floor;
+- **real**: a fall the labels missed.
+
+| Measure | D435f | D435i |
+|---|---|---|
+| Alerts reviewed | 13/13 | 13/13 |
+| Labelled falls with an alert: verdict "correct" | 5/5 (4 falls + deliberate lie-down) | 5/5 |
+| Strict false alarms: verdict "risky" (useful) | 3/3 (staff h3_02, h3_03 bending; kneel clip neg_f7_02) | 3/3 (same moments) |
+| Strict false alarms: verdict "false" (no risk) | **0** | **0** |
+| Fall precision, strict / by review | 0.57 / **1.00** | 0.57 / **1.00** |
+| Bed-exit alerts: verdict "correct" | 5/5 | 5/5 |
+| False bed exits, strict / by review | 0 / 0 | 0 / 0 |
+
+- By the reviewer's judgement, every fall alert on these clips pointed at a real fall or a genuinely risky movement near the floor. No alert fired on a person who was safe. This matches the policy that a fall-risk patient bending to the floor is worth a look.
+- The strict numbers stay the primary result. The review is one person's judgement, made by a team member who knew which clips were falls.
+- **Not reviewed:** the `h*_01` clips (recorded at 6-9 FPS), whose alerts count as false in the full result. These are h2_01 on the D435f (2 possible-fall alerts) and h3_01 on both cameras (1 on the D435f, 2 on the D435i).
+
 ### Limits
 
 - Falls are from one healthy student on crash mats, and 4/4 is still consistent with a true rate as low as about 40% (95% confidence).
