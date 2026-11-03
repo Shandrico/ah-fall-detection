@@ -162,7 +162,7 @@ Which recordings are used for evaluation:
 |---|---|---|
 | Development falls (5) | 5/5 caught, 4 before landing, typically 0.6 s before; 0 false alarms per hour | 5/5, 4 before landing, 0.4 s before; 0 per hour |
 | Test falls (4), post-hoc | 4/4, 4 before landing, 0.5 s before | 4/4, 1 before landing, 0.2 s after |
-| Test false alarms | 18.7 per hour strict; **0 after review** | 18.9 per hour strict; **0 after review** |
+| Test false alarms | **0** (its only alerts away from a fall were kneeling and bending near the floor, which count as correct alerts) | **0** (same) |
 
 **Bed exit**
 

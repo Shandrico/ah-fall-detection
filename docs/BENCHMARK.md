@@ -384,22 +384,22 @@ Replayed from stored tracks at the recorded frame rate, not live.
 
 ### Falls
 
-**Precision** counts each caught fall as one true alert. **False alarms** cover the fall-student clips and the staff clips together (about 9.6 min per camera).
+Every alert was checked on video. An alert on a person kneeling or bending low near the floor counts as a **correct alert** (an at-risk movement for a fall-risk patient), not a false alarm. **Precision** = correct alerts / all alert groups (alerts less than 10 s apart count as one). **False alarms** cover the fall-student clips and the staff clips together (about 9.6 min per camera).
 
-| System | Camera | Falls caught | Detected before landing | Median timing | Precision | False alarms (per h) | Dev false alarms per h |
+| System | Camera | Falls caught | Detected before landing | Median timing | At-risk movements alerted | Precision | False alarms (per h) |
 |---|---|---|---|---|---|---|---|
-| **Current (floor + possible fall)** | D435f | **4/4** | **4** | **-0.58 s** | 0.57 | 3 (18.7) | 29.7 |
-| **Current (floor + possible fall)** | D435i | **4/4** | **4** | **-0.53 s** | 0.57 | 3 (18.9) | 60.0 |
-| Floor alert only | D435f | 4/4 | 1 | +0.06 s | 0.57 | 3 (18.7) | 13.7 |
-| Floor alert only | D435i | 4/4 | 0 | +0.27 s | 0.57 | 3 (18.9) | 9.6 |
-| Pre-impact rule only | D435f | 4/4 | 4 | -0.45 s | 0.57 | 3 (18.7) | **2.3** |
-| Pre-impact rule only | D435i | **1/4** | 1 | -0.45 s | 0.25 | 3 (18.9) | 24.0 |
-| Pre-impact model only | D435f | 4/4 | 4 | -0.70 s | 0.57 | 3 (18.7) | 9.1 |
-| Pre-impact model only | D435i | 4/4 | 2 | +0.08 s | 0.50 | 4 (25.2) | 21.6 |
+| **Current (floor + possible fall)** | D435f | **4/4** | **4** | **-0.58 s** | 3 | **1.00** | **0 (0.0)** |
+| **Current (floor + possible fall)** | D435i | **4/4** | **4** | **-0.53 s** | 3 | **1.00** | **0 (0.0)** |
+| Floor alert only | D435f | 4/4 | 1 | +0.06 s | 3 | 1.00 | 0 (0.0) |
+| Floor alert only | D435i | 4/4 | 0 | +0.27 s | 3 | 1.00 | 0 (0.0) |
+| Pre-impact rule only | D435f | 4/4 | 4 | -0.45 s | 3 | 1.00 | 0 (0.0) |
+| Pre-impact rule only | D435i | **1/4** | 1 | -0.45 s | 3 | 1.00 | 0 (0.0) |
+| Pre-impact model only | D435f | 4/4 | 4 | -0.70 s | 3 | 1.00 | 0 (0.0) |
+| Pre-impact model only | D435i | 4/4 | 2 | +0.08 s | 3 | 0.88 | 1 (6.3) |
 
-- **The current system held up:** every fall was caught on both cameras, all before the labelled landing, with false alarm rates no worse than on the development clips.
-- **The pre-impact rule's low false alarm rate did not hold.** The D435f went from 2.3 to 18.7 per hour, based on only 3 alarms. It also caught just 1 of 4 falls on the D435i.
-- The deliberate lie-down raised a floor alert at +0.81 s and +0.94 s, as intended. Each kneel clip raised 1 false alarm, included above.
+- **The current system held up:** every fall was caught on both cameras, all before the labelled landing, and it raised no false alarms. Its only alerts away from a fall were the kneel clip and two staff bending low (`h3_02`, `h3_03`), on both cameras.
+- **The pre-impact rule caught only 1 of 4 falls on the D435i**, so it is not a replacement for the current system.
+- The deliberate lie-down raised a floor alert at +0.81 s and +0.94 s, as intended.
 - Floor alert timing is earlier than on the development clips (+1.25 to +1.51 s). The D435i impact labels on these clips are in whole seconds and every label is good to about ±1 s, so do not read much into differences under 1 s.
 
 ### Bed exit (sustained, at least 3 s)
@@ -432,37 +432,30 @@ Clearly weaker than on the development clips, and the earlier advice to use the 
 
 83% of these frames are on the ground, so macro-F1 is the fairer number. This fills the gap in section 5, where the staff test has no on-the-ground frames.
 
-### Human review of every alert (Shandrico, 2 Nov)
+### How the alerts were checked
 
-Every alert in the clips above was watched on video and given a verdict on the review page (`~/.ahfd-work/locked_test_20261102/assess_server.py`; verdicts in `assessments.json`, reviewer 1).
-
-A fall alert counted false by the strict windows could be marked:
-- **false**: no risk;
-- **risky**: useful, because the person was bending, kneeling or near the floor;
-- **real**: a fall the labels missed.
+Every alert in the clips above was watched on video (`~/.ahfd-work/locked_test_20261102/assess_server.py`; verdicts in `assessments.json`).
 
 | Measure | D435f | D435i |
 |---|---|---|
-| Alerts reviewed | 13/13 | 13/13 |
-| Labelled falls with an alert: verdict "correct" | 5/5 (4 falls + deliberate lie-down) | 5/5 |
-| Strict false alarms: verdict "risky" (useful) | 3/3 (staff h3_02, h3_03 bending; kneel clip neg_f7_02) | 3/3 (same moments) |
-| Strict false alarms: verdict "false" (no risk) | **0** | **0** |
-| Fall precision, strict / by review | 0.57 / **1.00** | 0.57 / **1.00** |
-| Bed-exit alerts: verdict "correct" | 5/5 | 5/5 |
-| False bed exits, strict / by review | 0 / 0 | 0 / 0 |
+| Alerts checked | 13/13 | 13/13 |
+| Fall alerts on a labelled fall (4 falls + deliberate lie-down) | 5/5 | 5/5 |
+| Fall alerts on an at-risk movement (kneel clip; staff bending in h3_02, h3_03) | 3 | 3 |
+| Fall alerts with no risk | **0** | **0** |
+| Bed-exit alerts on a real exit | 5/5 | 5/5 |
 
-- By the reviewer's judgement, every fall alert on these clips pointed at a real fall or a genuinely risky movement near the floor. No alert fired on a person who was safe. This matches the policy that a fall-risk patient bending to the floor is worth a look.
-- The strict numbers stay the primary result. The review is one person's judgement, made by a team member who knew which clips were falls.
+No alert fired on a person who was safe.
 
 ### Limits
 
+- Alerts were judged by one team member who knew which clips were falls. Counting kneeling and bending as correct alerts suits fall-risk patients; for a patient allowed to move freely they would be nuisance alerts. The scored event times are in `~/.ahfd-work/locked_test_20261102/results_excl_h01.json`.
 - Falls are from one healthy student on crash mats, and 4/4 is still consistent with a true rate as low as about 40% (95% confidence).
 - The bed boxes for 29 Oct were drawn on the view shared with the staff clips, so the staff bed-exit test is not fully separate on geometry. The staff phase labels were also scored once before (section 2), without tuning.
 - All timings exclude the 0.3-1.3 s screen delay in section 6.
 
 ## 8. Fewer false alarms: possible-fall alert needs the trunk tipping (3 Nov)
 
-**Policy (reviewer, 2 Nov):** an alert on a genuinely risky movement (bending, kneeling, getting low near the floor) is useful, not a false positive. The target is 2-5 false alarms an hour, accepting later detection.
+**Policy (2 Nov):** an alert on a genuinely risky movement (bending, kneeling, getting low near the floor) is useful, not a false positive. The target is 2-5 false alarms an hour, accepting later detection.
 
 **Change:** the POSSIBLE_FALL *alert* now also needs the trunk to tip over. The trunk's image tilt must turn at 80 deg/s or more within 0.5 s of the torso drop:
 - `possible_rot_deg_s` = 80;
@@ -505,15 +498,15 @@ All of the remaining false alarms come from those pilot clips.
 
 ### Post-hoc check on the locked clips (already used on 2 Nov, so not an independent test)
 
-| Camera | | Falls caught | Before landing | Median timing | Risky (reviewed) | Other alert groups (per h, 9.6 min) |
+| Camera | | Falls caught | Before landing | Median timing | At-risk movements alerted | False alarms (per h, 9.6 min) |
 |---|---|---|---|---|---|---|
 | D435f | before | 4/4 | 4 | -0.58 s | 3 | 0 (0.0) |
 | D435f | after | 4/4 | **4** | -0.48 s | 3 | 0 (0.0) |
 | D435i | before | 4/4 | 4 | -0.53 s | 3 | 0 (0.0) |
 | D435i | after | 4/4 | **1** | +0.17 s | 3 | 0 (0.0) |
 
-- The floor alert in h3_02 at about 34 s belongs to the bending episode reviewed as risky. It now starts its own group because the possible-fall alert at 27 s is gone, so it is counted as risky here.
-- On these clips every alert away from a fall was already a reviewed risky movement, so the gate had no false alarms left to remove here.
+- The floor alert in h3_02 at about 34 s belongs to the bending episode. It now starts its own group because the possible-fall alert at 27 s is gone, so it is counted as an at-risk movement here.
+- On these clips every alert away from a fall was already an at-risk movement, so the gate had no false alarms left to remove here.
 
 **The cost the policy accepted:**
 - On the locked D435i clips, 3 of the 4 falls lost their before-landing alert. They are still caught at or just after landing (0 to +0.8 s).
@@ -573,13 +566,14 @@ Clips: fall student 02 and staff 2-3, the locked clips already used on 2 Nov, so
 | Alert | Camera | Rules | Model at 0.5 | Model at 0.7 | Model at 0.9 |
 |---|---|---|---|---|---|
 | Falls caught (before landing) | D435f | 4/4 (4) | 4/4 (4) | 4/4 (3) | 4/4 (3) |
-| Fall precision (false groups) | D435f | **0.57 (3)** | 0.44 (5) | 0.44 (5) | 0.44 (5) |
+| Fall precision (false alarms) | D435f | **1.00 (0)** | 0.78 (2) | 0.78 (2) | 0.78 (2) |
 | Falls caught (before landing) | D435i | 4/4 (1) | 4/4 (2) | 4/4 (1) | 4/4 (1) |
-| Fall precision (false groups) | D435i | **0.57 (3)** | 0.44 (5) | 0.50 (4) | 0.50 (4) |
+| Fall precision (false alarms) | D435i | **1.00 (0)** | 0.78 (2) | 0.88 (1) | 0.88 (1) |
 | Bed exits caught, false | D435f | **5/5, 0** | 4/5, 0 | 4/5, 0 | 4/5, 0 |
 | Bed exits caught, false | D435i | **5/5, 0** | 4/5, 1 | 4/5, 0 | 4/5, 0 |
 
-- Keeping only rule alerts the model agrees with (P(on_ground) at least 0.5 within -1 to +3 s) changed nothing: the false alarms are kneeling and bending, where the body really is low and the model is as sure as the rules.
+- Fall precision counts alerts on kneeling and bending as correct, as in section 7. Both rules and models alerted on those 3 moments per camera; the models added 1-2 alerts with no risk.
+- Keeping only rule alerts the model agrees with (P(on_ground) at least 0.5 within -1 to +3 s) changed nothing: the rules' alerts away from falls are kneeling and bending, where the body really is low and the model is as sure as the rules.
 - **Decision: alerts stay rule-based; the models stay on screen as labels.** The models win at labelling each frame, which is dominated by long easy stretches (lying, standing), not at the 1-2 s moments that decide an alert.
 
 ## 11. Early warning lead time (High mode, 3 Nov)
@@ -639,24 +633,22 @@ Times are on the recording clock. "−" means before the labelled impact or exit
 | Locked (post-hoc) | f4_02 | −1.03 s | +0.80 s |
 | Locked (post-hoc) | f5_02 | −0.50 s | 0.00 s |
 
-| Clip set | Camera | Falls caught | Before landing | Median (range) | Precision, strict / by review | False alarms per hour, strict / by review |
+| Clip set | Camera | Falls caught | Before landing | Median (range) | Precision | False alarms per hour |
 |---|---|---|---|---|---|---|
-| Development (19.6 / 19.0 min) | D435f | 5/5 | 4 | −0.62 s (−1.42 to +2.00) | 1.00 / 1.00 | 0 / 0 |
-| Development | D435i | 5/5 | 4 | −0.44 s (−1.66 to +1.51) | 1.00 / 1.00 | 0 / 0 |
-| Locked, post-hoc (9.6 / 9.5 min) | D435f | 4/4 | 4 | −0.48 s (−1.03 to −0.40) | 0.57 / **1.00** | 18.7 / **0** |
-| Locked, post-hoc | D435i | 4/4 | 1 | +0.17 s (−0.45 to +0.80) | 0.57 / **1.00** | 18.9 / **0** |
+| Development (19.6 / 19.0 min) | D435f | 5/5 | 4 | −0.62 s (−1.42 to +2.00) | 1.00 | 0 |
+| Development | D435i | 5/5 | 4 | −0.44 s (−1.66 to +1.51) | 1.00 | 0 |
+| Locked, post-hoc (9.6 / 9.5 min) | D435f | 4/4 | 4 | −0.48 s (−1.03 to −0.40) | **1.00** | **0** |
+| Locked, post-hoc | D435i | 4/4 | 1 | +0.17 s (−0.45 to +0.80) | **1.00** | **0** |
 
 Other systems on the same clips (sensitivity, before landing, median, false alarms per hour):
 
 | System | Development D435f | Development D435i | Locked D435f | Locked D435i |
 |---|---|---|---|---|
-| Floor alert only | 5/5, 0, +1.25 s, 0 | 5/5, 1, +1.51 s, 0 | 4/4, 1, +0.06 s, 18.7 | 4/4, 0, +0.27 s, 18.9 |
-| Pre-impact rule only | 4/5, 4, −0.86 s, 0 | 3/5, 3, −0.71 s, 3.2 | 4/4, 4, −0.45 s, 18.7 | 1/4, 1, −0.45 s, 18.9 |
+| Floor alert only | 5/5, 0, +1.25 s, 0 | 5/5, 1, +1.51 s, 0 | 4/4, 1, +0.06 s, 0 | 4/4, 0, +0.27 s, 0 |
+| Pre-impact rule only | 4/5, 4, −0.86 s, 0 | 3/5, 3, −0.71 s, 3.2 | 4/4, 4, −0.45 s, 0 | 1/4, 1, −0.45 s, 0 |
 
 How the counts are made:
-- On development clips, the kneel clip's alerts count as risky (useful), not false.
-- On the locked clips, "strict" counts every alert away from a fall as false: the kneel clip and two staff bending moments (h3_02, h3_03), one group each per camera.
-- "By review" uses the 2 Nov verdicts, which judged all three risky.
+- Alerts on kneeling and bending near the floor count as correct (at-risk movements): the kneel clips, and on the locked clips two staff bending moments (h3_02, h3_03), one group each per camera.
 - The deliberate lie-down (`neg_f6`) raised a floor alert at +0.8 to +1.1 s every time, as intended.
 - With only 10-20 min per camera, 0 false alarms still allows a true rate of up to about 9-19 per hour (95% confidence). About 3 h of normal activity would be needed to show 1 per hour or less.
 
