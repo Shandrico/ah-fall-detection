@@ -21,6 +21,7 @@ are shown next to each person for comparison; they never raise alerts.
 - Tape measure, and a phone with an inclinometer app (for the camera tilt if the fit looks wrong).
 - Crash mat for the staged fall.
 - Optional: a laptop, only if you want to watch remotely (appendix).
+- The T9 drive is **not** needed for the demo. Only the engineer page's "Review videos" link uses it.
 
 ---
 
@@ -38,7 +39,13 @@ lsusb | grep -i realsense
 Expect one `Intel Corp. RealSense D435` line per camera. If a camera is missing, re-plug it into a
 blue USB 3 port.
 
-### 1.2 Get the latest code
+### 1.2 Stop the screen from going blank
+
+The Jetson blanks or locks its screen after a few minutes, which would hide the demo. In
+**Settings > Power** set **Blank Screen** to **Never**, and in **Settings > Privacy > Screen Lock**
+turn automatic lock off. Do this once.
+
+### 1.3 Get the latest code
 
 ```bash
 cd ~/projects/ah-fall-detection
@@ -54,7 +61,7 @@ ss -ltn | grep ':8000 '     # no output = nothing running
 
 If something is listed, go to its terminal and press Ctrl+C.
 
-### 1.3 Measure
+### 1.4 Measure
 
 Write these down:
 
@@ -62,7 +69,7 @@ Write these down:
 - Mattress length, in metres.
 - Mattress top height above the floor, in metres (usually about 0.60).
 
-### 1.4 Calibrate each camera
+### 1.5 Calibrate each camera
 
 Run this on the Jetson's own screen: a window opens for clicking the beds.
 
@@ -94,7 +101,7 @@ Replace 2.60 and 2.10 with your measurements. What happens:
 Two non-overlapping beds are required: with any other number the bed levels (Low/Medium/High) stay
 off and no bed-exit alert appears.
 
-### 1.5 Check it live (20 s per camera)
+### 1.6 Check it live (20 s per camera)
 
 ```bash
 python scripts/quick_calibrate.py --camera d435f --check
@@ -109,10 +116,10 @@ During the 20 s: stand beside a bed for 10 s, then lie on it. Each second it pri
 | Standing | torso 0.9-1.3 m, `UPRIGHT` |
 | Lying on the nearest bed | `bed nearest`, `IN_BED`, phase `RECLINED` |
 
-If standing reads above 1.4 m or below 0.7 m, the height or tilt is off: run 1.4 again with
+If standing reads above 1.4 m or below 0.7 m, the height or tilt is off: run 1.5 again with
 `--pitch` from the phone inclinometer.
 
-### 1.6 Save the calibration
+### 1.7 Save the calibration
 
 ```bash
 git add calib/ configs/dashboard_jetson.yaml
@@ -120,7 +127,7 @@ git commit -m "Demo calibration $(date +%d\ %b)"
 git push
 ```
 
-### 1.7 Full rehearsal
+### 1.8 Full rehearsal
 
 Run sections 2 and 3 once end to end, with a teammate as the patient.
 
@@ -137,8 +144,12 @@ cd ~/projects/ah-fall-detection
 ahfd dashboard
 ```
 
-It starts on the camera you calibrated last and prints the page addresses. Leave this terminal open
-(minimise it). To use the other camera, pick it in the camera dropdown on the engineer page.
+It starts on the camera you calibrated last and prints the page addresses (`http://127.0.0.1:8000`,
+which is the same as `localhost:8000`). Leave this terminal open (minimise it). To use the other
+camera, pick it in the camera dropdown on the engineer page.
+
+If you pulled new code, restart the dashboard (Ctrl+C, then `ahfd dashboard`): a running dashboard
+keeps the code it started with.
 
 ### 2.2 Open the pages (Jetson browser)
 
@@ -148,6 +159,14 @@ Open the web browser on the Jetson (Chromium or Firefox from the dock or the app
 - **Engineer page:** http://localhost:8000/ (camera picker, live view, every number). Keep it on a second tab.
 
 Press **F11** for full screen on the audience screen; F11 again to leave it.
+
+Keep the browser to these two tabs: the browser shares the Jetson's processor with the detector, and
+extra tabs (or the depth preview) slow the live view.
+
+**Camera image or stick figures:** `configs/dashboard_jetson.yaml` has `show_rgb: true`, so both pages
+show the real camera image with the skeleton on top. The engineer page's **RGB** button switches to
+stick figures only (the nurse page follows within a second). Show the camera image only with your
+volunteers' consent; say that a real ward would run on stick figures.
 
 ### 2.3 Check before the audience arrives
 
@@ -159,6 +178,8 @@ On the engineer page:
 3. Lie on a bed for a moment: the person shows the bed name, `IN_BED`, and the model's
    `in_bed / RECLINED`.
 4. Acknowledge any alerts left over from the rehearsal, so the ward page starts clear.
+5. On the nurse page, **Review alerts** lists the clips saved in the last 24 hours; clear old rehearsal
+   clips first if you want an empty list (`mkdir -p data/alert_clips_old && mv data/alert_clips/* data/alert_clips_old/`).
 
 ---
 
@@ -187,13 +208,15 @@ Tips:
 
 Stop the dashboard: press **Ctrl+C** in its terminal (2.1).
 
-Watch the saved alert clips (stick figures, 10 s before to 15 s after each alert):
+Each alert's clip (stick figures, 10 s before to 15 s after) is in **Review alerts** on the nurse
+page: click one to play it there. This works while the dashboard runs. With the dashboard stopped,
+play them with:
 
 ```bash
 ahfd serve-review data/alert_clips
 ```
 
-Then open http://localhost:8001 in the Jetson's browser. Ctrl+C in that terminal stops it.
+and open http://localhost:8001 in the Jetson's browser. Ctrl+C in that terminal stops it.
 
 The demo's alerts also count in the ward page's "Last 24 hours" totals until tomorrow.
 
@@ -204,12 +227,14 @@ The demo's alerts also count in the ward page's "Last 24 hours" totals until tom
 | Problem | Cause | Fix |
 |---|---|---|
 | Browser says "refused to connect" | Dashboard not running, or it stopped with an error | Look at the terminal from 2.1; start `ahfd dashboard` again |
+| Screen went black or locked mid-demo | Power settings | Move the mouse; set Blank Screen to Never (1.2) |
+| New features (labels, Review alerts) missing | Dashboard started before the latest `git pull` | Ctrl+C and start `ahfd dashboard` again; refresh with Ctrl+F5 |
 | No picture on the monitor | Monitor plugged in after boot, or wrong input | Plug the monitor in before powering the Jetson; check the screen's input source |
 | Page loads but no camera feed | Dashboard opened a camera that is not plugged in | Pick the connected camera in the dropdown, or check `lsusb` (1.1) |
 | `no frames` / camera busy error | Another dashboard or script holds the camera | `ss -ltn \| grep ':8000 '`, stop that process, start again |
-| Bed-exit never alerts | Bed level on Low, or not exactly two bed outlines | Set Medium/High (2.3); redo 1.4 if beds are missing |
-| Lying on the bed shows `ON_GROUND` | Height or tilt off, or bed outline in the wrong place | Redo 1.4, check with 1.5 |
-| Standing reads far over 1.4 m | Tilt wrong | Redo 1.4 with a measured `--pitch` |
+| Bed-exit never alerts | Bed level on Low, or not exactly two bed outlines | Set Medium/High (2.3); redo 1.5 if beds are missing |
+| Lying on the bed shows `ON_GROUND` | Height or tilt off, or bed outline in the wrong place | Redo 1.5, check with 1.6 |
+| Standing reads far over 1.4 m | Tilt wrong | Redo 1.5 with a measured `--pitch` |
 | Alerts while just walking around | Possible-fall alert on fast sit-downs/bends | Expected sometimes; explain it as the known false-alarm source |
 
 ---
@@ -247,7 +272,7 @@ and falls). Measure it live instead:
 
    It groups alerts into alarms (same person, less than 10 s apart), prints them per type and per
    24 h, and writes `data/alarm_review.csv`.
-4. Watch each alarm's clip (`ahfd serve-review data/alert_clips`, section 4) and type `real`, `risky`
+4. Watch each alarm's clip (nurse page **Review alerts**, or `ahfd serve-review data/alert_clips`, section 4) and type `real`, `risky`
    or `false` in the csv's verdict column. Run the script again: it prints false alarms per 24 h.
 
 If the false alarms come mainly from one alert type, that type is what to tune next, on this new
