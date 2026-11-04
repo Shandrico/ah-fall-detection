@@ -1,7 +1,11 @@
 # Live demo runbook (living-lab ward, 2 beds)
 
-Every command to run, in order. Commands run on the **Jetson** unless marked **Laptop**. The Jetson
-repo is `~/projects/ah-fall-detection`; the venv activates by itself when you `cd` into it.
+Every command to run, in order. **Everything runs on the Jetson itself**, with a monitor, keyboard and
+mouse plugged in, and the pages open in the Jetson's own web browser. No laptop or SSH is needed.
+(Running it remotely from a laptop is in the appendix at the end.)
+
+Open a terminal on the Jetson desktop (Ctrl+Alt+T). The repo is `~/projects/ah-fall-detection`; the
+venv activates by itself when you `cd` into it.
 
 What the demo shows: falls and bed exits on one screen, from skeletons only. Alerts come from the
 rules tested in the locked test (docs/BENCHMARK.md section 7). The trained posture and 7-phase models
@@ -11,9 +15,12 @@ are shown next to each person for comparison; they never raise alerts.
 
 ## 0. Things to bring
 
+- **A monitor (HDMI or DisplayPort), USB keyboard and mouse** for the Jetson. For the audience, a
+  large screen or TV connected to the Jetson works best.
+- Power for the Jetson and the screen.
 - Tape measure, and a phone with an inclinometer app (for the camera tilt if the fit looks wrong).
 - Crash mat for the staged fall.
-- Laptop with SSH access to the Jetson over Tailscale.
+- Optional: a laptop, only if you want to watch remotely (appendix).
 
 ---
 
@@ -57,8 +64,7 @@ Write these down:
 
 ### 1.4 Calibrate each camera
 
-This needs a screen on the Jetson: the Jetson's own monitor, or remote desktop (mstsc to
-`100.125.187.13`, log in with Xorg). A window opens for clicking the beds.
+Run this on the Jetson's own screen: a window opens for clicking the beds.
 
 D435f (along the beds, no tilt sensor: its tilt is fitted from the bed length):
 
@@ -122,29 +128,26 @@ Run sections 2 and 3 once end to end, with a teammate as the patient.
 
 ## 2. Demo day: start everything (5 min)
 
-### 2.1 Start the dashboard (Jetson)
+### 2.1 Start the dashboard
+
+In a terminal on the Jetson:
 
 ```bash
 cd ~/projects/ah-fall-detection
 ahfd dashboard
 ```
 
-It starts on the camera you calibrated last and prints the page addresses. Leave this terminal open.
-To use the other camera, pick it in the camera dropdown on the engineer page.
+It starts on the camera you calibrated last and prints the page addresses. Leave this terminal open
+(minimise it). To use the other camera, pick it in the camera dropdown on the engineer page.
 
-### 2.2 Open the pages (Laptop, PowerShell)
+### 2.2 Open the pages (Jetson browser)
 
-Open a **new PowerShell window on the laptop** (not inside an SSH session to the Jetson; the prompt must
-read `PS C:\...`):
+Open the web browser on the Jetson (Chromium or Firefox from the dock or the applications menu) and go to:
 
-```powershell
-ssh -N -L 9000:127.0.0.1:8000 anormalm@100.125.187.13
-```
+- **Nurse page:** http://localhost:8000/ward (beds, alerts, last 24 hours). Show this one to the audience.
+- **Engineer page:** http://localhost:8000/ (camera picker, live view, every number). Keep it on a second tab.
 
-It shows nothing and keeps running; that is correct. Leave it open. Then in the browser:
-
-- **Nurse page:** http://localhost:9000/ward (beds, alerts, last 24 hours). Show this one to the audience.
-- **Engineer page:** http://localhost:9000/ (camera picker, live view, every number). Keep it on a second tab.
+Press **F11** for full screen on the audience screen; F11 again to leave it.
 
 ### 2.3 Check before the audience arrives
 
@@ -182,7 +185,7 @@ Tips:
 
 ## 4. After the demo
 
-Stop the dashboard: press **Ctrl+C** in its terminal (2.1). Close the PowerShell tunnel (2.2).
+Stop the dashboard: press **Ctrl+C** in its terminal (2.1).
 
 Watch the saved alert clips (stick figures, 10 s before to 15 s after each alert):
 
@@ -190,8 +193,7 @@ Watch the saved alert clips (stick figures, 10 s before to 15 s after each alert
 ahfd serve-review data/alert_clips
 ```
 
-Laptop, PowerShell: `ssh -N -L 9001:127.0.0.1:8001 anormalm@100.125.187.13`, then open
-http://localhost:9001.
+Then open http://localhost:8001 in the Jetson's browser. Ctrl+C in that terminal stops it.
 
 The demo's alerts also count in the ward page's "Last 24 hours" totals until tomorrow.
 
@@ -201,7 +203,8 @@ The demo's alerts also count in the ward page's "Last 24 hours" totals until tom
 
 | Problem | Cause | Fix |
 |---|---|---|
-| Browser says "refused to connect" | Tunnel not running, or run on the Jetson instead of the laptop | Run 2.2 in a new laptop PowerShell window |
+| Browser says "refused to connect" | Dashboard not running, or it stopped with an error | Look at the terminal from 2.1; start `ahfd dashboard` again |
+| No picture on the monitor | Monitor plugged in after boot, or wrong input | Plug the monitor in before powering the Jetson; check the screen's input source |
 | Page loads but no camera feed | Dashboard opened a camera that is not plugged in | Pick the connected camera in the dropdown, or check `lsusb` (1.1) |
 | `no frames` / camera busy error | Another dashboard or script holds the camera | `ss -ltn \| grep ':8000 '`, stop that process, start again |
 | Bed-exit never alerts | Bed level on Low, or not exactly two bed outlines | Set Medium/High (2.3); redo 1.4 if beds are missing |
@@ -218,8 +221,8 @@ The demo's alerts also count in the ward page's "Last 24 hours" totals until tom
 - **Bending and kneeling raise a fall alert.** Deliberate: a high-risk patient near the floor is worth checking.
 - **One person per bed.** A second person at the bed can be taken for the patient.
 - **ID changes:** if tracking breaks as the patient leaves, a new track within 4 s and 1 m takes over
-  the bed history (added 3 Nov). It recovered 1 of 3 missed exits in the locked staff clips and
-  added no false exits on the development clips. Not yet tested on unseen data.
+  the bed history (added 3 Nov). It added no false exits on the development or test clips, and is
+  not yet tested on new recordings.
 - **Brief stand-ups** (1-2 s, then sitting back) are not reported as exits.
 - **Blankets** are untested.
 - Results so far are from staged falls by one healthy student and bed exits by a few volunteers,
@@ -229,7 +232,7 @@ The demo's alerts also count in the ward page's "Last 24 hours" totals until tom
 
 ## 7. Measuring false alarms per 24 hours (target: 5 or fewer)
 
-The recorded clips are too short and too busy to measure this (about 13 min per camera, mostly exits
+The recorded clips are too short and too busy to measure this (about 10 min per camera, mostly exits
 and falls). Measure it live instead:
 
 1. Calibrate (section 1) and start the dashboard (section 2.1). Set the beds' levels as they would be
@@ -249,3 +252,33 @@ and falls). Measure it live instead:
 
 If the false alarms come mainly from one alert type, that type is what to tune next, on this new
 footage, keeping a later recording as the test.
+
+---
+
+## Appendix: running it remotely from a laptop (optional)
+
+Use this only if nobody is at the Jetson, for example to check it from home over Tailscale. The
+dashboard and its pages only listen on the Jetson itself, so the laptop reaches them through an SSH
+tunnel.
+
+1. Start the dashboard on the Jetson (section 2.1). From the laptop, you can first SSH in:
+   `ssh anormalm@100.125.187.13`, then `cd ~/projects/ah-fall-detection && ahfd dashboard`.
+2. Open a **new PowerShell window on the laptop** (not inside the SSH session; the prompt must read
+   `PS C:\...`):
+
+   ```powershell
+   ssh -N -L 9000:127.0.0.1:8000 -L 9001:127.0.0.1:8001 anormalm@100.125.187.13
+   ```
+
+   It shows nothing and keeps running; that is correct. Leave it open.
+3. In the laptop browser: nurse page http://localhost:9000/ward, engineer page http://localhost:9000/,
+   alert clips (if `ahfd serve-review` is running) http://localhost:9001.
+4. Close the PowerShell window when done.
+
+Notes:
+- The Jetson's Tailscale address is 100.125.187.13 (check with `tailscale ip -4` on the Jetson).
+- Over Tailscale the connection is relayed and slow (about 4-7 Mbit/s), so the live view may lag.
+  The ward page is light and stays responsive.
+- For a remote desktop of the Jetson (for example to calibrate), connect Windows Remote Desktop
+  (mstsc) to 100.125.187.13 and log in with Xorg.
+
