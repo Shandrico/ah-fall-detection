@@ -362,7 +362,7 @@ class PipelineRunner:
         """
         total = src.meta.frame_count
         self.state.announce_replay(total, self.gen)
-        fps = src.meta.fps or 30.0
+        fps = getattr(src, "replay_fps", None) or src.meta.fps or 30.0
 
         def reset_state():
             # A seek is a jump in time: motion continuity is gone, so clear
@@ -382,7 +382,7 @@ class PipelineRunner:
         frames_seen = 0
         cur = 0
         last = -1
-        anchor: tuple[float, int] | None = None  # (wall_time, frame) when playing
+        anchor: tuple[float, int, float] | None = None  # (wall_time, frame, speed) when playing
         while not self._stop.is_set():
             paused, seek, speed = self.state.take_replay_command()
 
@@ -396,9 +396,11 @@ class PipelineRunner:
                 # from wall-clock, so if pose can't keep up the loop SKIPS frames
                 # to stay in sync -- exactly like a normal video player under
                 # load, instead of the previous slow-motion.
-                if anchor is None:
-                    anchor = (time.monotonic(), cur)
-                w0, f0 = anchor
+                # A speed change re-anchors at the current frame; otherwise the new
+                # speed would rescale all the time since play started and jump.
+                if anchor is None or anchor[2] != speed:
+                    anchor = (time.monotonic(), cur, speed)
+                w0, f0, _ = anchor
                 cur = min(total - 1, f0 + int((time.monotonic() - w0) * fps * speed))
             else:
                 anchor = None

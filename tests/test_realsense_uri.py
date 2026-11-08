@@ -633,3 +633,22 @@ def test_replay_retains_ids_through_short_dropouts():
     assert r.update(NS(t=0.0, people=[person])) == {1}
     assert r.update(NS(t=0.5, people=[])) == {1}  # one missed frame: kept
     assert r.update(NS(t=1.6, people=[])) == set()  # gone > 1 s: dropped
+
+
+def test_db3_replay_fps_comes_from_the_recorded_timestamps(tmp_path):
+    """A clip recorded at ~15 fps under a 30 fps profile replays on its own clock."""
+    import sqlite3
+
+    db = tmp_path / "f1_01.db3"
+    con = sqlite3.connect(db)
+    con.execute("CREATE TABLE topics (id INTEGER, name TEXT)")
+    con.execute("CREATE TABLE messages (id INTEGER, topic_id INTEGER, timestamp INTEGER)")
+    con.execute("INSERT INTO topics VALUES (1, '/device_0/sensor_1/Color_0/image/data')")
+    # 31 colour frames over 2 s = 15 fps.
+    con.executemany("INSERT INTO messages VALUES (?, 1, ?)",
+                    [(i, 10**9 + i * 10**9 // 15) for i in range(31)])
+    con.commit()
+    con.close()
+    bag = _bag(db)
+    assert abs(bag.replay_fps - 15.0) < 0.01
+    assert _bag("clip.bag").replay_fps == float(_bag("clip.bag")._fps or 30.0)

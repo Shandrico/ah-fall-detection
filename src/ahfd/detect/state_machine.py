@@ -157,7 +157,8 @@ class FallThresholds:
     floor_alert_s: float = 1.5
     # "Possible fall": the torso dropping this far this quickly from standing height.
     # About 0.5-2 s before landing on the 29 Oct falls, so it is the earliest alert we
-    # have, but also ~20-30 false flags an hour during active movement. It alerts
+    # have. On its own it raised ~20-30 false flags an hour during active movement (sit-downs);
+    # the trunk-tipping gate below brought the alert to 0 on the development clips (3 Nov). It alerts
     # (POSSIBLE_FALL) without starting the cooldown, so it can never hide a real fall alert.
     possible_drop_m: float = 0.15
     possible_drop_s: float = 0.5
@@ -417,8 +418,14 @@ class FallStateMachine:
         win = self.th.possible_rot_window_s
         if f.torso_tilt is not None:
             ts.tilt_log.append((now, float(f.torso_tilt)))
-        ts.tilt_log = [(t, a) for (t, a) in ts.tilt_log if now - t <= 0.3]
-        if len(ts.tilt_log) >= 3:
+        # 0.3 s of tilt readings, but at least the last 3 if they span up to 0.7 s:
+        # at the live depth rate (~5 fps) 0.3 s holds only 1-2 frames, so the
+        # rate was never computed and the possible-fall alert could not fire.
+        keep = [(t, a) for (t, a) in ts.tilt_log if now - t <= 0.3]
+        if len(keep) < 3 and len(ts.tilt_log) >= 3 and now - ts.tilt_log[-3][0] <= 0.7:
+            keep = ts.tilt_log[-3:]
+        ts.tilt_log = keep if len(keep) >= 3 else [(t, a) for (t, a) in ts.tilt_log if now - t <= 0.7]
+        if len(ts.tilt_log) >= 3 and now - ts.tilt_log[0][0] <= 0.7:
             tm = sum(t for t, _ in ts.tilt_log) / len(ts.tilt_log)
             am = sum(a for _, a in ts.tilt_log) / len(ts.tilt_log)
             den = sum((t - tm) ** 2 for t, _ in ts.tilt_log)

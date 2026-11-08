@@ -758,6 +758,7 @@ class BagSource(_RealSenseBase):
         if hasattr(self, "_frame_count"):
             return self._frame_count
         self._frame_count = None
+        self._recorded_fps = None
         if str(self._path).lower().endswith(".db3"):
             import sqlite3
             from pathlib import Path
@@ -767,15 +768,27 @@ class BagSource(_RealSenseBase):
                 con = sqlite3.connect(uri, uri=True, timeout=5)
                 try:
                     row = con.execute(
-                        "SELECT COUNT(*) FROM messages m JOIN topics t ON m.topic_id = t.id"
+                        "SELECT COUNT(*), MIN(m.timestamp), MAX(m.timestamp) FROM messages m"
+                        " JOIN topics t ON m.topic_id = t.id"
                         " WHERE t.name LIKE '%/Color_0/image/data'"
                     ).fetchone()
                 finally:
                     con.close()
                 self._frame_count = int(row[0]) or None
+                # The rate the file really holds. Recordings often run below the
+                # configured rate (e.g. ~14.6 of 30 fps), and index -> time with
+                # the configured rate would only ever reach the first half.
+                if self._frame_count and self._frame_count > 1 and row[2] > row[1]:
+                    self._recorded_fps = (self._frame_count - 1) / ((row[2] - row[1]) / 1e9)
             except sqlite3.Error:
                 pass
         return self._frame_count
+
+    @property
+    def replay_fps(self) -> float:
+        """Frames per second of recording time, for index <-> time in the player."""
+        self._color_frame_count()
+        return float(getattr(self, "_recorded_fps", None) or self._fps or 30.0)
 
     @property
     def seekable(self) -> bool:
@@ -797,7 +810,7 @@ class BagSource(_RealSenseBase):
         if total is None:
             return None
         index = max(0, min(int(index), total - 1))
-        fps = float(self._fps) or 30.0
+        fps = self.replay_fps
         half = 0.5 / fps
         player = self._open_player()
         target = player["t_first"] + index / fps

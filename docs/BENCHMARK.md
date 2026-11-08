@@ -21,6 +21,8 @@ Each writes its output and a `.results.json` next to the script.
 
 ## 1. Fall detection
 
+> **Superseded for falls.** The false-alarm figures here were measured before the trunk-tipping gate (section 8, 3 Nov) and include the pilot clips, whose depth heights are faulty. The current system raises **0 false fall alarms** on the development and locked clips (section 12a).
+
 Clips:
 - 5 falls per camera: f1, f3, f4, f5 (f5 contains 2 falls).
 - `neg_f6` (deliberate lie-down) is reported separately.
@@ -191,6 +193,8 @@ Scripts:
 
 ## 4. Takeaways
 
+> **Superseded for falls.** The false-alarm figures here were measured before the trunk-tipping gate (section 8, 3 Nov) and include the pilot clips, whose depth heights are faulty. The current system raises **0 false fall alarms** on the development and locked clips (section 12a).
+
 - **Falls:** the current system catches 5/5 on both cameras, 4 of them before landing. The cost is false alarms: about 30 per hour of active movement on the D435f and 60 on the D435i, nearly all from POSSIBLE_FALL on sit-downs.
 - **Pre-impact rule:** on the D435f it gives about the same warning time (-0.86 s) with 1 false alarm instead of 9. Replacing POSSIBLE_FALL with it, keeping the floor alert as the safety net, gives 5/5 caught, 4 before landing, and 6 false alarms (13.7 per hour) on the D435f.
 - **Bed exit:** sustained exits are reliable on both cameras: 20/24, no false exits except one on the D435f, typically 2-4 s after the person is up. Brief stand-ups are not caught.
@@ -253,6 +257,8 @@ Edge-sitting model (leave one person out, at the edge vs in bed):
 | along | 0.729 | 0.550 | 0.44 | 0.57 | 0.675 | 0.318 | 0.840 ± 0.158 |
 
 ### Alerts (development clips, events)
+
+> **Superseded for falls.** The false-alarm figures here were measured before the trunk-tipping gate (section 8, 3 Nov) and include the pilot clips, whose depth heights are faulty. The current system raises **0 false fall alarms** on the development and locked clips (section 12a).
 
 Definitions:
 - **Sensitivity** = labelled events alerted.
@@ -356,21 +362,25 @@ This is calculated from measured parts, not measured end to end. Camera to decis
 
 **The fall and exit timings in sections 1, 3 and 5 do not include this delay.** They use recording time. A fall detected 0.6 s before landing can therefore reach the nurse's screen after the landing. Write "detected before landing", not "nurse alerted before landing".
 
-### Does 5 FPS still detect?
+### Does the live frame rate still detect? (re-run 6 Nov on current code)
 
-Stored tracks were replayed with frames dropped to 5 FPS. This is a **simulation**: tracking and smoothing still had every frame when the tracks were made, so it may be optimistic. It has not been tested with a live fall. The comparison values come from section 1 and 3 scoring; the D435f rerun at the recorded rate gave 14 false alarms (30.7/h) against the 13 (29.7/h) in section 1, so small count differences are scoring noise.
+Stored tracks were replayed with frames dropped to 5 and 4 FPS (the live default with depth runs at 4.85-5.3 FPS). This is a **simulation**: tracking and smoothing still had every frame when the tracks were made, so it may be optimistic. It has not been tested with a live fall. Same clips and scoring as section 12a/12b (development clips, no pilot; `~/.ahfd-work/fps_current_20261106/bench_fps_current.py`). The recorded-rate run reproduces section 12 exactly.
 
-| Measure | D435f: recorded rate → 5 FPS | D435i: section 1 and 3 → 5 FPS |
-|---|---|---|
-| Falls caught | 5/5 → 5/5 | 5/5 → 5/5 |
-| Detected before landing | 4 → 4 | 4 → 4 |
-| Median fall timing | -0.62 s → -0.55 s | -0.44 s → -0.40 s |
-| False alarms per hour | 30.7 → 24.1 | 60.0 → 45.0 |
-| Bed exits caught, including brief stands | 10/16 → 10/16 | 12/16 → 12/16 |
-| Median exit timing | +3.9 s → +4.0 s | +1.9 s → +1.9 s |
-| False exits | 1 → 1 | 0 → 0 |
+**Bug found by this check, fixed 6 Nov:** the trunk-tipping gate estimated the rotation rate from tilt readings in the last 0.3 s and needed at least 3 of them. At 5 FPS 0.3 s holds only 1-2 frames, so the rate was never computed and the possible-fall alert could never fire at the live rate: falls were caught only by the floor alert, after landing (5/5, 0 before landing, median +1.37 s / +1.42 s). The gate now uses the last 3 readings when they span up to 0.7 s. Results at the recorded rate are unchanged.
 
-On these dev clips, dropping to 5 FPS changed detection very little.
+| Measure (current system, D435f / D435i) | Recorded rate | 5 FPS | 4 FPS |
+|---|---|---|---|
+| Falls caught | 5/5 / 5/5 | 5/5 / 5/5 | 5/5 / 5/5 |
+| Detected before landing | 4 / 4 | 3 / 4 | 1 / 1 |
+| Median fall timing | -0.62 s / -0.44 s | -0.36 s / -0.38 s | +1.31 s / +0.82 s |
+| False fall alarms (19-20 min per camera) | 0 / 0 | 0 / 0 | 0 / 0 |
+| Bed exits caught | 5/8 / 7/8 | 5/8 / 7/8 | 5/8 / 7/8 |
+| Median exit timing | +3.9 s / +2.0 s | +3.9 s / +2.0 s | +4.1 s / +2.2 s |
+| False exits | 1 / 0 | 1 / 0 | 1 / 0 |
+
+- At 5 FPS (the live rate) detection, false alarms and bed exits hold; the before-landing alert is kept for 7 of 10 falls, slightly later.
+- At 4 FPS falls are still all caught with no false alarms, but mostly at or after landing: the 0.5 s drop window then holds only 2 frames. Keep the live rate at about 5 FPS or above.
+- The 2 Nov version of this check (before the gate) is superseded; its false-alarm row (30.7 -> 24.1 / 60 -> 45 per hour) no longer describes the system.
 
 ## 7. Locked test (2 Nov, run once)
 
@@ -741,7 +751,7 @@ Notes on these tables:
 - **7-phase labelling had algorithm headroom, now mostly taken.** The random forest adds 12 points of accuracy from the side, but only 2.5 along the beds.
 - **What is left is mainly data and camera position.**
   - The short phases (shifting to the edge, stand attempt) have only 180-260 frames each on the staff test.
-  - The side view is better for every bed-exit task here.
+  - The side view is better for phase labelling (accuracy 0.81 vs 0.69, EDGE_SITTING F1 0.81 vs 0.22) and the bed-edge warning (12b). Exit alerts tie: by view, the development clips give side 6/8 and along 6/8 (the 5/8 and 7/8 above are by camera; the cameras swapped views on 29 Oct), with the one false exit (f4_01) on the along view.
   - The next gains come from more bed-exit recordings, especially of those transitions, and from a side-on camera.
 
 ## 13. Early warning: warn on the start of standing up, not on every sit-up (3 Nov)

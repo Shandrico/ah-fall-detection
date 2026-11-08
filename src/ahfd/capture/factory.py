@@ -209,7 +209,18 @@ def open_source(
     if uri.startswith("bag://"):
         from ahfd.capture.realsense import BagSource
 
-        return BagSource(uri[len("bag://") :])
+        # bag://path.db3?depth=1 also replays the recorded depth (aligned and
+        # filtered as live), so a replay matches the live depth pipeline.
+        path, _, query = uri[len("bag://") :].partition("?")
+        q = {k: v[-1] for k, v in parse_qs(query).items()}
+        if "depth" not in q:
+            return BagSource(path)
+        return BagSource(
+            path,
+            with_depth=_as_bool(q["depth"]),
+            max_range_m=float(q.get("max_range", 6.0)),
+            spatial_magnitude=int(q.get("spatial", 2)),
+        )
 
     if uri.startswith("seq://"):
         from ahfd.capture.imageseq import ImageSequenceSource
