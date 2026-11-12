@@ -69,3 +69,7 @@ Thumbs.db
 data/tracks_rtmpose/
 data/tracks_yolo/
 data/alarm_review.csv
+
+# Bed Monitor app: local logs and the generated desktop icon
+data/logs/
+assets/bed_monitor.*
