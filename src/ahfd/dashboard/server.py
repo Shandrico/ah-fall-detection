@@ -38,6 +38,7 @@ from ahfd.dashboard.alert_review import find_alert_clip, list_alert_clips
 from ahfd.dashboard.review import REVIEW_HTML, find_video, list_videos
 from ahfd.debug.review_server import send_video
 from ahfd.dashboard.state import DashboardState
+from ahfd.dashboard.showcase_html import SHOWCASE_HTML
 from ahfd.dashboard.ward_html import WARD_HTML
 
 _BOUNDARY = "ahfdframe"
@@ -109,6 +110,8 @@ def make_handler(state: DashboardState, controller=None, review_dir=None, clips_
                 self._send(200, "text/html; charset=utf-8", DASHBOARD_HTML.encode())
             elif path == "/ward":
                 self._send(200, "text/html; charset=utf-8", WARD_HTML.encode())
+            elif path == "/showcase":
+                self._send(200, "text/html; charset=utf-8", SHOWCASE_HTML.encode())
             elif path == "/api/state":
                 body = json.dumps(state.snapshot()).encode()
                 self._send(200, "application/json", body)
@@ -166,6 +169,7 @@ def make_handler(state: DashboardState, controller=None, review_dir=None, clips_
                 "/api/switch",
                 "/api/replay",
                 "/api/bed-mode",
+                "/api/depth-mode",
             ) or not same_origin:
                 self._drain()
 
@@ -183,6 +187,10 @@ def make_handler(state: DashboardState, controller=None, review_dir=None, clips_
                 self._replay()
             elif path == "/api/bed-mode":
                 self._bed_mode()
+            elif path == "/api/depth-mode":
+                body = self._body() or {}
+                ok = state.set_depth_mode(str(body.get("mode", "")))
+                self._json(200 if ok else 400, {"ok": ok, "mode": state.depth_mode()})
             elif path == "/api/rescan":
                 if controller is None:
                     self._json(503, {"ok": False, "error": "controls unavailable"})

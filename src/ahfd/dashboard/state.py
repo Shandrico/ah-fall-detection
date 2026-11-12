@@ -68,6 +68,7 @@ class DashboardState:
         self._depth_seq = 0
         self._depth_viewers = 0  # open /depth.mjpg streams; the preview is only drawn for them
         self._depth_wall: float | None = None
+        self._depth_mode = "height"  # "height" above floor (needs calibration) or "distance"
         self._tracks: list[dict[str, Any]] = []
         self._people = 0
         self._events: deque[dict[str, Any]] = deque(maxlen=max_events)
@@ -385,6 +386,19 @@ class DashboardState:
     def depth_wanted(self) -> bool:
         with self._lock:
             return self._depth_viewers > 0
+
+    def set_depth_mode(self, mode: str) -> bool:
+        """Colour the depth view by height above the floor or by distance."""
+        if mode not in ("height", "distance"):
+            return False
+        with self._lock:
+            self._depth_mode = mode
+            self._runtime["depth_mode"] = mode
+        return True
+
+    def depth_mode(self) -> str:
+        with self._lock:
+            return self._depth_mode
 
     def latest_depth_frame(self) -> tuple[bytes, int]:
         with self._lock:

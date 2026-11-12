@@ -439,19 +439,38 @@ class PipelineRunner:
             depth_preview_hole_filled=False,
         )
 
-    def _publish_depth_preview(self, frame, rendered_rgb: bool) -> None:
+    def _publish_depth_preview(self, frame, rendered_rgb: bool, pose=None, ground=None) -> None:
         """At most 10 Hz, one small encode for all viewers; no second camera.
 
         Skipped while nobody has the depth view open: it costs about 35 ms a
         frame (measured 2 Nov), a sixth of the whole loop at the default setup.
+        In "height" mode (the default when the camera is calibrated) every
+        pixel is coloured by its height above the floor, with the skeletons
+        and their head/hip heights on top; "distance" colours by range.
         """
         if not rendered_rgb or not self.state.depth_wanted():
             return
         now = time.monotonic()
-        if now - self._last_depth_preview < 0.1:
+        height_mode = (
+            self.state.depth_mode() == "height" and ground is not None
+            and frame.intrinsics is not None and frame.depth_raw is not None
+        )
+        # The height map costs ~40 ms; 5 Hz is plenty for a picture of the room.
+        if now - self._last_depth_preview < (0.2 if height_mode else 0.1):
             return
         self._last_depth_preview = now
-        from ahfd.viz.depth_render import render_depth, scene_depth_range
+        from ahfd.viz.depth_render import render_depth, render_height_map, scene_depth_range
+
+        if height_mode:
+            canvas = render_height_map(
+                frame.depth_raw, frame.depth_scale, frame.intrinsics, ground,
+                people=pose.people if pose is not None else None,
+                min_keypoint_score=self.cfg.pose.min_keypoint_score,
+            )
+            if canvas is not None:
+                ok, buf = cv2.imencode(".jpg", canvas, [int(cv2.IMWRITE_JPEG_QUALITY), self._jpeg_quality])
+                self.state.publish_depth_frame(buf.tobytes() if ok else None, gen=self.gen)
+                return
 
         if getattr(self, "_depth_range", None) is None:
             self._depth_range = scene_depth_range(
@@ -717,6 +736,16 @@ class PipelineRunner:
                         ]
                         info["depth_valid_joints"] = len(values)
                         info["depth_total_joints"] = len(person.heights)
+                        # Head and hip heights for the live height chart.
+                        for key, idx in (("head_h", (0, 1, 2, 3, 4)), ("hip_h", (11, 12))):
+                            hv = [
+                                float(person.heights[i]) for i in idx
+                                if i < len(person.heights)
+                                and math.isfinite(float(person.heights[i]))
+                                and person.scores[i] >= cfg.pose.min_keypoint_score
+                            ]
+                            if hv:
+                                info[key] = round(sorted(hv)[len(hv) // 2], 2)
                     track_info[person.track_id] = info
 
                 if hasattr(machine, "mark_frame_unobserved"):
@@ -767,7 +796,10 @@ class PipelineRunner:
             # request can arrive while rendering, and the store rejects that
             # in-flight RGB publication even if the runner flag has changed.
             rendered_rgb = self.show_rgb
-            self._publish_depth_preview(frame, rendered_rgb)
+            self._publish_depth_preview(
+                frame, rendered_rgb, pose,
+                getattr(extractor, "depth_ground", None) if extractor is not None else None,
+            )
             if rendered_rgb:
                 canvas = render_overlay(
                     frame, pose,

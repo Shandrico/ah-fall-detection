@@ -18,6 +18,47 @@ from pathlib import Path
 from ahfd.ml.posture import features_row
 
 
+CALM_PHASES = ("RECLINED", "UPRIGHT_IN_BED", "OUT_OF_BED")
+
+
+class ConservativePhaseClassifier:
+    """Names a getting-up phase only when the model is sure of it.
+
+    Wraps a fitted scikit-learn classifier. When the most likely phase is one
+    of the movement phases (torso rising, shifting, edge sitting, attempting to
+    stand) but its probability is below ``threshold``, the likeliest calm phase
+    (reclined, upright in bed, out of bed) is reported instead. This trades a
+    little recall on short transitions for far fewer false "getting up" calls,
+    which is what a ward screen needs. Pickled inside the phase-model file, so
+    it must stay importable from this module.
+    """
+
+    def __init__(self, model, threshold: float):
+        self.model = model
+        self.threshold = float(threshold)
+
+    @property
+    def classes_(self):
+        return self.model.classes_
+
+    def predict_proba(self, X):
+        return self.model.predict_proba(X)
+
+    def predict(self, X):
+        import numpy as np
+
+        proba = self.model.predict_proba(X)
+        classes = [str(c) for c in self.model.classes_]
+        calm = [i for i, c in enumerate(classes) if c in CALM_PHASES]
+        out = []
+        for p in proba:
+            k = int(np.argmax(p))
+            if classes[k] not in CALM_PHASES and p[k] < self.threshold and calm:
+                k = max(calm, key=lambda i: p[i])
+            out.append(classes[k])
+        return np.array(out)
+
+
 class LivePhaseModel:
     """Per-track 7-phase predictions with a short majority vote against flicker."""
 

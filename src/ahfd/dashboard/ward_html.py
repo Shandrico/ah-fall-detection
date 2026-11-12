@@ -107,6 +107,17 @@ WARD_HTML = r"""<!doctype html>
   [data-theme="night"] .bed.urgent .now { color:#ff8b7f; }
   .bed.off .art { opacity:.35; }
   .bed.off .now { color:var(--soft); }
+  .bed .since { font-size:14px; color:var(--soft); }
+  .steps { grid-column:1 / -1; display:grid; grid-template-columns:repeat(7,1fr); gap:2px; }
+  .steps i { height:8px; background:var(--rule); border-radius:2px; }
+  .steps i.past { background:var(--frame); }
+  .steps i.on { background:var(--go); }
+  .steps i.on.warn { background:var(--amber); }
+  .steps i.on.out { background:var(--red); }
+  .stepcap { grid-column:1 / -1; display:flex; justify-content:space-between; font-size:12px; color:var(--soft); margin-top:-2px; }
+  .view { display:flex; gap:0; }
+  .view button { min-height:30px; padding:2px 10px; font-size:13px; border-width:1px; border-radius:0; margin-left:-1px; letter-spacing:0; text-transform:none; font-weight:400; }
+  .view button[aria-pressed="true"] { background:var(--ink); color:var(--board); font-weight:700; }
   .chart { grid-column:1 / -1; display:flex; align-items:center; justify-content:space-between; gap:10px; }
   .chart .cap { font-size:14px; color:var(--soft); }
   .levels { display:flex; }
@@ -163,6 +174,7 @@ WARD_HTML = r"""<!doctype html>
   <div class="actions">
     <button id="sound" class="off">Turn alert sound on</button>
     <button id="theme" aria-pressed="false">Night</button>
+    <a href="/showcase">Showcase</a>
     <a href="/">Engineer view</a>
   </div>
 </header>
@@ -172,7 +184,8 @@ WARD_HTML = r"""<!doctype html>
 <div class="layout">
   <section class="stack" aria-label="Camera">
     <div>
-      <div class="label">Camera <small id="privacy"></small></div>
+      <div class="label"><span>Camera <small id="privacy"></small></span>
+        <span class="view" role="group" aria-label="Picture"><button data-view="camera" aria-pressed="true">Camera</button><button data-view="depth" aria-pressed="false">Height map</button></span></div>
       <div class="feed" id="feed">
         <img id="stream" src="/stream.mjpg" alt="" aria-label="Live camera view"/>
         <div class="tag" id="feedtag">Connecting</div>
@@ -250,8 +263,9 @@ function bedDrawing(pose){
   </svg>`;
 }
 
-let soundOn = false, lastOpen = 0, failedPolls = 0, bedKey = '';
-const firstSeen = {};
+let soundOn = false, lastOpen = 0, failedPolls = 0, bedKey = '', view = 'camera';
+const firstSeen = {}, stateSince = {};
+const STEPS = ['RECLINED','TORSO_RISING','UPRIGHT_IN_BED','SHIFTING_TO_EDGE','EDGE_SITTING','ATTEMPTING_STAND','OUT_OF_BED'];
 const $ = id => document.getElementById(id);
 const esc = s => String(s).replace(/[&<>"']/g, c => '&#' + c.charCodeAt(0) + ';');
 // Rewriting a list every second would drop keyboard focus from its buttons.
@@ -259,7 +273,7 @@ function setHtml(el, html){ if(el._html !== html){ el._html = html; el.innerHTML
 function store(k, v){ try { localStorage.setItem(k, v); } catch(_){} }
 function stored(k){ try { return localStorage.getItem(k); } catch(_){ return null; } }
 function bedName(id){
-  const name = String(id).replace(/_/g, ' ');
+  const name = String(id).replace(/_/g, ' ').replace(/\(.*?\)/g, '').replace(/\s+/g, ' ').trim();
   const cap = name.charAt(0).toUpperCase() + name.slice(1);
   return /bed/i.test(cap) ? cap : cap + ' bed';
 }
@@ -310,7 +324,9 @@ function renderBeds(beds, tracks, open, watching){
     bedKey = key;
     box.innerHTML = beds.length ? beds.map(b => `<article class="bed" data-bed="${esc(b.bed_id)}">
         <div class="art"></div>
-        <div><div class="bedname">${esc(bedName(b.bed_id))}</div><div class="now"></div></div>
+        <div><div class="bedname">${esc(bedName(b.bed_id))}</div><div class="now"></div><div class="since"></div></div>
+        <div class="steps" aria-hidden="true">${STEPS.map(() => '<i></i>').join('')}</div>
+        <div class="stepcap"><span>In bed</span><span>At the edge</span><span>Out of bed</span></div>
         <div class="chart">
           <span class="cap">Alert level</span>
           <div class="levels" role="group" aria-label="${esc('Alert level for ' + bedName(b.bed_id))}" title="${esc(LEVELS[b.mode] || '')}">
@@ -329,8 +345,17 @@ function renderBeds(beds, tracks, open, watching){
     const urgent = (top && top.tier === 'urgent') || alerts.some(a => a.tier === 'urgent');
     const check = !urgent && ((top && top.tier === 'check') || alerts.length > 0);
     card.className = 'bed' + (urgent ? ' urgent' : check ? ' check' : '') + (watching ? '' : ' off');
-    card.querySelector('.now').textContent = !watching ? 'Not being monitored'
+    const nowText = !watching ? 'Not being monitored'
       : top ? top.text : alerts.length ? alerts[0].title : 'No one detected';
+    card.querySelector('.now').textContent = nowText;
+    if(!stateSince[id] || stateSince[id].text !== nowText) stateSince[id] = {text:nowText, at:Date.now()};
+    const held = Math.floor((Date.now() - stateSince[id].at) / 1000);
+    card.querySelector('.since').textContent = watching && held >= 5 ? 'for ' + (held < 60 ? held + ' s' : minutes(held)) : '';
+    const t = tracks.find(x => x.bed_id === id);
+    const cur = t ? STEPS.indexOf(t.bed_phase) : -1;
+    card.querySelectorAll('.steps i').forEach((el, i) => {
+      el.className = (i < cur ? 'past' : '') + (i === cur ? ' on' + (i >= 3 && i <= 5 ? ' warn' : i === 6 ? ' out' : '') : '');
+    });
     const pose = !watching ? 'none' : top ? top.pose : 'none';
     const art = card.querySelector('.art');
     if(art.dataset.pose !== pose){ art.dataset.pose = pose; art.innerHTML = bedDrawing(pose); }
@@ -410,7 +435,8 @@ async function refresh(){
   $('n-up').textContent = n('BED_EXIT_WARNING');
   // A frozen last frame looks exactly like a live one, so never leave it up.
   $('stream').style.visibility = rt.monitoring === 'AVAILABLE' ? 'visible' : 'hidden';
-  $('feedtag').textContent = rt.monitoring === 'AVAILABLE' ? 'Live · ' + people(s.people) : 'No live picture';
+  $('feedtag').textContent = rt.monitoring === 'AVAILABLE'
+    ? (view === 'depth' ? 'Height above floor · ' : 'Live · ') + people(s.people) : 'No live picture';
   $('privacy').textContent = rt.show_rgb === false ? 'Stick figures only, for privacy' : '';
   tick();
 }
@@ -431,6 +457,14 @@ $('sound').addEventListener('click', function(){
 });
 $('theme').addEventListener('click', () => setTheme(document.documentElement.dataset.theme === 'night' ? 'day' : 'night'));
 $('full').addEventListener('click', () => { const f = $('feed'); if(f.requestFullscreen) f.requestFullscreen(); });
+// Camera or height map. Only one stream is open at a time, so the depth
+// preview costs nothing on the edge computer unless someone is looking at it.
+document.querySelectorAll('[data-view]').forEach(b => b.addEventListener('click', async () => {
+  view = b.dataset.view;
+  document.querySelectorAll('[data-view]').forEach(x => x.setAttribute('aria-pressed', String(x === b)));
+  if(view === 'depth') await post('/api/depth-mode', {mode:'height'});
+  $('stream').src = view === 'depth' ? '/depth.mjpg' : '/stream.mjpg';
+}));
 setTheme(stored('ahfd-ward-theme') === 'night' ? 'night' : 'day');
 refresh(); tick();
 setInterval(tick, 1000);

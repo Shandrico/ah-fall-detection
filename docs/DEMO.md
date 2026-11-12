@@ -133,6 +133,44 @@ Run sections 2 and 3 once end to end, with a teammate as the patient.
 
 ---
 
+## 1.9 Bed Monitor app (no browser, no "localhost")
+
+Once per machine, create the desktop icon:
+
+```bash
+.venv/bin/python scripts/showcase_app.py --install-shortcut      # Jetson
+.venv\Scripts\python.exe scripts\showcase_app.py --install-shortcut   # laptop (PowerShell)
+```
+
+Then double-click **Bed Monitor**: it starts the dashboard, waits for the camera, and opens the
+showcase full screen in its own window (no address bar or tabs). **Alt+F4 closes it and stops the
+camera.** Right-click the icon (Jetson) or use the second icon (laptop) for the nurse board. From
+a terminal: `python scripts/showcase_app.py --page ward --window`. If the camera is unplugged it
+says so instead of opening. Log: `data/logs/showcase_app.log` (dashboard output in
+`data/logs/dashboard.log`).
+
+## 1.10 Showcase mode (open day, one D435i)
+
+```bash
+ahfd dashboard --config configs/showcase.yaml          # Jetson (CUDA)
+ahfd dashboard --config configs/showcase_laptop.yaml   # laptop (OpenVINO)
+```
+
+Open **http://localhost:8000/showcase** on the audience screen (F11). It shows the camera and the
+**height map** side by side (every pixel coloured by its height above the floor: floor blue,
+mattress green, a standing head red, with each person's head and hip height), each bed's progress
+through the seven bed-exit phases (rules, with the learned model's call as a blue tag), a live
+head/hip height chart, the pipeline with live values, and every alert as it happens. The nurse board
+(/ward) can switch its picture between Camera and Height map.
+
+The phase model is `models/phase_combined.joblib` (git-ignored): one random forest on every usable
+labelled clip, both cameras and both views, with a confidence threshold so a calm patient is
+rarely shown as getting up. Rebuild it with `python scripts/train_combined_phase.py`
+(report next to it as `.json`). Display only: alerts still come from the rules.
+
+The height map costs about 40 ms per refresh (5 Hz) while a page shows it, so the live rate drops
+slightly; it is only drawn while someone is looking at it, and needs the camera image on.
+
 ## 2. Demo day: start everything (5 min)
 
 ### 2.1 Start the dashboard

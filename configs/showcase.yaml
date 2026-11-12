@@ -1,0 +1,73 @@
+# Showcase / open-day dashboard on the Jetson, D435i only.
+#
+#   ahfd dashboard --config configs/showcase.yaml
+#   then open  http://localhost:8000/showcase   (audience screen, F11 for full screen)
+#              http://localhost:8000/ward       (nurse board)
+#              http://localhost:8000/           (engineer page)
+#
+# Same pipeline as configs/dashboard_jetson.yaml, with the combined 7-phase model
+# (models/phase_combined.joblib, every usable labelled clip, both views) shown next
+# to the rules. Display only: alerts still come from the rule engine.
+# Laptop instead of Jetson: configs/showcase_laptop.yaml.
+
+source: "rs://?depth=1&emitter=1&max_laser=1&max_range=6&model=d435i"
+calibration: "calib/d435i.yaml"
+
+capture:
+  width: 640
+  height: 480
+
+pose:
+  backend: "rtmo"
+  model_size: "s"
+  mode: "performance"
+  runtime: "onnxruntime"    # Jetson: onnxruntime-gpu with the CUDA provider
+  device: "cuda"
+  min_score: 0.5
+  min_keypoint_score: 0.45
+
+smoothing:
+  enabled: true
+
+detect:
+  enabled: true
+
+bed_activity:
+  enabled: true
+  emit_early_warning: false
+  emit_exit_event: true
+
+alert:
+  console: true
+  jsonl_path: "data/events/showcase.jsonl"
+  min_severity: 0
+
+view:
+  mode: "overlay"
+  show_ids: true
+  show_fps: true
+  show_metrics: true
+
+dashboard:
+  host: "127.0.0.1"
+  port: 8000
+  show_rgb: true            # volunteers have consented; the RGB button switches to stick figures
+  jpeg_quality: 80
+  stream_max_width: 960
+  phase_model: "models/phase_combined.joblib"
+  alert_clips:
+    enabled: true
+  sources:
+    - label: "RealSense D435i (colour + depth)"
+      uri: "rs://?depth=1&emitter=1&max_laser=1&max_range=6&model=d435i"
+      calibration: "calib/d435i.yaml"
+      phase_model: "models/phase_combined.joblib"
+    - label: "RealSense D435i (infrared / low light)"
+      uri: "rs://ir"
+      calibration: "calib/d435i_ir.yaml"
+      phase_model: "models/phase_combined.joblib"
+  backends: ["rtmo"]
+  allow_custom_source: true
+
+privacy:
+  allow_raw_capture: false
