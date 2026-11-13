@@ -187,7 +187,11 @@ def calibrate(a) -> None:
     print("3/5 click the beds: a window opens with the live view.")
     print("    SPACE freezes the frame, click the 4 MATTRESS corners, 'f' to finish one bed.")
     print("    Names: 'nearest' then 'middle', kind 'bed', top_m = mattress height (about 0.60).")
-    subprocess.run([sys.executable, "-m", "ahfd.cli", "calibrate-zones", str(out), "--source", uri(a.camera)], cwd=REPO, check=False)
+    # Colour only for clicking (depth is not needed), after a pause: a RealSense reopened
+    # straight after the sample above sometimes stalls ("Frame didn't arrive").
+    import time
+    time.sleep(3)
+    subprocess.run([sys.executable, "-m", "ahfd.cli", "calibrate-zones", str(out), "--source", f"rs://?model={a.camera}"], cwd=REPO, check=False)
     doc = yaml.safe_load(out.read_text())
     beds = [z for z in doc.get("zones") or [] if z.get("kind") == "bed"]
     names = sorted(z["name"] for z in beds)
@@ -207,8 +211,11 @@ def calibrate(a) -> None:
         print("4/5 tilt kept; bed long sides:", ", ".join(f"{max(math.dist(p[i], p[i - 1]) for i in range(len(p))):.2f} m" for p in (z["polygon"] for z in beds)),
               f"(expect about {a.bed_length} m)")
 
+    if len(beds) != 2:
+        print(f"5/5 wrote {out.relative_to(REPO)} with {len(beds)} bed(s). The dashboard was NOT pointed at it; re-run and draw both beds.")
+        return
     point_dashboard(a.camera, out, a.view)
-    print(f"5/5 wrote {out.relative_to(REPO)} (beds: {', '.join(names) or 'none'}); the dashboard now starts on it.")
+    print(f"5/5 wrote {out.relative_to(REPO)} (beds: {', '.join(names)}); the dashboard now starts on it.")
     print("    next: python scripts/quick_calibrate.py --camera", a.camera, "--check")
 
 

@@ -1,0 +1,7 @@
+source:  bag:///home/anormalm/recordings/recsync/integrate_06/d435f.db3  1920x1080 @ 30 fps
+loading pose model (the first run downloads weights)...
+load /home/anormalm/.cache/rtmlib/hub/checkpoints/rtmo-s_8xb32-600e_body7-640x640-dac2bf74_20231211.onnx with onnxruntime backend
+model:   rtmo-s
+depth:   ON -- joint heights from the calib/d435f_20261104.yaml geometry (2.55 m)
+wrote 445 frames to data/tracks_d435f_v5/integrate_06.jsonl
+depth:   heights attached on 445 frames

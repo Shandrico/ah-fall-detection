@@ -1,0 +1,37 @@
+{
+  "clip_id": "integrate_09",
+  "duration_s": 30.87,
+  "labelled_on": "d435i video (laptop)",
+  "segments": [
+    {
+      "start_s": 1,
+      "end_s": 6,
+      "phase": "RECLINED"
+    },
+    {
+      "start_s": 6,
+      "end_s": 9,
+      "phase": "TORSO_RISING"
+    },
+    {
+      "start_s": 9,
+      "end_s": 14,
+      "phase": "SHIFTING_TO_EDGE"
+    },
+    {
+      "start_s": 14,
+      "end_s": 17,
+      "phase": "EDGE_SITTING"
+    },
+    {
+      "start_s": 17,
+      "end_s": 19,
+      "phase": "ATTEMPTING_STAND"
+    },
+    {
+      "start_s": 19,
+      "end_s": 30.83,
+      "phase": "OUT_OF_BED"
+    }
+  ]
+}

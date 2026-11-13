@@ -1,0 +1,132 @@
+{
+  "clip_id": "integrate_14",
+  "duration_s": 120.43,
+  "labelled_on": "d435i video (laptop)",
+  "segments": [
+    {
+      "start_s": 17,
+      "end_s": 19,
+      "phase": "RECLINED"
+    },
+    {
+      "start_s": 19,
+      "end_s": 21,
+      "phase": "TORSO_RISING"
+    },
+    {
+      "start_s": 21,
+      "end_s": 22,
+      "phase": "UPRIGHT_IN_BED"
+    },
+    {
+      "start_s": 22,
+      "end_s": 25,
+      "phase": "SHIFTING_TO_EDGE"
+    },
+    {
+      "start_s": 25,
+      "end_s": 26,
+      "phase": "EDGE_SITTING"
+    },
+    {
+      "start_s": 26,
+      "end_s": 27,
+      "phase": "ATTEMPTING_STAND"
+    },
+    {
+      "start_s": 27,
+      "end_s": 39,
+      "phase": "OUT_OF_BED"
+    },
+    {
+      "start_s": 43,
+      "end_s": 46,
+      "phase": "RECLINED"
+    },
+    {
+      "start_s": 46,
+      "end_s": 48,
+      "phase": "TORSO_RISING"
+    },
+    {
+      "start_s": 48,
+      "end_s": 52,
+      "phase": "UPRIGHT_IN_BED"
+    },
+    {
+      "start_s": 52,
+      "end_s": 55,
+      "phase": "SHIFTING_TO_EDGE"
+    },
+    {
+      "start_s": 55,
+      "end_s": 57,
+      "phase": "EDGE_SITTING"
+    },
+    {
+      "start_s": 57,
+      "end_s": 58,
+      "phase": "ATTEMPTING_STAND"
+    },
+    {
+      "start_s": 58,
+      "end_s": 64,
+      "phase": "OUT_OF_BED"
+    },
+    {
+      "start_s": 72,
+      "end_s": 77,
+      "phase": "RECLINED"
+    },
+    {
+      "start_s": 77,
+      "end_s": 78,
+      "phase": "TORSO_RISING"
+    },
+    {
+      "start_s": 78,
+      "end_s": 81,
+      "phase": "SHIFTING_TO_EDGE"
+    },
+    {
+      "start_s": 81,
+      "end_s": 84,
+      "phase": "ATTEMPTING_STAND"
+    },
+    {
+      "start_s": 84,
+      "end_s": 93,
+      "phase": "OUT_OF_BED"
+    },
+    {
+      "start_s": 97,
+      "end_s": 103,
+      "phase": "RECLINED"
+    },
+    {
+      "start_s": 103,
+      "end_s": 105,
+      "phase": "TORSO_RISING"
+    },
+    {
+      "start_s": 105,
+      "end_s": 108,
+      "phase": "SHIFTING_TO_EDGE"
+    },
+    {
+      "start_s": 108,
+      "end_s": 109,
+      "phase": "EDGE_SITTING"
+    },
+    {
+      "start_s": 109,
+      "end_s": 111,
+      "phase": "ATTEMPTING_STAND"
+    },
+    {
+      "start_s": 111,
+      "end_s": 120.4,
+      "phase": "OUT_OF_BED"
+    }
+  ]
+}

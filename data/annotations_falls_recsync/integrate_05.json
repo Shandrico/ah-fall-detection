@@ -1,0 +1,10 @@
+{
+ "clip_id": "integrate_05",
+ "clock": "seconds from the D435i clip start (same as the label MP4)",
+ "source": "Claude, 9 Nov: every out-of-bed second of every take scanned at 1 s steps (not only where alerts fired); impact = first second on the floor, +-1 s. To be confirmed by the user.",
+ "falls": [
+  {
+   "t_impact": 22.5
+  }
+ ]
+}

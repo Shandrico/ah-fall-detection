@@ -1,0 +1,49 @@
+camera_id: d435i_20261104
+verified_for_onsite: false
+ankle_height_baseline_m: null
+camera:
+  width: 1920
+  height: 1080
+  fx: 1366.562
+  fy: 1366.669
+  cx: 961.371
+  cy: 575.348
+  height_m: 2.6
+  pitch_deg: 30.0
+  roll_deg: -2.5
+zones:
+- name: bed1
+  kind: bed
+  top_m: 0.6
+  risk_level: medium
+  polygon:
+  - - -1.706
+    - 3.627
+  - - -0.107
+    - 2.961
+  - - -0.07
+    - 2.222
+  - - -1.848
+    - 2.889
+- name: nearest
+  kind: bed
+  top_m: 0.51
+  risk_level: medium
+  polygon:
+  - - -2.015
+    - 2.927
+  - - -1.779
+    - 4.017
+  - - 0.17
+    - 2.997
+  - - -0.158
+    - 1.945
+notes: 4 Nov 2026 mount (recsync integration takes). Lens height 2.6 m and colour
+  tilt 30 deg as measured by the team; the depth floor fit on integrate_04 (24.9 deg,
+  2.76 m) agrees (+4 deg colour offset). bed1 (the ToF bed, near-left) drawn 9 Nov
+  on the empty/occupied integrate_14 frame; mattress corners clicked at 0.6 m (~1.8
+  x 0.75 m).
+depth_ground:
+  height_m: 2.76
+  pitch_deg: 24.9
+  roll_deg: -2.5
